@@ -227,19 +227,32 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
     return m, ev, st, pc, inq, at
 
 
-def run_until(m, pc):
+def run_until(m, pc, timeout_ms=250):
     """Run with no instruction budget until a hook calls `uc.emu_stop()`.
 
     -> (pc, stop_reason). Prefer this over `spin` wherever the stopping
     condition can be written as a hook, because passing `count` to emu_start
     makes Unicorn install an internal per-instruction hook to decrement the
     budget, and that defeats its fast dispatch path. Measured over the same 40
-    rendered frames: 8.07s with `count=250_000` against 4.39s with no count,
-    a 1.84x difference for identical work.
+    rendered frames: 8.03s with `count=250_000` against 4.45s with no count,
+    a 1.8x difference for identical work.
 
     The cost is in `count` itself, not in how often emu_start is called --
     over the same 100 frames, count=20k (1308 calls), count=500k (53 calls)
     and count=1e9 (1 call) all land within 3% of each other.
+
+    `timeout_ms` bounds how long a single call may stay inside Unicorn, so a
+    caller that also has to honour a pause or stop flag keeps responding even
+    when the firmware stops doing whatever the hook was watching for. Without
+    it, a hook-only stop condition hangs the caller the moment the firmware
+    stops meeting it -- which is exactly what happens when the intro ends and
+    nothing draws any more. A timeout return is not distinguishable from a
+    hook return, so the caller re-checks its own condition and calls again,
+    which is what a loop does anyway. Pass 0 for no bound.
+
+    Unlike `count`, a timeout is free: over those same 40 frames, uncounted
+    measures 4.45s and uncounted with a 0.5s timeout measures 4.43s. `count`
+    installs a per-instruction hook; a timeout only arms a timer thread.
 
     Stop only from a hook that has already moved PC past the current
     instruction -- the setPixel HLE writes PC = return address, so it
@@ -248,7 +261,7 @@ def run_until(m, pc):
     spins making no progress while appearing to iterate.
     """
     try:
-        m.uc.emu_start(pc, 0)
+        m.uc.emu_start(pc, 0, timeout=timeout_ms * 1000)
         stop = 'stopped'
     except UcError as e:
         stop = str(e)

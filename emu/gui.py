@@ -120,7 +120,21 @@ class Emulator(threading.Thread):
                 self.stats['status'] = 'paused'
                 time.sleep(0.05)
                 continue
-            self.stats['status'] = 'running'
+            # Work out the status BEFORE blocking, not after: run_until sits
+            # inside Unicorn for up to its timeout, so whatever is set here is
+            # what the UI shows for that whole window. Setting it afterwards
+            # leaves the stale value on screen for the entire block and the
+            # fresh one for microseconds.
+            #
+            # fps is measured between completed frames, so it holds its last
+            # value forever once the firmware stops drawing. Decay it, or the
+            # panel sits frozen while the status line claims 15 fps.
+            idle = time.time() - self._frame_t
+            if idle > 1.0:
+                self.stats['fps'] = 0.0
+                self.stats['status'] = 'running, no frame for %.0fs' % idle
+            else:
+                self.stats['status'] = 'running'
             pc, stop = run_until(m, pc)
             if stop != 'stopped':
                 self.stats['status'] = 'halted: %s' % stop
