@@ -180,11 +180,23 @@ loop:
 ```
 Bitmap      +0x04  width
             +0x08  height
-            +0x0C  setPixel fn ptr, called setPixel(Bitmap*, x, y, value)
+            +0x0C  stride -- 32-bit words per COLUMN
+            +0x10  pixel data pointer
 PixelData   +0x00  width
             +0x04  height
-            +0x08  8bpp row-major pixel buffer
+            +0x08  8bpp row-major source buffer
 ```
+
+Pixels are **column-major, 1 bit per pixel**, 32 rows packed per big-endian
+word, MSB = lowest y:
+
+    word_index = x * stride + (y >> 5)      bit = 0x80000000 >> (y & 31)
+
+recovered from `Bitmap::setPixel` at `0x40104eb4`. An earlier draft of this
+document called `+0x0C` a setPixel function pointer; that was wrong -- it came
+from a different routine at `0x400d3244` where the register did not hold a
+Bitmap. The panel is 1bpp, not 8bpp: the 8bpp `PixelData` is a greyscale source
+thresholded on the way in.
 
 The intro's `PixelData` instance lives at `0x4028ae98` and reads
 `width=128, height=64, buffer=0x43139290`. The loop bound `cmpi.l #$2000`
@@ -225,3 +237,21 @@ exactly, 640 setPixel calls for 640 pixels. `./venv/bin/python emu/screen.py sel
 This matters because a wrong `PixelData` renders as *plausible dither* rather
 than failing — several structs found by heuristic scanning are false positives.
 Locating genuine static image assets is still open. **[O]**
+
+### Text rendering — still open **[O]**
+
+Not found yet, and the obvious routes came up empty:
+
+- 27 distinct functions call `setPixel`; **none walk a string** (no `move.b (aN)+`
+  over a char buffer), so text must go through a glyph blitter one character at
+  a time, called from a higher-level loop.
+- No standard 5x7 or 6x8 bitmap font table is present (searched for the
+  distinctive `'!'` glyph `00 00 5F 00 00` and variants).
+- `PopupWindow(const Bitmap*, ...)` and `VerticalMenuView(const char*, int,
+  std::string, const Bitmap*, int)` show `Bitmap` is used as an icon type, but
+  scanning for static instances in the recovered layout finds none - icons are
+  constructed at runtime, so the glyph/icon data is probably stored compressed
+  or generated.
+
+The rendering harness itself is done and verified, so once a text routine is
+located it can be driven immediately.
