@@ -203,3 +203,25 @@ renders. Two ways forward, neither attempted:
 Note the drawing path is pure ColdFire — `MainScreenView`, `SoundBrowser::drawMain(Bitmap&)`,
 and ~140 item-renderer lambdas of shape `(int, Bitmap&, int, int, bool)`. Nothing
 in it needs the DSP, so route 2 should not require the SHARC at all.
+
+### Rendering firmware graphics without booting **[V]**
+
+`emu/screen.py` runs the device's own drawing code and captures the output. The
+mechanism, and one correction to the note above:
+
+`px_copy_to_bitmap` does **not** dispatch through `Bitmap+0x0C`. It loads a
+fixed address into `a4` and calls that: `0x40104eb4` is the real
+`Bitmap::setPixel(Bitmap*, x, y, value)`. Intercepting that address captures
+every pixel without needing to know how `Bitmap` stores them. (`+0x0C` is used
+by a *different* renderer at `0x400d3220`, so the harness intercepts both.)
+
+The source is thresholded to 1 bit on this path — `cmpi.l #$80` then `shi.b` at
+`0x400d31d8` — so an 8bpp greyscale `PixelData` becomes a monochrome Bitmap.
+
+Validated against ground truth rather than by eye: feed a synthetic 40x16 source
+through the firmware routine and the captured pixels match the thresholded input
+exactly, 640 setPixel calls for 640 pixels. `./venv/bin/python emu/screen.py selftest`
+
+This matters because a wrong `PixelData` renders as *plausible dither* rather
+than failing — several structs found by heuristic scanning are false positives.
+Locating genuine static image assets is still open. **[O]**
