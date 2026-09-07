@@ -707,3 +707,37 @@ What we do have: the animation state itself is readable and renderable
 (`px_copy_to_bitmap` -> `Bitmap` -> decode) is independently verified pixel-exact
 by `emu/screen.py`. Only the middle link — particles to 8bpp raster — is missing,
 and it is missing because it has not *run*, not because it is not understood.
+
+### Emulation is 9x faster than it was **[V]**
+
+The per-instruction Python hook used for coverage tracking capped throughput at
+~300k instr/sec. Almost none of it was necessary: every HLE side effect lives at
+a known address, and Unicorn hooks registered with `begin == end` cost nothing
+between hits. The one thing that appeared to need a global hook — the preemption
+tick, fired on an instruction count — doesn't: `emu_start(pc, 0, count=N)`
+returns after N instructions, so the tick can be driven by *chunking* instead.
+
+`emu/fastrun.py`: **2.72M instr/sec**, a 9x improvement. A billion instructions
+is now ~6 minutes rather than an hour.
+
+### The firmware has a serial command console **[V]**
+
+MAIN OS carries a command protocol, dispatched by a `strcmp` chain at
+`0x400cd93e` onward:
+
+`#HELLO` -> `HOW DO YOU DO?`, plus `#BREAK`, `#UPGRADE`, `#FULL_UPGRADE`,
+`#WRITE`, `#DUMP_AUDIO`, `#RECEIVE_AUDIO`, `#PLAY_STEREO`, `#VERIFY_SAMPLES`,
+`#ENTER_TEST_MODE`, `#EXIT_TEST_MODE`, and status replies `READY FOR OS`,
+`READY FOR BOOTSTRAP`, `READY FOR SAMPLE DATA`.
+
+Key handles:
+- **`0x400054b4` is the print function.** Hooking it captures all console output
+  regardless of transport — no UART modelling needed.
+- The console is a **task**, entry `0x400cd594`, priority 2 — one of the 16
+  `task_create` sites, and one our boot has not reached.
+- UART8 is modelled properly in `emu/console.py` (USR8 `0xEC070004` with real
+  RXRDY/TXRDY, data register `0xEC07000C` popping queued input and capturing
+  output) rather than pinned to a constant.
+
+Starting the console task manually from a snapshot runs but yields almost
+immediately into an idle spin, so it needs more of the system up first. **[O]**
