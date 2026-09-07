@@ -128,7 +128,19 @@ from-entry task-creation timeline exactly.
 
 ### Concrete open leads
 
-- **Console (nearest to done).** Set bit 5 of `0x40288190` before the init task
+- **Console: the input path is DMA, and it now works up to the last link.**
+  UART8 receive never touches the CPU -- eDMA channel 34 writes into a
+  1024-byte ring at `0x4FE1A000` and vector 154 drains it against the
+  channel's live `DADDR` (`0xFC045450`). `emu/serial.py` injects input that
+  way and it is verified: the RX callback fires once per byte and the bytes
+  reach the serial queue `0x47D9ADC0`. What is missing is the consumer of that
+  queue, the task at `0x401136EE` (prio 3), created lazily by `0x401134CC`
+  (guard `0x44F1E070`). `emu.serial.create_serial_task` creates it; it has not
+  been seen draining the queue. **Start there:** check whether `task_start`
+  (`0x40001314`) runs for tcb `0x44dfccb4` and whether the scheduler selects
+  it. PIT counters are never read, so they need no modelling.
+
+- **Console (earlier notes).** Set bit 5 of `0x40288190` before the init task
   reaches `0x400cf384`, resuming from `boot200M`; the task is created and
   starts. It then runs 22 instructions and blocks at
   `jsr $40001928` on the queue at `0x40388eac`. That primitive is a ring buffer:
@@ -304,6 +316,9 @@ Established statically, not by flashing anything:
 | Parked task PC | on its own stack: `[a7]` frame word, `[a7+4]` PC |
 | Panel Bitmap instance | `0x4313b298` |
 | Console task / queue | entry `0x400cd594`, queue `0x40388eac`, sem `+8` |
+| UART8 RX DMA | ch34 TCD `0xFC045440`, ring `0x4FE1A000`, vector 154 |
+| RX callback / serial queue | `0x4094CDB4` -> `0x40110F20`, queue `0x47D9ADC0` |
+| Serial consumer task | `0x401136EE` prio 3, lazy init `0x401134CC` |
 | sem_pend A / B | `0x4000141a` / `0x400013a6`; sem_post `0x4000148c` |
 | queue receive | `0x40001928` |
 | Bitmap::setPixel | `0x40104eb4` — `setPixel(Bitmap*, x, y, val)` |

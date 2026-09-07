@@ -1085,3 +1085,71 @@ Worth noting: leaving the frame semaphore unsatisfied changed the boot path
 and created **two further tasks**, including `0x4012606a` (prio 6) -- one of
 the six that never appear under blanket unblock. That is more evidence that
 blanket unblock distorts boot, and a hint for reaching the remaining tasks.
+
+## What we were overlooking about ColdFire: eDMA **[V]**
+
+Feeding bytes to the UART model in `emu/console.py` could never have produced
+console input, because **the firmware never reads UDR8 to receive**. UART8
+receive is done by eDMA channel 34, with no CPU involvement per byte.
+
+Checked and ruled out first: the PIT counter registers (`PCNTR`, `0xFC08x004`)
+are **never read** by MAIN OS, so they do not need modelling. eDMA is a
+different story -- 14 channels are configured.
+
+From the init at `0x40002516`:
+
+    TCD34.SADDR  = 0xEC07000C     ; UDR8, fixed (SOFF = 0)
+    TCD34.ATTR   = 0x0050         ; DMOD = 10 -> destination modulo 1024
+    TCD34.DADDR  = 0x4FE1A000     ; a 1024-byte ring
+    TCD34.NBYTES = 1              ; one byte per request
+
+and the ISR at `0x40001f1a`, vector 154:
+
+    idx  = [0x4094CDA4]                        ; consume index
+    base = [0x4094CD84]                        ; ring base
+    while base + idx != [0xFC045450]:          ; DADDR = live write pointer
+        byte = ring[idx]; idx = (idx + 1) & 0x3FF
+        [0x4094CDB4](byte)                     ; registered callback
+
+The ATTR decode (destination modulo 1024) matches the ISR's `andi.l #$3ff`
+exactly, which is what confirms the reading.
+
+**The channel's own DADDR register is the producer pointer**, polled by the
+ISR. So injecting input needs no general eDMA emulation -- write into the
+ring, advance DADDR with the same modulo, raise vector 154. That is
+`emu/serial.py`, and it works: feeding `#HELLO\r\n` drives the RX callback
+exactly 8 times, the consume index advances 0 -> 8, and the bytes are enqueued
+onto the serial message queue at `0x47D9ADC0` (count 6 -> 8).
+
+TCD35 is the matching transmit channel; the ISR at `0x40001d00` (vector 180)
+is UART8 **transmit** only, pulling from a ring at `0x4094CD80`.
+
+### The remaining console blocker, one step further on **[O]**
+
+Nothing drains `0x47D9ADC0` -- it already holds 6 unconsumed messages before
+any input is injected. Its consumer is the task at **`0x401136EE` (prio 3)**,
+one of the six that never get created. It is created lazily by the singleton
+at `0x401134CC` (guard `0x44F1E070`, allocation via `0x401114A8`) on first use
+of the serial service, and nothing in our boot ever asks.
+
+`emu.serial.create_serial_task` runs that initialiser and the task **is**
+created (`entry=0x401136ee prio=3 tcb=0x44dfccb4`, an 11th task). It has not
+been observed draining the queue yet -- created is not the same as started and
+scheduled, and that is the next thing to check (whether `task_start`
+`0x40001314` runs for that TCB, and whether the scheduler ever selects it).
+
+So the chain is now fully mapped and only its last link is missing:
+
+    DMA ch34 -> ring 0x4FE1A000 -> vector 154 -> callback 0x40110F20
+      -> queue 0x47D9ADC0 -> [task 0x401136EE, not draining]
+      -> queue 0x40388EAC -> console task 0x400CD594 -> dispatch 0x400CD93E
+
+### Other ColdFire details worth knowing
+
+- `raise_vector` does not set SR on exception entry. Real ColdFire sets S,
+  clears T and, for interrupts, raises the mask. Most ISRs here begin with
+  `move.w #$2700,sr` themselves, but the PIT3 ISR at `0x400d2d70` does not, so
+  this is a latent reentrancy difference rather than a proven bug.
+- The exception frame's format field is written as 0; ColdFire uses 4 for a
+  normal 2-longword frame. Harmless here because `rte` is implemented by hand
+  and ignores it.
