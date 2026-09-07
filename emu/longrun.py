@@ -26,10 +26,20 @@ MAIN_IMG = 'sections/section_3_MAIN_OS.bin'
 
 PEND_A, PEND_B = 0x4000141a, 0x400013a6   # sem object is the arg at 4(a7)
 
+# Sites that decide how far `unblock` may go. QUEUE_RECV is the pend inside
+# queue_receive (0x40001928): it waits on the queue's own semaphore at
+# queue+8, then re-reads queue->count and loops. Satisfying that semaphore
+# without also enqueuing an item turns a sleep into an infinite spin --
+# measured at 8.9M iterations, ~92% of all post-intro cycles, on one queue.
+# Blocking there is the correct behaviour: nothing has arrived.
+QUEUE_RECV = 0x40001946                   # return address of that pend
+INTRO_DONE = 0x400d403c                   # intro loop's exit branch target
+FRAME_SEM  = 0x43131200                   # intro frame-pacing semaphore
+
 
 def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
           unblock=False, softfloat=False, bitmap=False, on_pixel=None,
-          unblock_except=()):
+          unblock_except=(), edma=True):
     """Stand up a hooked Machine and restore `snapshot` onto it.
 
     -> (m, ev, st, pc, inq, at) where `at(addr, fn)` registers a further
@@ -55,6 +65,11 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
     frame semaphore 0x43131200 is the case that matters, since satisfying it
     is what makes the animation run unpaced.
 
+    `unblock` never satisfies a pend made from inside queue_receive: that one
+    re-checks the queue's item count after the wait, so satisfying it without
+    enqueuing anything spins instead of sleeping. It also stops satisfying the
+    intro frame semaphore by itself once the intro's exit path is reached.
+
     softfloat=True runs the firmware's float routines natively instead of
     emulating them. It is OFF by default: it is bit-exact but changes
     instruction counts, and too much in this project depends on a resumed run
@@ -70,6 +85,12 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
     the float work is gone. `on_pixel(x, y, val)` then receives every pixel
     drawn, which is how the frame capture observes drawing -- so callers must
     not also register their own setPixel hook.
+
+    `edma` models eDMA channel 35, the UART8 transmit ring. It defaults ON
+    because without it the firmware's console-enqueue routine spins forever
+    waiting for ring space and boot cannot get past the intro -- see
+    emu/edma.py. Unlike the softfloat/bitmap HLEs this is a hardware model,
+    not a shortcut, so there is no faithful configuration with it off.
     """
     flash = db.build_flash(syx)
     m = Machine(); st = {'seen': set(), 'n': 0, 'task_create_hits': {}}
@@ -134,10 +155,17 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
             ev['depack_clamps'] += 1
     at(db.DEPACK_COPY, depack_clamp)
 
+    tx = None
+    if edma:                           # see emu/edma.py
+        from emu.edma import install as install_edma
+        tx = install_edma(m, at, ev)
+
     spins = {'n': 0}
 
     def do_halt(uc, a, s, d):
         spins['n'] += 1
+        if tx is not None:
+            tx.deliver()
         if spins['n'] % 20000 == 0:
             m.raise_vector(32)
     for spin_addr in db.find_idle_spins(main_img, db.MAIN_LOAD):
@@ -154,18 +182,21 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
         install_bitmap(at, ev['bitmap'], on_pixel)
 
     if unblock:
-        # kept mutable and exposed as ev['unblock_skip'] so a caller can start
-        # unblocking everything and stop unblocking one semaphore later -- the
-        # intro frame semaphore has to be satisfied while the intro runs and
-        # must NOT be once it finishes, or the draw task busy-spins at prio 7
-        # and starves the rest of the system.
+        # Both sets are kept mutable and exposed on `ev` so a run can change
+        # policy partway through, which the intro needs: its frame semaphore
+        # has to be satisfied while the intro runs and must NOT be once it
+        # finishes, or the draw task busy-spins at prio 7 and starves the rest
+        # of the system. That handoff is wired up below rather than left to
+        # each caller -- getting it wrong is silent, it just looks like a hang.
         skip = set(unblock_except)
         ev['unblock_skip'] = skip
+        skip_callers = {QUEUE_RECV}
+        ev['unblock_skip_callers'] = skip_callers
 
         def satisfy(uc, a, s, d):
             sp = uc.reg_read(UC_M68K_REG_A7)
-            sem = struct.unpack('>I', uc.mem_read(sp + 4, 4))[0]
-            if not sem or sem in skip:
+            ret, sem = struct.unpack('>II', uc.mem_read(sp, 8))
+            if not sem or sem in skip or ret in skip_callers:
                 return
             try:
                 if struct.unpack('>i', uc.mem_read(sem, 4))[0] <= 0:
@@ -174,6 +205,7 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
             except Exception:
                 pass
         at(PEND_A, satisfy); at(PEND_B, satisfy)
+        at(INTRO_DONE, lambda uc, a, s, d: skip.add(FRAME_SEM))
 
     def onr(uc, typ, addr, size, val, data):
         if addr == USR8: uc.mem_write(USR8, bytes([0x04 | (0x01 if inq else 0)]))
@@ -189,7 +221,38 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
     # snapshot-carried address would go unhooked.
     pc = restore_into(m, snapshot, st)
     m.install_mmio()
+    if tx is not None:
+        from emu.edma import kick
+        kick(m, tx)
     return m, ev, st, pc, inq, at
+
+
+def run_until(m, pc):
+    """Run with no instruction budget until a hook calls `uc.emu_stop()`.
+
+    -> (pc, stop_reason). Prefer this over `spin` wherever the stopping
+    condition can be written as a hook, because passing `count` to emu_start
+    makes Unicorn install an internal per-instruction hook to decrement the
+    budget, and that defeats its fast dispatch path. Measured over the same 40
+    rendered frames: 8.07s with `count=250_000` against 4.39s with no count,
+    a 1.84x difference for identical work.
+
+    The cost is in `count` itself, not in how often emu_start is called --
+    over the same 100 frames, count=20k (1308 calls), count=500k (53 calls)
+    and count=1e9 (1 call) all land within 3% of each other.
+
+    Stop only from a hook that has already moved PC past the current
+    instruction -- the setPixel HLE writes PC = return address, so it
+    qualifies. Stopping from a plain code hook leaves PC on the hooked
+    address, and resuming re-enters the same hook immediately: the run then
+    spins making no progress while appearing to iterate.
+    """
+    try:
+        m.uc.emu_start(pc, 0)
+        stop = 'stopped'
+    except UcError as e:
+        stop = str(e)
+    return m.uc.reg_read(UC_M68K_REG_PC), stop
 
 
 def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False):
@@ -202,6 +265,10 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False):
     (the init task never reaches its own flag test at 0x400cf384). Ticking
     idle spins, which build() does, is the faithful mechanism. Left available
     only for deliberate "shake it and see" experiments.
+
+    Every chunk boundary costs a `count=` argument to emu_start, which is
+    ~1.8x slower than running uncounted -- see run_until. Use spin only when
+    something genuinely has to happen per fixed number of instructions.
     """
     done, stop = 0, 'limit'
     while done < instrs:
