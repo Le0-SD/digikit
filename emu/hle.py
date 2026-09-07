@@ -46,22 +46,20 @@ def install_bitmap(at, stats=None, on_pixel=None):
     without paying for a second hook. `bmp` is the Bitmap instance, which is
     worth keeping: it is how the panel framebuffer at 0x4313b298 was found."""
 
-    # A Bitmap's geometry does not change between setPixel calls, and the
-    # rasteriser makes 8,192 of them per frame, so re-reading the header every
-    # time is pure waste. Cache it per Bitmap; the cache is only ever read
-    # here and the firmware would have to rebuild a Bitmap to invalidate it,
-    # which shows up as a different pointer.
-    geom = {}
+    # NOTE: do NOT cache the Bitmap header. It was tried, on the assumption
+    # that geometry is fixed per Bitmap pointer, and it is not -- the firmware
+    # mutates the fields of an existing Bitmap. Caching sent writes to a stale
+    # buffer, the rasteriser read back the wrong pixels, and the intro's
+    # instruction cost per frame changed by ~4x (setPixel 617,694 -> 163,840
+    # over the same 20M instructions). The selftest below did not catch it
+    # because it uses one Bitmap and never mutates it.
     S5 = struct.Struct('>5I')
     S4 = struct.Struct('>4I')
     SI = struct.Struct('>I')
 
     def fields(uc, bmp):
-        got = geom.get(bmp)
-        if got is None:
-            w, h, stride, data = S4.unpack(uc.mem_read(bmp + 4, 16))
-            got = geom[bmp] = (_s32(w), _s32(h), _s32(stride), data)
-        return got
+        w, h, stride, data = S4.unpack(uc.mem_read(bmp + 4, 16))
+        return _s32(w), _s32(h), _s32(stride), data
 
     def do_set(uc, addr, size, data_):
         sp = uc.reg_read(UC_M68K_REG_A7)
@@ -164,10 +162,26 @@ def selftest(verbose=True):
             if bad_get <= 5:
                 print('  getPixel MISMATCH at (%d,%d): real=0x%08x hle=0x%08x'
                       % (x, y, got, want))
+    # Regression guard: the firmware MUTATES an existing Bitmap's header, so
+    # geometry must be re-read every call. Point the same Bitmap object at a
+    # second buffer and check the write follows it.
+    DATA2 = DATA + 0x10000
+    m.ensure(DATA2)
+    m.uc.mem_write(BMP, struct.pack('>5I', 0, W, H, STRIDE, DATA2))
+    m.uc.mem_write(DATA, b'\x00' * NBYTES)
+    m.uc.mem_write(DATA2, b'\x00' * NBYTES)
+    call(m, SET_PIXEL, [BMP, 5, 5, 1], limit=200_000)
+    moved = bytes(m.uc.mem_read(DATA2, NBYTES)).strip(b'\x00') != b''
+    stale = bytes(m.uc.mem_read(DATA, NBYTES)).strip(b'\x00') != b''
+    bad_move = (not moved) or stale
+    if bad_move:
+        print('  MUTATION MISMATCH: write went to the old buffer '
+              '(geometry is being cached when it must not be)')
     if verbose:
         print('bitmap HLE selftest: %d cases, setPixel mismatches=%d, '
-              'getPixel mismatches=%d' % (len(cases), bad_set, bad_get))
-    return bad_set == 0 and bad_get == 0
+              'getPixel mismatches=%d, header-mutation ok=%s'
+              % (len(cases), bad_set, bad_get, not bad_move))
+    return bad_set == 0 and bad_get == 0 and not bad_move
 
 
 if __name__ == '__main__':

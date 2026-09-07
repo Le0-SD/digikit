@@ -154,7 +154,13 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
         install_bitmap(at, ev['bitmap'], on_pixel)
 
     if unblock:
-        skip = frozenset(unblock_except)
+        # kept mutable and exposed as ev['unblock_skip'] so a caller can start
+        # unblocking everything and stop unblocking one semaphore later -- the
+        # intro frame semaphore has to be satisfied while the intro runs and
+        # must NOT be once it finishes, or the draw task busy-spins at prio 7
+        # and starves the rest of the system.
+        skip = set(unblock_except)
+        ev['unblock_skip'] = skip
 
         def satisfy(uc, a, s, d):
             sp = uc.reg_read(UC_M68K_REG_A7)
