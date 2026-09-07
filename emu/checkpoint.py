@@ -14,25 +14,37 @@ IMG = 'sections/section_3_MAIN_OS.bin'
 SYX = 'Digitakt_II_OS1.15C.syx'
 
 
-def make(at, path):
+def make(points, prefix='snapshots/boot'):
+    """Save a LADDER of checkpoints in one pass.
+
+    `points` is a list of instruction counts. Saving mid-run is safe because
+    save() only reads state; emulation continues afterwards. One slow pass
+    yields several resume points, so later blocker work can start deep.
+    """
     img = open(IMG, 'rb').read()
-    box = {}
+    points = sorted(points)
+    todo = list(points)
+    box = {'m': None, 'saved': []}
 
     def hook(uc, addr, size, st):
-        if st['n'] >= at and 'done' not in box:
-            box['done'] = True
-            uc.emu_stop()
+        if todo and st['n'] >= todo[0]:
+            at = todo.pop(0)
+            path = '%s%dM.snap' % (prefix, at // 1_000_000)
+            info = save(box['m'], path,
+                        extra={'n': st['n'], 'seen': sorted(st['seen']),
+                               'tasks': {hex(k): v for k, v in st['task_create_hits'].items()}})
+            box['saved'].append((at, path, info, len(st['seen']),
+                                 len(st['task_create_hits']),
+                                 uc.reg_read(UC_M68K_REG_PC)))
+            print('  [%dM] %s  %d addrs, %d tasks, pc=0x%08x, %d B'
+                  % (at // 1_000_000, path, len(st['seen']),
+                     len(st['task_create_hits']), uc.reg_read(UC_M68K_REG_PC),
+                     info['bytes_on_disk']), flush=True)
 
-    m, st, stop = db.run(SYX, img, limit=at + 5_000_000,
-                         extra_hook=hook, fast=True, verbose=False)
-    info = save(m, path, extra={'n': st['n'], 'seen': sorted(st['seen']),
-                                'tasks': {hex(k): v for k, v in st['task_create_hits'].items()}})
-    print('snapshot at instr %d, pc=0x%08x' % (st['n'], m.uc.reg_read(UC_M68K_REG_PC)))
-    print('  %(pages)d non-zero pages of %(mapped)d mapped; %(bytes_live)d B live '
-          '-> %(bytes_on_disk)d B on disk' % info)
-    print('  coverage carried: %d distinct addrs, %d tasks'
-          % (len(st['seen']), len(st['task_create_hits'])))
-    return m, st
+    m, st, stop = db.run(SYX, img, limit=points[-1] + 1_000_000,
+                         extra_hook=hook, fast=True, verbose=False,
+                         machine_out=box)
+    return box['saved']
 
 
 def resume(path, extra_instrs, hook=None):
@@ -62,7 +74,7 @@ def resume(path, extra_instrs, hook=None):
 
 if __name__ == '__main__':
     if sys.argv[1] == 'make':
-        make(int(sys.argv[2]), sys.argv[3])
+        make([int(x) for x in sys.argv[2].split(',')])
     else:
         path = sys.argv[2]
         extra = int(sys.argv[3]) if len(sys.argv) > 3 else 2_000_000

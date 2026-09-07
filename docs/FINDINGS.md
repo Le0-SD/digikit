@@ -580,3 +580,30 @@ at 40M + 5M resume gives **coverage identical** to a straight 45M run (37,616
 addresses both ways).
 
 Snapshots are firmware-derived state, so `snapshots/` and `*.snap` are gitignored.
+
+`make` takes a comma-separated ladder and saves them all in **one** pass, since
+saving only reads state and emulation continues afterwards:
+
+```
+./venv/bin/python -m emu.checkpoint make 60000000,120000000,200000000,280000000
+```
+
+One 5-minute pass produced:
+
+| checkpoint | distinct addrs | tasks | on disk |
+|---|---|---|---|
+| 60M  | 38,247 | 5 | 1.9 MB |
+| 120M | 39,244 | 5 | 2.0 MB |
+| 200M | 42,234 | 5 | 2.3 MB |
+| **280M** | **47,335** | **9** | 2.4 MB |
+
+Resuming from 280M reaches 9 tasks in **10 seconds**.
+
+Two things that immediately became visible once iteration was cheap:
+
+- The apparent "stall" at `0x40175288` is **`__mulsf3`** — a softfloat multiply
+  (23 shift-and-add iterations = float mantissa). The stall metric flags any hot
+  address after a window with no *new* coverage, so ordinary hot arithmetic looks
+  like a hang. Not a blocker.
+- Boot is **still progressing** past 280M, just slowly: 47,335 -> 47,637 distinct
+  addresses over 60M further instructions, arriving in bursts. Not deadlocked.
