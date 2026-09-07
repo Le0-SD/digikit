@@ -21,6 +21,12 @@ Not ARM. Two processors:
 MAIN OS does not make sound — it holds parameter state and RPCs it to the
 SHARC. That split governs what is and isn't patchable.
 
+## Continuing this work
+
+**Read [`docs/NEXT.md`](docs/NEXT.md) first** — cold-start guide: what is built,
+what to do next, safety rules, and the traps that already cost time.
+[`docs/FINDINGS.md`](docs/FINDINGS.md) has the evidence behind every claim.
+
 ## Layout
 
 ```
