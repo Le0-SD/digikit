@@ -9,6 +9,7 @@ happened". With that, the draw task runs and Bitmap::setPixel executes for
 the first time.
 
 Usage: python -m emu.frame [snapshot] [instrs] [out.png] [scale]
+       python -m emu.frame export [snapshot] [instrs] [out.bin]
 """
 import struct, sys, os, time, collections
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,7 +28,13 @@ def ascii_art(fb, w=W, h=H):
     return '\n'.join(rows)
 
 
-def main(snapshot, instrs, out='out/frame.png', scale=6):
+def capture(snapshot, instrs):
+    """Run with waits satisfied and collect every frame the firmware draws.
+
+    -> (frames, partial, ev, stats, bitmaps, done, dt, stop) where `frames` is
+    a list of {(x, y): value} for each completed frame and `partial` is the
+    frame still being drawn when the run ended.
+    """
     m, ev, st, pc, inq, at = build(snapshot, unblock=True)
     stats = collections.Counter()
 
@@ -49,7 +56,32 @@ def main(snapshot, instrs, out='out/frame.png', scale=6):
 
     t0 = time.time()
     pc, done, stop = spin(m, pc, instrs)
-    dt = time.time() - t0
+    return frames, fb, ev, stats, bitmaps, done, time.time() - t0, stop
+
+
+def export(snapshot, instrs, out='out/frames.bin'):
+    """Dump every captured frame as packed 1bpp, row-major, 128x64.
+
+    1024 bytes per frame, MSB = leftmost pixel. Small enough to embed.
+    """
+    frames, partial, ev, stats, bitmaps, done, dt, stop = capture(snapshot, instrs)
+    os.makedirs(os.path.dirname(out) or '.', exist_ok=True)
+    blob = bytearray()
+    for shot in frames:
+        bits = bytearray(W * H // 8)
+        for (x, y), v in shot.items():
+            if v:
+                i = y * W + x
+                bits[i >> 3] |= 0x80 >> (i & 7)
+        blob += bits
+    open(out, 'wb').write(blob)
+    print('%d instrs in %.0fs, %d frames -> %s (%d bytes, %d B/frame)'
+          % (done, dt, len(frames), out, len(blob), W * H // 8))
+    return frames
+
+
+def main(snapshot, instrs, out='out/frame.png', scale=6):
+    frames, fb, ev, stats, bitmaps, done, dt, stop = capture(snapshot, instrs)
 
     print('=== %d instrs in %.0fs (%.2fM/s) stop=%s ===' % (done, dt, done/dt/1e6, stop))
     print('pends satisfied : %d' % ev['satisfied'])
@@ -81,6 +113,11 @@ def main(snapshot, instrs, out='out/frame.png', scale=6):
 
 
 if __name__ == '__main__':
+    if len(sys.argv) > 1 and sys.argv[1] == 'export':
+        export(sys.argv[2] if len(sys.argv) > 2 else 'snapshots/boot400M.snap',
+               int(sys.argv[3]) if len(sys.argv) > 3 else 260_000_000,
+               sys.argv[4] if len(sys.argv) > 4 else 'out/frames.bin')
+        raise SystemExit
     snap = sys.argv[1] if len(sys.argv) > 1 else 'snapshots/boot400M.snap'
     n = int(sys.argv[2]) if len(sys.argv) > 2 else 60_000_000
     out = sys.argv[3] if len(sys.argv) > 3 else 'out/frame.png'

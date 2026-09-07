@@ -13,17 +13,31 @@ You supply your own `Digitakt_II_OS1.15C.syx`
 ## 0. Setup and smoke test (5 minutes)
 
 ```sh
-python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
+uv sync                     # creates .venv on CPython 3.12 from uv.lock
 
 # extract sections with mischa85/elektron-firmware-tool (MIT, supports dev 0x14)
 elektron-firmware-tool -i Digitakt_II_OS1.15C.syx -o sections/
 
-./venv/bin/python -m dt2.container Digitakt_II_OS1.15C.syx   # section table
-./venv/bin/python emu/oracle.py                              # CRC oracle, seconds
-./venv/bin/python emu/screen.py selftest                     # graphics, seconds
+uv run python -m dt2.container Digitakt_II_OS1.15C.syx   # section table
+uv run python emu/oracle.py                              # CRC oracle, seconds
+uv run python emu/screen.py selftest                     # graphics, seconds
 ```
 
 All three should pass. If `oracle.py` throws `UC_ERR_MAP`, see Trap 3 below.
+
+Then watch it boot:
+
+```sh
+uv run python -m emu.gui                      # live panel in a window
+uv run python -m emu.frame snapshots/boot400M.snap 20000000   # one frame, ASCII + PNG
+```
+
+**Why the Python version is pinned.** `pyproject.toml` requires 3.12, not the
+3.14 Homebrew installs by default. Two reasons, both practical: binary wheels
+are still thin on 3.14 (pygame, for one, only resolves to an sdist), and
+Homebrew's `python@3.14` ships no `tkinter`, so `emu/gui.py` could not open a
+window. uv's managed CPython bundles tkinter, so `uv sync` is the whole setup
+-- no `brew install` step.
 
 ---
 
@@ -43,6 +57,7 @@ All three should pass. If `oracle.py` throws `UC_ERR_MAP`, see Trap 3 below.
 | Task/ready-list inspector | `emu/tasks.py` | parked PC per task from any snapshot |
 | Blocker + hot-PC probe | `emu/probe.py` | pend sites, scheduler state, PC sampling |
 | Rendered panel frame -> PNG | `emu/frame.py` | **works** -- 84 frames, real `setPixel` |
+| Live panel GUI | `emu/gui.py` | **works** -- tkinter, emulator on a worker thread |
 | Snapshot ladder from a snapshot | `emu/checkpoint.py extend` | works |
 
 **The single most important result**: the device's *own* depacker, run under
@@ -90,8 +105,8 @@ from-entry task-creation timeline exactly.
 
 1. **Use snapshots as the normal working mode.** Never re-run from entry.
    ```sh
-   ./venv/bin/python -m emu.checkpoint make 60000000,120000000,200000000,280000000
-   ./venv/bin/python -m emu.longrun snapshots/boot280M.snap 200000000
+   uv run python -m emu.checkpoint make 60000000,120000000,200000000,280000000
+   uv run python -m emu.longrun snapshots/boot280M.snap 200000000
    ```
    `boot280M.snap` carries 9 tasks / 47,335 addresses and resumes in ~10 s.
 

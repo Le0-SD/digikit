@@ -11,3 +11,6 @@ __pycache__/
 vendor/
 snapshots/
 *.snap
+
+# uv
+.venv/

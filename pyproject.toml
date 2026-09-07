@@ -1,0 +1,18 @@
+[project]
+name = "digitakt2"
+version = "0.1.0"
+description = "Digitakt II OS 1.15C: container tooling, ColdFire disassembly, and a Unicorn emulator"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "unicorn==2.1.4",
+    "capstone==5.0.7",
+]
+
+# Pinned to 3.12 deliberately. On 3.14 (the Homebrew default here) binary
+# wheels are still thin -- pygame, for one, resolves to an sdist and has to
+# compile -- and Homebrew's python@3.14 has no tkinter at all. uv's managed
+# CPython builds bundle tkinter, so the GUI in emu/gui.py works with no
+# system packages installed.
+
+[tool.uv]
+package = false
