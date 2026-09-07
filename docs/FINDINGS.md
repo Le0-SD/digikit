@@ -607,3 +607,33 @@ Two things that immediately became visible once iteration was cheap:
   like a hang. Not a blocker.
 - Boot is **still progressing** past 280M, just slowly: 47,335 -> 47,637 distinct
   addresses over 60M further instructions, arriving in bursts. Not deadlocked.
+
+### The scheduler was never running **[V]**
+
+With cheap iteration, the actual state at the 280M checkpoint turned out to be
+much simpler than "many blockers":
+
+- **Zero context switches in 20M instructions.** The tick only fired at idle-spin
+  addresses, and a *busy* task never reaches one. So one task held the CPU
+  outright and the other eight never ran.
+- **Preemption must respect the interrupt mask.** An earlier attempt at periodic
+  `trap #0` injection crashed the machine (`pc=0`). The cause was injecting
+  regardless of `SR`; a maskable interrupt cannot fire at IPL 7. Skipping
+  injection when `(SR & 0x0700) == 0x0700` makes it stable — 100 injections,
+  99 switches, no crash.
+- **Scheduling is priority-based, not round-robin.** The ready-list cursor at
+  `0x4094c914` points at a node whose `->next` is itself, i.e. a single ready
+  task. Lower-priority tasks starve until the running one blocks — and our mocks
+  are precisely what stop it blocking.
+
+**The task holding the CPU is the intro task** (`tcb=0x43135210`, prio 7). It is
+not stuck: outside the softfloat library it sits at `0x400d3900`, inside
+`intro_dither`, doing per-pixel float work with the constants `0x3c000000`
+(= 1/128) and `0x3f800000` (= 1.0) — consistent with normalising x across the
+128-pixel-wide panel. It is generating the boot animation, just very slowly:
+software floating point, per pixel, at ~300k emulated instructions/sec.
+
+The known intro framebuffer at `0x43139290` is still all zeros after +100M, so
+either a frame has not completed or the output goes to a different buffer.
+Finding it is the next step — watch writes issued from the `0x400d3xxx` code
+range. **[O]**
