@@ -117,10 +117,39 @@ Peripherals identified from NXP *MCF54418RM* Rev. 5 (Table 1-4; ch. 40 §40.3.4�
 40.3.7; ch. 41). Only eight distinct peripheral registers are read in the whole
 boot, and peripheral setup is read-modify-write that works fine against zeros. **[V]**
 
-It now stalls in a decompression loop fed from DSPI0. Mocking a *ready bit* was
-enough for earlier stalls; here the firmware wants **real bytes off an SPI
-device** we have no image of. The wall is missing data, not missing models —
-obtaining it means reading the flash off physical hardware. **[V]**
+### The SPI flash needs no physical dump — correction
+
+An earlier reading of stall 4 concluded the firmware wanted "real bytes off an
+SPI device we have no image of", implying a hardware dump was required. **That
+was wrong.**
+
+`0x401296fe` is the SPI NOR read routine, signature `read(offset, len, dest)` —
+confirmed by `0x84020003 -> DSPI0_PUSHR`, whose low byte `0x03` is the NOR READ
+command. Its callers scan the ELE3 section table at flash offset `0x80020`. The
+flash content it wants at boot **is the staged OS container**, which is exactly
+what `dt2.container` decodes out of the `.syx` we already have.
+
+High-level-emulating that one function and backing it with the container (see
+`emu/flashboot.py`) makes boot progress immediately, and the reads it issues
+confirm the model is right: **[V]**
+
+```
+off=0x080000 len=32      -> 0x44e4d67c    ELE3 header, into the exact address
+                                           MAIN OS compares at 0x40128b8c
+off=0x080020 len=16  x5                    the five section-table entries
+off=0x19be60 len=184844  -> 0x45020a90    section 7 = the SHARC DSP blob
+```
+
+Coverage 36,483 -> 37,627 distinct addresses, and the firmware is now loading the
+DSP image. The next frontier is the ColdFire<->SHARC link (DSPI2/eDMA), not
+another storage problem.
+
+Note the UI draws into a `Bitmap` object (`SoundBrowser::drawMain(Bitmap&)`),
+so rendering the screen is a matter of locating that buffer once boot gets far
+enough — not of reverse-engineering a display controller. **[O]**
+
+What a physical dump *would* still be needed for: the +Drive contents (samples,
+projects), which live elsewhere in flash and are not required to boot.
 
 Also unresolved: `m68k` `SR` must be written **before** `A7`, or the stack
 pointer lands in the banked register the CPU is about to stop using. Cost an

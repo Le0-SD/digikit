@@ -14,7 +14,8 @@ See docs/FINDINGS.md for how each was found.
 """
 import struct
 from unicorn import (Uc, UcError, UC_ARCH_M68K, UC_MODE_BIG_ENDIAN,
-                     UC_HOOK_CODE, UC_HOOK_INTR, UC_HOOK_MEM_INVALID)
+                     UC_HOOK_CODE, UC_HOOK_INTR, UC_HOOK_MEM_INVALID,
+                     UC_HOOK_MEM_READ)
 from unicorn.m68k_const import (UC_CPU_M68K_CFV4E, UC_M68K_REG_A7,
                                 UC_M68K_REG_PC, UC_M68K_REG_SR, UC_M68K_REG_D0)
 
@@ -50,6 +51,18 @@ class Machine:
     def _fault(self, uc, typ, addr, size, val, data):
         self.ensure(addr)
         return True
+
+    def install_mmio(self):
+        """Force `self.mmio` values on read. Use for status registers whose
+        ready bits the firmware polls (e.g. UART8 USR8, DSPI0 SR)."""
+        def on_read(uc, typ, addr, size, val, data):
+            for a, v in self.mmio.items():
+                if a <= addr < a + 4:
+                    try:
+                        uc.mem_write(a, struct.pack('>I', v))
+                    except UcError:
+                        pass
+        self.uc.hook_add(UC_HOOK_MEM_READ, on_read)
 
     def load(self, image, addr):
         for off in range(0, len(image), PAGE):
