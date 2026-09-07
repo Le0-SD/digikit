@@ -139,6 +139,16 @@ from-entry task-creation timeline exactly.
   Hook `print` at `0x400054b4` to capture output; protocol words are `#HELLO`,
   `#BREAK`, `#UPGRADE`, not `help`.
 
+- **The intro should run at 15.00 fps.** Not a guess: PIT3 (`PCSR=0x0936`,
+  `PMR=0x2191`) gives 8,800,256 bus cycles per frame, its ISR at vector 208
+  posts the semaphore the draw loop waits on, and the bus clock is 132 MHz
+  taken from the UART baud divider constant `0x07DE2900` at `0x400024a4`. It
+  cross-checks: the same clock makes the RTOS tick exactly 50.000 Hz and PIT2
+  60.0 Hz. The GUI reaches ~30% of that and now says so in the status line.
+  Note `unblock=True` satisfies the frame semaphore, so what you see is
+  unpaced, not 15 fps; see FINDINGS for why driving vector 208 instead does
+  not work without cycle accounting.
+
 - **Speed: 3.1x, and the ceiling is understood.** 93% of emulated instructions
   were soft-float; `emu/softfloat.py` and `emu/hle.py` run those and
   setPixel/getPixel natively, bit-exact and verified against the firmware's own
@@ -286,6 +296,10 @@ Established statically, not by flashing anything:
 | task_create / task_start | `0x400012c8` / `0x40001314` (16 sites, 10 reached) |
 | print | `0x400054b4` |
 | Boot-mode flag word | `0x40288190` -- bit5 = console task, bit6 = halt |
+| Bus clock | 132 MHz (`0x07DE2900`, UART divider at `0x400024a4`) |
+| PIT0/2/3 | RTOS tick 50 Hz / 60 Hz / intro frame 15 Hz |
+| Intro frame sem / ISR | `0x43131200` posted by vector 208 (`0x400d2d70`) |
+| Draw task frame loop | `0x400d402a` render, `0x400d4036` pend |
 | TCB layout | `+00` next, `+0C` d0-d7/a0-a7, so `+2C` a0 and `+48` a7 |
 | Parked task PC | on its own stack: `[a7]` frame word, `[a7+4]` PC |
 | Panel Bitmap instance | `0x4313b298` |

@@ -28,7 +28,8 @@ PEND_A, PEND_B = 0x4000141a, 0x400013a6   # sem object is the arg at 4(a7)
 
 
 def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
-          unblock=False, softfloat=False, bitmap=False, on_pixel=None):
+          unblock=False, softfloat=False, bitmap=False, on_pixel=None,
+          unblock_except=()):
     """Stand up a hooked Machine and restore `snapshot` onto it.
 
     -> (m, ev, st, pc, inq, at) where `at(addr, fn)` registers a further
@@ -49,7 +50,10 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
     this for the one DSP transport semaphore; this is the same trick applied
     to every wait, and it is what makes the draw task actually draw.
     It does change semantics: nothing ever really waits, so inter-task
-    ordering is not the hardware's.
+    ordering is not the hardware's. `unblock_except` lists semaphore objects
+    to leave alone, for waits you want to drive properly instead -- the intro
+    frame semaphore 0x43131200 is the case that matters, since satisfying it
+    is what makes the animation run unpaced.
 
     softfloat=True runs the firmware's float routines natively instead of
     emulating them. It is OFF by default: it is bit-exact but changes
@@ -150,10 +154,12 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
         install_bitmap(at, ev['bitmap'], on_pixel)
 
     if unblock:
+        skip = frozenset(unblock_except)
+
         def satisfy(uc, a, s, d):
             sp = uc.reg_read(UC_M68K_REG_A7)
             sem = struct.unpack('>I', uc.mem_read(sp + 4, 4))[0]
-            if not sem:
+            if not sem or sem in skip:
                 return
             try:
                 if struct.unpack('>i', uc.mem_read(sem, 4))[0] <= 0:

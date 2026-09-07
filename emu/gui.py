@@ -22,9 +22,19 @@ from tkinter import ttk
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unicorn import UcError
-from unicorn.m68k_const import UC_M68K_REG_PC
+from unicorn.m68k_const import UC_M68K_REG_PC, UC_M68K_REG_SR
 from emu.longrun import build
 from emu.screen import png
+
+# The intro's frame rate is not a guess. PIT3 is configured at 0x400d3a7a with
+# PCSR=0x0936 (prescaler 2^10) and PMR=0x2191, so one frame is (8593+1)*1024 =
+# 8,800,256 bus cycles; its ISR (vector 208, 0x400d2d70) posts the semaphore
+# the draw loop waits on at 0x400d4036. The bus clock is 132 MHz, taken from
+# the UART baud divider at 0x400024a4 (132000000 / (32*baud)) -- which checks
+# out because it also makes the RTOS tick exactly 50.000 Hz and PIT2 60.0 Hz.
+FRAME_SEM = 0x43131200
+FRAME_VECTOR = 208
+FRAME_HZ = 132_000_000 / ((0x2191 + 1) * 1024)     # 14.9996
 
 W, H = 128, 64
 CURRENT_TCB = 0x47d9adb4
@@ -72,6 +82,16 @@ class Emulator(threading.Thread):
             self.version += 1
 
         try:
+            # NOTE: unblock=True also satisfies the frame semaphore, so the
+            # animation runs unpaced -- as fast as the host manages, not at
+            # FRAME_HZ. Excluding FRAME_SEM and driving vector 208 instead was
+            # tried and does not work on its own: with every other wait
+            # satisfied, the prio-6 task never yields, so the scheduler never
+            # reschedules and the woken draw task never runs (the semaphore
+            # count just climbs). Faithful pacing needs cycle accounting so
+            # the RTOS tick can preempt too. Until then the status line
+            # reports the shortfall against the real 15 fps rather than
+            # pretending.
             m, ev, st, pc, inq, at = build(self.snapshot, unblock=True,
                                            softfloat=True, bitmap=True,
                                            on_pixel=on_pixel)
@@ -217,7 +237,10 @@ class App(tk.Tk):
                     self.panel.draw(e.fb)      # skip if nothing was drawn
                     self.shown = e.version
                 s = e.stats
-                self.frames_lbl.configure(text='frame %d' % s['frames'])
+                self.frames_lbl.configure(
+                    text='frame %d   %.1f / %.1f fps  (%.0f%% of real time)'
+                         % (s['frames'], s['fps'], FRAME_HZ,
+                            100.0 * s['fps'] / FRAME_HZ))
                 self.status.configure(
                     text='%s   %.1f fps   %.2fM instr/s   %dM executed\n'
                          'pc 0x%08x   task 0x%08x   bitmap 0x%08x   setPixel %d'

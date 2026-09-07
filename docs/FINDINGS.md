@@ -1009,3 +1009,79 @@ much here depends on a resumed run matching the run that made its snapshot.
 The GUI's own redraw was measured at 0.94ms (~2% of a core) and was never the
 problem; it now skips redrawing when no pixel changed, and reuses one zoomed
 image instead of allocating per frame.
+
+## The intro is meant to run at 15.00 fps, and the bus clock is 132 MHz **[V]**
+
+"How fast should it be?" is answerable exactly, not by eye.
+
+**The draw loop is paced by a semaphore, not by how fast it can go.** The task
+at `0x400d3fb6` ends in:
+
+    400d402a  jsr (a2)              ; render one frame  (a2 = 0x400d3e94)
+    400d402c  tst.b d0
+    400d4030  pea.l $43131200
+    400d4036  jsr (a3)              ; a3 = 0x400013a6, sem_pend
+    400d403a  bra.b $400d402a
+
+and `0x43131200` is posted by the ISR at `0x400d2d70`, installed at vector 208
+(`move.l #$400d2d70,$40000340` at `0x400d3a5a`), which acknowledges PIT3 and
+calls sem_post. **One PIT3 interrupt = one frame.**
+
+PIT3 is configured at `0x400d3a7a`: `PCSR = 0x0936` (PRE=9, so prescaler
+2^10 = 1024), `PMR = 0x2191` = 8593, then `PCSR |= 9` (EN|PIE). One frame is
+therefore `(8593+1) * 1024 = 8,800,256` bus cycles.
+
+**The bus clock comes from the UART, not a guess.** The serial init computes
+its baud divider at `0x400024a4`:
+
+    4000245a  lsl.l  #5,d0          ; baud * 32
+    400024a4  move.l #$07de2900,d2
+    400024b0  divs.l d0,d2          ; divider = f_bus / (32 * baud)
+    400024ce  move.b d2,$ec07001c   ; UBG2
+
+`0x07DE2900` = **132,000,000**, and the ColdFire UART divider is exactly
+`f_bus / (32 * baud)`, so that constant is f_sys/bus clock.
+
+It cross-checks against all four PITs landing on round rates, which is what
+makes 132 MHz trustworthy rather than merely plausible:
+
+| timer | PMR | prescaler | bus cycles | period | rate |
+|---|---|---|---|---|---|
+| PIT0 (RTOS tick) | 41249 | 64 | 2,640,000 | 20.0000 ms | **50.0000 Hz** |
+| PIT2 | 17187 | 128 | 2,200,064 | 16.6672 ms | **59.998 Hz** |
+| PIT3 (intro frame) | 8593 | 1024 | 8,800,256 | 66.6686 ms | **14.9996 Hz** |
+
+So the boot animation runs at **15 fps** on hardware, the RTOS tick is 50 Hz,
+and PIT2 is a 60 Hz something. PIT1 is set up at `0x40128d34` in the DSP
+transport path.
+
+### What that says about the emulator
+
+The GUI reaches ~4.2-4.7 fps, i.e. **~30% of real time**, and the status line
+now reports it that way instead of leaving it to the eye.
+
+Arithmetic for closing the gap: real hardware runs ~1.73M instructions per
+frame; with both HLEs on we execute ~312k. At Unicorn's ~2.2M instr/sec that
+is ~7 fps of headroom before hook overhead, and we measure 4.2-4.7. Reaching a
+true 15 fps needs ~147k instructions per frame. The remaining scattered math
+(~17%) is worth maybe 1.3x; past that the cost is the rasteriser itself
+(~51%), so matching real time would mean reimplementing the very thing the
+emulator exists to watch.
+
+### unblock=True removes the pacing -- and distorts boot **[V]**
+
+Because `unblock=True` satisfies *every* wait, it satisfies the frame
+semaphore too: the animation runs unpaced rather than at 15 fps.
+
+Excluding `0x43131200` and driving vector 208 from a modelled PIT3 was tried
+and **does not work on its own**: the ISR fires and the semaphore count climbs
+(observed reaching 33), but the draw task never runs, because with every other
+wait satisfied the prio-6 task never yields and the scheduler never
+reschedules. Faithful pacing needs cycle accounting so the 50 Hz RTOS tick can
+preempt as well. `longrun.build` now takes `unblock_except` for whoever picks
+this up.
+
+Worth noting: leaving the frame semaphore unsatisfied changed the boot path
+and created **two further tasks**, including `0x4012606a` (prio 6) -- one of
+the six that never appear under blanket unblock. That is more evidence that
+blanket unblock distorts boot, and a hint for reaching the remaining tasks.
