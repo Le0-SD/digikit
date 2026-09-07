@@ -1,0 +1,43 @@
+#!/bin/sh
+# Ghidra headless over the MAIN OS image, for the things dt2/coldfire.py cannot do.
+#
+# dt2/coldfire.py is a linear sweep. It has no cross-references, no function
+# boundaries and no decompiler, and its "xref" substitute -- searching the image
+# for the big-endian address constant -- silently misses PC-relative calls. That
+# is not a corner case: `jsr $401772cc(pc)` at 0x4017845e encodes as 4eba ee6c
+# and contains the target nowhere, so a byte search reports the function as
+# never called while it is on the boot path. Use Ghidra whenever the question is
+# "who calls this" or "what does this actually do".
+#
+#   tools/ghidra.sh import                 # one-time, ~3 min for the 3.1MB image
+#   tools/ghidra.sh run MyScript.java [args...]
+#
+# Scripts go in tools/ghidra/ and must be Java: this Ghidra is built without
+# PyGhidra, so .py scripts fail with "Python is not available".
+set -e
+
+GHIDRA=${GHIDRA:-/opt/homebrew/Cellar/ghidra/12.1.3/libexec/support/analyzeHeadless}
+PROJ=${GHIDRA_PROJ:-$HOME/.cache/dt2-ghidra}
+NAME=dt2
+IMG=sections/section_3_MAIN_OS.bin
+BASE=0x40000400            # dspboot.MAIN_LOAD
+LANG=68000:BE:32:Coldfire  # NOT plain 68000: MVS/MVZ and FF1 decode wrong
+
+[ -x "$GHIDRA" ] || { echo "no analyzeHeadless at $GHIDRA (set GHIDRA=)" >&2; exit 1; }
+
+case "$1" in
+import)
+    [ -f "$IMG" ] || { echo "missing $IMG -- extract sections first" >&2; exit 1; }
+    mkdir -p "$PROJ"
+    exec "$GHIDRA" "$PROJ" "$NAME" -import "$IMG" \
+         -processor "$LANG" -loader BinaryLoader -loader-baseAddr "$BASE"
+    ;;
+run)
+    shift
+    script=$1; shift
+    exec "$GHIDRA" "$PROJ" "$NAME" -process "$(basename $IMG)" -noanalysis \
+         -scriptPath "$(cd "$(dirname "$0")/ghidra" && pwd)" -postScript "$script" "$@"
+    ;;
+*)
+    sed -n '2,20p' "$0"; exit 1;;
+esac

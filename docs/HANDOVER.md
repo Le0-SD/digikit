@@ -68,62 +68,82 @@ snapshot taken after the intro.
 
 ## 2. The actual problem now
 
-From `snapshots/postintro.snap`, nine tasks reach clean blocking waits and
-nothing runs. The system is behaving correctly for a machine with no
-hardware attached. Three things are still missing:
+PIT2 is landed (`emu/pit.py`) and the RTOS heartbeat runs. Measured over 20M
+instructions from `postintro.snap`: PIT2 fires 250 times, the software-timer
+wheel and the display callback each run 5586 times, no fault, no HALT.
 
-### a. A FIFO status bit at `0x8C000002`
+**The remaining blocker is a real firmware assertion, and it is not something
+to paper over.** With the heartbeat running, the init task gets further and
+then parks in an assert stub. The chain, all verified:
 
-The prio-3 task (`0x400f1fce`) polls bit 0 of `0x8C000002` at `0x400cf4ec`
-before writing an 8-word burst, and nothing sets it -- 70% of post-intro
-time. `0x8C000000` is a FlexBus chip-select region and is **undocumented in
-this project**; identifying the device is genuinely open. Forcing bit 0 high
-("FIFO always ready", the same abstraction already used for UART TXRDY) does
-unblock it and the task then does real work -- 610 genuinely-satisfied pends
-on `0x44e4d69c`, not spins. That experiment is **not committed**: it is a
-guess about a device we have not identified, and it should be pinned down
-before it lands. It is 4 bytes in, 8 tagged words out (each byte becomes two
-words, one with bit 7 set), with `0x80` written to `0x8C00000A` first --
-looks like a bit-banged serial link, possibly the LED/encoder chain.
+    0x40178424   memset(obj, 0, 0xa6); obj[0x6c] = <fn ptr>; obj[0x80] = 0x40000000
+    0x4017845e   jsr 0x401772cc(pc)          <- a 7-bit varint / TLV parser
+    0x40177316   jsr 0x4017a0e4              <- look up a descriptor by address
+    0x4017a0e4   searches list [0x44f1de80], and on a miss pulls a node from
+                 the free pool [0x44f1de84]. **Both are null**, so it returns 0
+    0x4017731e   -> parser returns non-zero
+    0x4017847e   jsr 0x4012d2fa              <- `bra.b *`, an assert stub
 
-### b. The draw task has nothing to wake it
+`0x4012d2fa` is jsr'd from 24 sites across `0x40176000`-`0x4017a000`; it is the
+module's assert. The task that hits it spins there forever and starves the
+system -- 51M iterations. Forcing a reschedule from it does not help; it is
+simply the top ready task.
 
-The prio-6 task `0x4012606a` is the display driver -- it calls `0x401262b4`
-and `0x40126332`, the same frame-source functions the intro renderer used.
-It blocks on `0x44e2d148` and nothing posts it. On hardware a timer does.
+Do **not** try to step over it. Jumping the `jsr` at `0x4017847e` straight to
+`0x40178484` (the success path) was tried: the run then faults at
+`V04 M0 P4012D35C` instead. The lookup result is genuinely used.
 
-### c. PIT interrupts -- **tried, and it crashes**
+### Why both lists are empty
 
-Do not repeat this blind. A PCSR-gated model (deliver vec 205/207 only while
-PCSR bit 0 and bit 3 are set, paced by an instruction-count proxy) was
-implemented and run. Periods come out right: PIT0 93,600 instructions, PIT2
-78,002, at 4.68M instructions per emulated second.
+Three functions push nodes onto the free pool `0x44f1de84`, each allocating
+0x18 bytes via `FUN_4011122c` and storing a caller-supplied descriptor:
 
-Result: **one PIT2 interrupt fired and the firmware immediately took a
-vector-4 fault.** The fault handler printed
+    0x40179f90   0x40179ea8   0x40179e64
 
-    EXCEPTION DS0071   V04 M0 P033C2004
+**Ghidra reports zero direct callers for all three.** They are reached only
+through vtables, so this is a C++ object registry that something is supposed
+to populate during construction and never does under emulation. Finding what
+should call them -- and why it has not run -- is the next job. Candidate
+explanation worth checking first: static/global constructors, or a module-init
+pass, that our boot path skips.
 
-and executed `HALT`, then span at `0x4010fd52` for the rest of the run. 78%
-of injections were skipped because the CPU sat at IPL 7 (fired 1, missed 427
-on PIT0 and 511 on PIT2).
+Ruled out already:
 
-So injecting an asynchronous interrupt at a chunk boundary is not safe as
-written. Worth knowing before trying again:
+* Not the depack shortcut. `ev['depack_clamps']` is 0 over the relevant run,
+  so `DEPACK_LEN_CAP` has not truncated anything here.
+* Not the `0x8C000002` FIFO guess. The assert is reached identically with that
+  hook absent, so it is independent of that unidentified device (see below).
+* Not a stale timer callback. The wheel's list at `0x4094cdb8` has seven nodes
+  and all seven point at real code.
 
-* vector 205's handler *is* `0x40000410`, the context switcher -- the same
-  handler as vector 32 / `trap #0`. Injecting it forces a reschedule inside
-  arbitrary code.
-* `raise_vector` pushes format 0 in the frame word. That is fine for the
-  emulator's own `rte`, which only reads SR and PC back, but a handler that
-  inspects the format field would not agree.
-* PIT2's ISR is `0x40002a18`; PIT1's is `0x40001252`. Neither has been read.
-  **Start by disassembling `0x40002a18`** -- the crash is one interrupt deep,
-  so it is cheap to find.
-* The prototype is not committed. It lives in this session's scratch only;
-  re-deriving it from the numbers above is a ten-minute job.
+### Two smaller things still open
 
----
+**The `0x8C000002` FIFO status bit.** The prio-3 task (`0x400f1fce`) polls bit
+0 at `0x400cf4ec` before writing an 8-word burst, and nothing sets it.
+`0x8C000000` is a FlexBus chip-select region, still **unidentified**. Forcing
+the bit ("FIFO always ready", the abstraction already used for UART TXRDY)
+does unblock it and the task then does real work -- 610 genuinely satisfied
+pends, not spins. Deliberately **not committed**: it is a guess about a device
+we have not named, and it is not on the critical path. It is 4 bytes in, 8
+tagged words out (each byte becomes two words, one with bit 7 set), with
+`0x80` written to `0x8C00000A` first -- plausibly a bit-banged LED/encoder
+chain.
+
+**The display task has nothing to wake it.** `0x4012606a` (prio 6) calls
+`0x401262b4`/`0x40126332`, the same frame-source functions the intro renderer
+used, and blocks on `0x44e2d148`. Note `0x40126004` in the same module
+re-programs and re-enables PIT3 (PMR 0x4323, prescaler 1024) -- so the OS
+intends to drive its own frame timer once it gets that far. `emu/pit.py` is
+already PCSR-gated and will start delivering vector 208 by itself when the
+firmware enables it.
+
+### A debugging channel worth using
+
+The fault handler prints a **stack backtrace** through `0x40000e82`, not just
+the `EXCEPTION DS%.04s` / `V%02x M%x P%08x` line -- observed emitting
+`4012D2FA`, `40178484`, `409772EA`, `40977490`, `GNUCC++`. Hooking
+`0x40000e82` and decoding the arguments as C strings is the cheapest window
+into any fault.
 
 ## 3. Speed: the previous ceiling claim was wrong
 
@@ -239,6 +259,23 @@ Real time is no longer ruled out. It is a 1.6x away, not a 3x away.
 
 ## 6. Tools
 
+**Use Ghidra for anything structural.** `dt2/coldfire.py` is a linear sweep
+with no cross-references, no function boundaries and no decompiler, and the
+byte-search substitute for xrefs is actively misleading: it misses every
+PC-relative call. That is not hypothetical -- `jsr $401772cc(pc)` at
+`0x4017845e` encodes as `4eba ee6c` and contains the target nowhere, so the
+byte search reported `0x401772cc` as never called while it sat on the boot
+path. The whole of section 2 above came out of Ghidra in minutes and would
+have been days of linear sweeping. `tools/ghidra.sh` wraps the headless
+analyzer; scripts live in `tools/ghidra/` and must be **Java**, since this
+Ghidra build has no PyGhidra.
+
+Measured and rejected: `reg_read_batch` is **slower** than individual
+`reg_read` calls in unicorn 2.1.4's Python binding (0.74x over 200k
+iterations of 4 registers), so that is not the FFI win it looks like.
+Unicorn 2.1.4 does expose `ctl_*` (`ctl_set_tcg_buffer_size`,
+`ctl_flush_tb`, `ctl_request_cache`, `ctl_set_tlb_mode`) which are untried.
+
     uv sync
     uv run python -m emu.gui                       # live panel + Replay 15fps
     uv run python -m emu.frame <snap> <instrs>     # one frame, ASCII + PNG
@@ -246,5 +283,9 @@ Real time is no longer ruled out. It is a 1.6x away, not a 3x away.
     uv run python -m emu.tasks <snap>              # parked PC per task
     uv run python -m emu.probe <snap> <instrs>     # blocking sites, hot PCs
     uv run python -m dt2.coldfire sections/section_3_MAIN_OS.bin 0x40000400 <start> <end>
+
+    tools/ghidra.sh import                       # one-time, ~3 min
+    tools/ghidra.sh run Callers.java out.txt     # real xrefs, incl. PC-relative
+    tools/ghidra.sh run Decompile.java out.txt 0x4017a0e4
     uv run python -m emu.serial console '#HELLO'
     uv run python -m emu.checkpoint extend <snap> <points> <prefix>
