@@ -1153,3 +1153,50 @@ So the chain is now fully mapped and only its last link is missing:
 - The exception frame's format field is written as 0; ColdFire uses 4 for a
   normal 2-longword frame. Harmless here because `rte` is implemented by hand
   and ignores it.
+
+## The MMIO hook was global too **[V][C]**
+
+The earlier conclusion "every hook in this project is free" was wrong, and
+wrong for a methodological reason worth remembering: it compared a *minimal*
+machine against a *fully hooked* one, but `install_mmio()` was in **both**, so
+its cost cancelled out and never appeared in the comparison.
+
+`install_mmio` registered `hook_add(UC_HOOK_MEM_READ, on_read)` with no
+`begin`/`end` -- a Python callback, plus a loop over the mmio dict, on **every
+memory read the firmware makes**. Exactly the same mistake as
+`install_isa_patches`, which had already cost 3.2x.
+
+There are only three MMIO addresses, so one narrow hook each:
+
+| configuration | throughput |
+|---|---|
+| global hook (as shipped) | 2.15M instr/s |
+| scoped per-address hooks | **2.86M instr/s** (1.33x) |
+| no MMIO hook at all (ceiling) | 2.91M instr/s |
+
+Scoped lands within 2% of the ceiling, so this is the whole of that cost.
+
+**But it barely moves the GUI**, and that is the interesting part: on the
+fully-emulated path it is worth 1.33x (1.32 -> 1.50 fps end to end), while on
+the softfloat+bitmap HLE path the GUI actually runs it is worth ~3% (3.99 ->
+4.10 fps). With HLE we execute 5.5x fewer instructions, so there are far fewer
+memory reads to tax, and the bottleneck has moved from TCG to Python callback
+dispatch -- ~88k HLE calls per 12 frames. Further speed has to come from
+making those callbacks cheaper or fewer, not from removing more hooks.
+
+Ordering hazard, now fixed: `restore_into` merges the snapshot's own mmio
+entries, so `install_mmio` has to run *after* the restore or a
+snapshot-carried address gets no hook. `longrun.build` does that now.
+
+## Correct-speed playback **[V]**
+
+Emulating at the real 15 fps needs ~3x more throughput than we have, but the
+frames themselves are correct and pixel-identical to a fully emulated run --
+so the animation can be *shown* at its true speed even though producing it is
+slower. `emu/gui.py` keeps every completed frame and its **Replay 15fps**
+button plays them back at `FRAME_HZ`, self-correcting for drift. Measured 83
+frames cycling at ~14-15 fps against the 14.9996 target.
+
+That separates the two things that were conflated: emulator throughput (30% of
+real time, and bounded by the rasteriser) versus what the animation actually
+looks like on the device (now viewable).

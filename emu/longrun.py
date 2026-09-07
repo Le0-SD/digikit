@@ -177,8 +177,12 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
     m.uc.hook_add(UC_HOOK_MEM_READ, onr, begin=USR8, end=UDR8+3)
     m.uc.hook_add(UC_HOOK_MEM_WRITE, onw, begin=USR8, end=UDR8+3)
     m.mmio[0xFC05C02C] = 0x100000F0; m.mmio[0xEC03802C] = 0x80000000
-    m.install_mmio(); m.install_exceptions()
+    m.install_exceptions()
+    # restore_into merges the snapshot's own mmio entries, and install_mmio
+    # registers a hook per address, so it has to come after the merge or a
+    # snapshot-carried address would go unhooked.
     pc = restore_into(m, snapshot, st)
+    m.install_mmio()
     return m, ev, st, pc, inq, at
 
 

@@ -52,9 +52,36 @@ class Machine:
         self.ensure(addr)
         return True
 
-    def install_mmio(self):
+    def install_mmio(self, scoped=True):
         """Force `self.mmio` values on read. Use for status registers whose
-        ready bits the firmware polls (e.g. UART8 USR8, DSPI0 SR)."""
+        ready bits the firmware polls (e.g. UART8 USR8, DSPI0 SR).
+
+        scoped=True registers one narrow hook per address instead of a single
+        global UC_HOOK_MEM_READ. The global form runs a Python callback -- and
+        a loop over the mmio dict -- on *every memory read the firmware makes*,
+        which is the same mistake install_isa_patches makes for instructions.
+        There are only a handful of MMIO addresses, so narrow hooks cost
+        nothing between hits.
+
+        Addresses are read from `self.mmio` at install time, so populate it
+        before calling this -- including anything a snapshot restore merges in
+        (see longrun.build, which installs after restoring for that reason). scoped=False keeps
+        the old global behaviour, which does pick up later additions.
+        """
+        def make(addr):
+            def h(uc, typ, a, size, val, data):
+                try:
+                    uc.mem_write(addr, struct.pack('>I', self.mmio[addr]))
+                except UcError:
+                    pass
+            return h
+
+        if scoped:
+            for addr in self.mmio:
+                self.uc.hook_add(UC_HOOK_MEM_READ, make(addr),
+                                 begin=addr, end=addr + 3)
+            return
+
         def on_read(uc, typ, addr, size, val, data):
             for a, v in self.mmio.items():
                 if a <= addr < a + 4:

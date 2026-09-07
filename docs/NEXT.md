@@ -161,6 +161,11 @@ from-entry task-creation timeline exactly.
   unpaced, not 15 fps; see FINDINGS for why driving vector 208 instead does
   not work without cycle accounting.
 
+- **Watch it at true speed now.** The GUI's **Replay 15fps** button plays the
+  captured frames back at the firmware's own rate. Emulating at 15 fps needs
+  ~3x more throughput than we have, but the frames are pixel-identical to a
+  fully emulated run, so replay shows exactly what the device shows.
+
 - **Speed: 3.1x, and the ceiling is understood.** 93% of emulated instructions
   were soft-float; `emu/softfloat.py` and `emu/hle.py` run those and
   setPixel/getPixel natively, bit-exact and verified against the firmware's own
@@ -168,7 +173,10 @@ from-entry task-creation timeline exactly.
   project costs anything measurable, so further gains have to come from
   executing fewer instructions, not from tuning the harness. Both HLEs are
   off by default because they change instruction counts; `FAST=1` for the
-  longrun CLI.
+  longrun CLI. `install_mmio` was global too and is now scoped (1.33x on the
+  fully-emulated path, ~3% on the HLE path). On the HLE path the bottleneck is
+  now Python callback dispatch, not Unicorn -- ~88k HLE calls per 12 frames --
+  so more speed means cheaper or fewer callbacks, not fewer hooks.
 
 - **Draw path: solved.** `emu/frame.py` from `boot400M` with `unblock=True`
   renders 84 frames into the panel Bitmap at **`0x4313b298`**. The rasteriser

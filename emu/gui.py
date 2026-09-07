@@ -66,12 +66,14 @@ class Emulator(threading.Thread):
         self._seen = set()
         self.version = 0            # bumped on every pixel, so the UI can
         self._frame_t = time.time()  # skip redrawing an unchanged panel
+        self.captured = []          # completed frames, for correct-speed replay
 
     def run(self):
         def on_pixel(x, y, val, bmp):
             self.stats['bmp'] = bmp
             if (x, y) in self._seen and len(self._seen) > W * H // 2:
                 now = time.time()
+                self.captured.append(bytes(self.fb))    # snapshot the finished frame
                 self.stats['frames'] += 1              # coordinate repeat = new frame
                 self.stats['fps'] = 1.0 / max(1e-6, now - self._frame_t)
                 self._frame_t = now
@@ -175,6 +177,9 @@ class App(tk.Tk):
                    command=self.restart).pack(side='left', padx=6)
         ttk.Button(bar, text='Save PNG', width=9,
                    command=self.save).pack(side='left')
+        self.replay_btn = ttk.Button(bar, text='Replay 15fps', width=12,
+                                     command=self.toggle_replay)
+        self.replay_btn.pack(side='left', padx=6)
         self.frames_lbl = tk.Label(bar, text='', bg='#15181d', fg='#7f8b9c',
                                    font=('SF Mono', 11))
         self.frames_lbl.pack(side='right')
@@ -185,6 +190,7 @@ class App(tk.Tk):
 
         self.emu = None
         self.shown = -1
+        self.replay = None          # (frames, index, next_due) while replaying
         self.start()
         self.protocol('WM_DELETE_WINDOW', self.quit_all)
         self.after(60, self.tick)
@@ -200,8 +206,31 @@ class App(tk.Tk):
             self.emu.join(timeout=3)
         self.panel._blank()
         self.shown = -1
+        self.replay = None
+        self.replay_btn.configure(text='Replay 15fps')
         self.start()
         self.btn.configure(text='Pause')
+
+    def toggle_replay(self):
+        """Play the captured frames back at the rate the firmware asks for.
+
+        Emulating in real time needs ~3x more throughput than we have, but the
+        frames themselves are correct -- so replaying them at FRAME_HZ shows
+        the animation at its true speed even though producing it was slower.
+        """
+        if self.replay is not None:
+            self.replay = None
+            self.replay_btn.configure(text='Replay 15fps')
+            return
+        frames = list(self.emu.captured) if self.emu else []
+        if not frames:
+            self.status.configure(text='nothing captured yet - let it run first')
+            return
+        if self.emu:
+            self.emu.pause.set()
+            self.btn.configure(text='Resume')
+        self.replay = [frames, 0, time.time()]
+        self.replay_btn.configure(text='Stop replay')
 
     def toggle(self):
         if not self.emu:
@@ -228,6 +257,22 @@ class App(tk.Tk):
         self.status.configure(text='wrote out/panel.png')
 
     def tick(self):
+        if self.replay is not None:
+            frames, i, due = self.replay
+            now = time.time()
+            if now >= due:
+                self.panel.draw(frames[i])
+                i = (i + 1) % len(frames)
+                self.replay = [frames, i, max(now, due + 1.0 / FRAME_HZ)]
+                self.frames_lbl.configure(
+                    text='replay %d/%d at %.2f fps (true speed)'
+                         % (i, len(frames), FRAME_HZ))
+                self.status.configure(
+                    text='replaying captured frames at the firmware\'s own rate\n'
+                         'PIT3: (0x2191+1) x 1024 = 8,800,256 bus cycles @ 132 MHz',
+                    fg='#9aa7b8')
+            self.after(10, self.tick)
+            return
         e = self.emu
         if e:
             if e.error:
