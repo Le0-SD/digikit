@@ -66,84 +66,124 @@ snapshot taken after the intro.
 
 ---
 
-## 2. The actual problem now
+## 2. The actual problem now: the firmware throws a C++ exception
 
-PIT2 is landed (`emu/pit.py`) and the RTOS heartbeat runs. Measured over 20M
-instructions from `postintro.snap`: PIT2 fires 250 times, the software-timer
+PIT2 is landed (`emu/pit.py`) and the RTOS heartbeat runs -- over 20M
+instructions from `postintro.snap`, PIT2 fires 250 times, the software-timer
 wheel and the display callback each run 5586 times, no fault, no HALT.
 
-**The remaining blocker is a real firmware assertion, and it is not something
-to paper over.** With the heartbeat running, the init task gets further and
-then parks in an assert stub. The chain, all verified:
+With the heartbeat running the init task gets further and then **throws a C++
+exception that nothing can unwind**, so it calls `abort()` and spins there,
+starving the system (51M iterations of the spin).
 
-    0x40178424   memset(obj, 0, 0xa6); obj[0x6c] = <fn ptr>; obj[0x80] = 0x40000000
-    0x4017845e   jsr 0x401772cc(pc)          <- a 7-bit varint / TLV parser
-    0x40177316   jsr 0x4017a0e4              <- look up a descriptor by address
-    0x4017a0e4   searches list [0x44f1de80], and on a miss pulls a node from
-                 the free pool [0x44f1de84]. **Both are null**, so it returns 0
-    0x4017731e   -> parser returns non-zero
-    0x4017847e   jsr 0x4012d2fa              <- `bra.b *`, an assert stub
+### The exception, exactly
 
-`0x4012d2fa` is jsr'd from 24 sites across `0x40176000`-`0x4017a000`; it is the
-module's assert. The task that hits it spins there forever and starves the
-system -- 51M iterations. Forcing a reschedule from it does not help; it is
-simply the top ready task.
+Hooking the throw helper `0x401d0e24` and reading its argument as a C string:
 
-Do **not** try to step over it. Jumping the `jsr` at `0x4017847e` straight to
-`0x40178484` (the success path) was tried: the run then faults at
-`V04 M0 P4012D35C` instead. The lookup result is genuinely used.
+    basic_string::_S_construct null not valid
 
-### Why both lists are empty
+That is libstdc++'s error for constructing a `std::string` from a NULL
+`const char*`. The whole `0x40176000`-`0x4017a000` region is **libgcc's DWARF
+unwinder**, which is why nothing there looked like application code:
 
-Three functions push nodes onto the free pool `0x44f1de84`, each allocating
-0x18 bytes via `FUN_4011122c` and storing a caller-supplied descriptor:
+| address | what it is |
+|---|---|
+| `0x401d0e24` | throw helper: `__cxa_allocate_exception(8)`, build `std::string`, `__cxa_throw` |
+| `0x401d5680` | `__cxa_throw` |
+| `0x401d3f16` | `basic_string::_S_construct` -- throws at `0x401d3fba` when `first == NULL && last != NULL` |
+| `0x401d43c4` | `std::string::string(const char*)` |
+| `0x4017a0e4` | `_Unwind_Find_FDE` |
+| `0x401772cc` | CFA program parser (the "varint" decoding is LEB128) |
+| `0x4012d2fa` | `abort()` -- `bra.b *`, jsr'd from 24 sites |
+| `0x44f1de80` / `0x44f1de84` | the unwinder's `seen_objects` / `unseen_objects` |
 
-    0x40179f90   0x40179ea8   0x40179e64
+`0x474e5543` = `'GNUC'` appearing in the arguments, and `GNUCC++` in the
+fault-handler backtrace, is what identified it.
 
-**Ghidra reports zero direct callers for all three.** They are reached only
-through vtables, so this is a C++ object registry that something is supposed
-to populate during construction and never does under emulation. Finding what
-should call them -- and why it has not run -- is the next job. Candidate
-explanation worth checking first: static/global constructors, or a module-init
-pass, that our boot path skips.
+### Why it aborts rather than unwinding
 
-Ruled out already:
+`_Unwind_Find_FDE` finds **both** object lists null, returns 0, the CFA parser
+returns an error and the caller at `0x4017847e` calls `abort()`. The three
+functions that would populate those lists (`0x40179f90`, `0x40179ea8`,
+`0x40179e64` -- i.e. `__register_frame_info` and friends) are referenced
+**nowhere in the image at all**, confirmed by both Ghidra xrefs and a raw byte
+search of ROM and live RAM. So no DWARF frame info is ever registered.
 
-* Not the depack shortcut. `ev['depack_clamps']` is 0 over the relevant run,
-  so `DEPACK_LEN_CAP` has not truncated anything here.
-* Not the `0x8C000002` FIFO guess. The assert is reached identically with that
-  hook absent, so it is independent of that unidentified device (see below).
-* Not a stale timer callback. The wheel's list at `0x4094cdb8` has seven nodes
-  and all seven point at real code.
+Two readings, and they need different fixes -- **settle which one first**:
+
+1. **The throw is spurious**, caused by something we fail to provide, and on
+   hardware it never happens. Then find the null and the abort is moot.
+2. **The throw is normal** and on hardware it unwinds to a `catch`. Then the
+   registration must happen somewhere we have not found, and the fix is to
+   make the unwinder work.
+
+Reading 1 is much more likely -- a boot that routinely throws and unwinds
+would be odd -- but it is not proven.
+
+### Backtrace at the throw
+
+Built by scanning the stack for words preceded by a real `jsr`/`bsr` opcode
+(the technique is worth reusing; naive stack scanning gives nonsense):
+
+    0x401d3fba  throw            in _S_construct
+    0x401d43e8                   in std::string::string(const char*)
+    0x40055a72                   in fn 0x40055a56
+    0x4003f5ca                   in fn 0x4003f528
+    0x400445a8 / 0x400445cc      in fn 0x40044???
+    0x401113ec, 0x401868cc, 0x40030d16, 0x40186968, 0x40032f76
+
+`0x40055a56` is a constructor that builds a `std::string("Observable")` and
+references `"Active Track"`; the literals near it are `Observable`,
+`FxSetup::updateMirror`, `14DataChan...`. So this is FX / data-channel setup.
+
+### What is NOT yet established, and the trap that got in the way
+
+**The identity of the null pointer.** Three attempts each gave a different
+answer, and two of them were wrong:
+
+* Hooking `_S_construct`'s entry and reading args off `A7`: **no null in any
+  call**, yet the throw happens.
+* Reading `A2`/`A6` at the throw instruction: reports `first = 0x40224e95`
+  ("Observable"), which cannot be right -- that path is only reachable when
+  `first == 0`.
+* A windowed `UC_HOOK_CODE` trace: shows `tst.l a2` with `a2 = 0x40224e95`
+  followed by `beq.w` **being taken**.
+
+That last one looks like a Unicorn bug and **is not one**. Checked and
+disproved: `TST.L An` sets Z correctly for An and Dn, and replaying the exact
+four-instruction sequence (`cmp.l a2,d0; beq.b; tst.l a2; beq.w`) with the
+exact runtime register values falls through correctly. The live code at
+`0x401d3f16..0x401d3fc6` is also byte-identical to the ROM image.
+
+So the register values reported by mid-function `UC_HOOK_CODE` hooks are
+**not trustworthy** here -- they lag. The codebase's existing hooks all sit on
+function entry points, which are basic-block boundaries, and those are fine.
+
+**Next step, with a method that cannot lag:** single-step (`emu_start` with
+`count=1`) through the last few hundred instructions before the throw, which
+forces a register sync at every step, and read `[a6+8]` from memory. Find the
+first frame where the pointer is null and walk back to whoever produced it.
 
 ### Two smaller things still open
 
 **The `0x8C000002` FIFO status bit.** The prio-3 task (`0x400f1fce`) polls bit
 0 at `0x400cf4ec` before writing an 8-word burst, and nothing sets it.
 `0x8C000000` is a FlexBus chip-select region, still **unidentified**. Forcing
-the bit ("FIFO always ready", the abstraction already used for UART TXRDY)
-does unblock it and the task then does real work -- 610 genuinely satisfied
-pends, not spins. Deliberately **not committed**: it is a guess about a device
-we have not named, and it is not on the critical path. It is 4 bytes in, 8
-tagged words out (each byte becomes two words, one with bit 7 set), with
-`0x80` written to `0x8C00000A` first -- plausibly a bit-banged LED/encoder
-chain.
+the bit does unblock it and the task then does real work (610 genuinely
+satisfied pends, not spins). Deliberately **not committed**: a guess about an
+unnamed device, and the abort is reached identically without it.
 
-**The display task has nothing to wake it.** `0x4012606a` (prio 6) calls
-`0x401262b4`/`0x40126332`, the same frame-source functions the intro renderer
-used, and blocks on `0x44e2d148`. Note `0x40126004` in the same module
-re-programs and re-enables PIT3 (PMR 0x4323, prescaler 1024) -- so the OS
-intends to drive its own frame timer once it gets that far. `emu/pit.py` is
-already PCSR-gated and will start delivering vector 208 by itself when the
-firmware enables it.
+**The display task has nothing to wake it.** `0x4012606a` (prio 6) blocks on
+`0x44e2d148`. Note `0x40126004` in the same module re-enables PIT3 (PMR
+0x4323, prescaler 1024), so the OS drives its own frame timer once it gets
+that far -- and `emu/pit.py` is PCSR-gated, so it will start delivering vector
+208 by itself when the firmware enables it.
 
 ### A debugging channel worth using
 
 The fault handler prints a **stack backtrace** through `0x40000e82`, not just
-the `EXCEPTION DS%.04s` / `V%02x M%x P%08x` line -- observed emitting
-`4012D2FA`, `40178484`, `409772EA`, `40977490`, `GNUCC++`. Hooking
-`0x40000e82` and decoding the arguments as C strings is the cheapest window
-into any fault.
+the `EXCEPTION DS%.04s` / `V%02x M%x P%08x` line. Hooking `0x40000e82` and
+decoding arguments as C strings is the cheapest window into any fault.
 
 ## 3. Speed: the previous ceiling claim was wrong
 
@@ -210,21 +250,28 @@ Real time is no longer ruled out. It is a 1.6x away, not a 3x away.
    same address, re-fired the hook, and counted iterations that did no work.
 2. **Do not cache anything read from firmware structures** without proving it
    immutable. The Bitmap header cache is the standing example.
-3. Only call `uc.emu_stop()` from a hook that has already advanced PC past the
+3. **Register values read inside a mid-function `UC_HOOK_CODE` lag.** Every
+   existing hook in this codebase sits on a function entry, which is a basic
+   block boundary, and those read correctly. A hook in the middle of a
+   function does not, and it will happily report an operand that contradicts
+   the branch the CPU then takes -- which reads exactly like a CPU emulation
+   bug and is not one. Read memory rather than registers, hook the entry, or
+   single-step with `count=1` to force a sync.
+4. Only call `uc.emu_stop()` from a hook that has already advanced PC past the
    current instruction. The setPixel HLE writes `PC = return address`, so it
    qualifies; a plain code hook does not.
-4. A hook-only stop condition needs a wall-clock timeout as a floor, or the
+5. A hook-only stop condition needs a wall-clock timeout as a floor, or the
    caller hangs as soon as the firmware stops meeting the condition. Compute
    any status you display *before* the blocking call, not after -- otherwise
    the stale value is on screen for the whole block and the fresh one for
    microseconds.
-5. A resumed run needs the *same hook set*, not just the same Machine.
-6. Snapshots are gitignored. Use `postintro.snap` for OS work, `boot400M.snap`
+6. A resumed run needs the *same hook set*, not just the same Machine.
+7. Snapshots are gitignored. Use `postintro.snap` for OS work, `boot400M.snap`
    for intro/draw work, `console450M.snap` for the console task.
-7. `softfloat` and `bitmap` default **off** in `longrun.build` (they change
+8. `softfloat` and `bitmap` default **off** in `longrun.build` (they change
    instruction counts); `edma` defaults **on** -- it is a hardware model, not
    a shortcut, and there is no faithful configuration with it off.
-8. If you write a snapshot yourself, `extra['tasks']` keys must be hex
+9. If you write a snapshot yourself, `extra['tasks']` keys must be hex
    *strings*; `restore_into` does `int(k, 16)` on them.
 
 ---
