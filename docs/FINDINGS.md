@@ -1200,3 +1200,73 @@ frames cycling at ~14-15 fps against the 14.9996 target.
 That separates the two things that were conflated: emulator throughput (30% of
 real time, and bounded by the rasteriser) versus what the animation actually
 looks like on the device (now viewable).
+
+## The serial console works **[V]**
+
+    #HELLO            -> HOW DO YOU DO?
+    #BREAK            -> OK
+    #UPGRADE          -> READY FOR BOOTSTRAP
+    #ENTER_TEST_MODE  -> OK
+    #EXIT_TEST_MODE   -> OK
+    #NOPE             -> (no reply, correctly rejected)
+
+`uv run python -m emu.serial console '#HELLO'`.
+
+The last piece was realising **what the console queue actually carries**. It
+does `sscanf(item, "%s", buf)` (format `'%s'` at `0x4022A912`, via
+`0x400CC93A`) and then strcmps `buf` against its command table using strcmp at
+`0x4017C300`. So a queue item is a **pointer to a NUL-terminated string**.
+
+That is why routing the raw serial stream at it did not work. The chain from
+DMA does deliver messages -- pointing the sink at the console queue made the
+console wake and run its dispatcher twice -- but those messages are the
+timestamped 16-byte records built at `0x40110D40` by what is really a
+MIDI-style router (8 ports, a timestamp from `0xFC07000C` at `+0x0C`), not
+text. The dispatcher ran and matched nothing, exactly as it should.
+
+Two things found along the way:
+
+- **The serial sink is a global**: the producer pushes the destination queue
+  from `[0x4029D864]`, and `0x401109E0` is `set_serial_sink(queue)` (its only
+  caller is `0x40033130`). By default it points at `0x47D9ADC0`, a queue that
+  **no `queue_receive` call site in the firmware reads** -- there are only
+  three such sites in the whole image, for queues `0x4094EF3C`, `0x40388EAC`
+  (console) and `0x44E0C290`.
+- The console task at `0x400CD594` is created only when **bit 5 of
+  `0x40288190`** is set (see the boot-mode flag section), and it registers
+  `(0x80008, 0x40303E50)` into `0x44DADD0C`/`0x44DADD10` at `0x400CD5A8`.
+
+`emu.serial.send_command` enqueues through the firmware's own `queue_send`
+(`0x40001896`), so the semaphore is posted and the task woken exactly as it
+would be normally; output is captured by hooking `print` at `0x400054B4`.
+
+**`#UPGRADE` answering `READY FOR BOOTSTRAP` matters for work item B**: the
+firmware-upload path is now drivable under emulation, so a patched image can
+be pushed at the device's own acceptance logic without touching hardware.
+
+## The part is an NXP MCF5441x (ColdFire V4m) **[V]**
+
+Established from the peripheral map the firmware itself uses, which is an
+exact fingerprint:
+
+| base | module |
+|---|---|
+| `0xEC070000` | UART8 (a part needs 10 UARTs for UART8 to live here) |
+| `0xEC094000` | GPIO |
+| `0xFC044000` | eDMA, TCDs at +0x1000 |
+| `0xFC048000` / `0xFC04C000` / `0xFC050000` | INTC0 / INTC1 / INTC2 |
+| `0xFC05C000` | DSPI0 |
+| `0xFC080000`-`0xFC08C000` | PIT0-PIT3 |
+| `0xFC090000` | EPORT |
+
+**V4m, not V4e** -- MMU and EMAC but **no FPU**. That is the real reason 93%
+of executed instructions were soft-float: it is not a compiler flag, the part
+has no hardware float. (We run Unicorn as `UC_CPU_M68K_CFV4E`, a superset;
+harmless because the firmware never issues FPU instructions.)
+
+One loose end: the firmware's own bus-clock constant is 132 MHz
+(`0x07DE2900`), while the datasheet headline is 250 MHz core. If the bus were
+core/2 that implies a 264 MHz core, slightly over the published maximum. The
+15 fps result does not depend on resolving this -- the PIT and UART share a
+clock domain and we used the firmware's own constant, cross-checked by three
+timers landing on round rates.

@@ -54,6 +54,11 @@ SERIAL_GUARD  = 0x44F1E070
 
 STUB_ADDR     = 0x32000000      # scratch for synthesised call stubs
 STUB_VECTOR   = 201
+Q_SEND        = 0x40001896      # queue_send(queue, item)
+TEXT_ADDR     = 0x33000000      # scratch for command text
+CMD_STUB      = 0x34000000
+CMD_VECTOR    = 202
+PRINT         = 0x400054B4
 
 
 def _u32(m, addr):
@@ -101,6 +106,35 @@ def create_serial_task(m):
     return m.uc.reg_read(UC_M68K_REG_PC)
 
 
+def send_command(m, text):
+    """Put a console command on the console queue. -> new PC.
+
+    The console does `sscanf(item, "%s", buf)` then strcmps buf against its
+    command table, so **the queue item is a pointer to a NUL-terminated
+    string**, not a byte or a record. That is why routing the raw serial
+    message stream at it produced dispatches that matched nothing: those
+    messages are timestamped 16-byte records from the MIDI-style router at
+    0x40110d40, not text.
+
+    Sent through the firmware's own queue_send so the semaphore is posted and
+    the console task is woken exactly as it would be normally.
+    """
+    if isinstance(text, str):
+        text = text.encode()
+    m.ensure(TEXT_ADDR)
+    m.uc.mem_write(TEXT_ADDR, text.rstrip(b'\r\n') + b'\x00')
+    stub = (struct.pack('>HI', 0x4879, TEXT_ADDR)        # pea.l <text>
+            + struct.pack('>HI', 0x4879, CONSOLE_QUEUE)  # pea.l <queue>
+            + struct.pack('>HI', 0x4EB9, Q_SEND)         # jsr queue_send
+            + b'\x50\x8f'                                # addq.l #8,a7
+            + b'\x4e\x73')                               # rte
+    m.ensure(CMD_STUB)
+    m.uc.mem_write(CMD_STUB, stub)
+    m.uc.mem_write(0x40000000 + CMD_VECTOR * 4, struct.pack('>I', CMD_STUB))
+    m.raise_vector(CMD_VECTOR)
+    return m.uc.reg_read(UC_M68K_REG_PC)
+
+
 def state(m):
     """Everything worth looking at when debugging serial input."""
     base = _u32(m, RING_BASE_PTR)
@@ -116,8 +150,28 @@ def state(m):
     }
 
 
+def run_console(snap, commands, instrs=40_000_000):
+    """Send commands to the console task and collect its replies."""
+    from emu.longrun import build, spin
+    m, ev, st, pc, inq, at = build(snap)
+    pc, _, _ = spin(m, pc, 2_000_000)
+    out = []
+    for cmd in commands:
+        before = len(ev['prints'])
+        pc = send_command(m, cmd)
+        pc, _, _ = spin(m, pc, instrs)
+        out.append((cmd, ev['prints'][before:]))
+    return out
+
+
 if __name__ == '__main__':
     from emu.longrun import build, spin
+    if len(sys.argv) > 1 and sys.argv[1] == 'console':
+        snap = 'snapshots/console450M.snap'
+        cmds = sys.argv[2:] or ['#HELLO']
+        for cmd, replies in run_console(snap, cmds):
+            print('%-20s -> %s' % (cmd, ' '.join(repr(r) for r in replies) or '(no reply)'))
+        raise SystemExit
     snap = sys.argv[1] if len(sys.argv) > 1 else 'snapshots/console450M.snap'
     cmd = (sys.argv[2] if len(sys.argv) > 2 else '#HELLO').encode() + b'\r\n'
     m, ev, st, pc, inq, at = build(snap)

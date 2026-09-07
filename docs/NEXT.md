@@ -128,7 +128,18 @@ from-entry task-creation timeline exactly.
 
 ### Concrete open leads
 
-- **Console: the input path is DMA, and it now works up to the last link.**
+- **Console: WORKS.** `uv run python -m emu.serial console '#HELLO'` ->
+  `HOW DO YOU DO?`. Also `#BREAK` -> `OK`, `#UPGRADE` -> `READY FOR
+  BOOTSTRAP`, `#ENTER_TEST_MODE`/`#EXIT_TEST_MODE` -> `OK`. The queue item is
+  a **pointer to a NUL-terminated string** (the console does
+  `sscanf(item,"%s",buf)` then strcmp), which is why routing the raw serial
+  byte stream at it dispatched but never matched. `emu.serial.send_command`
+  enqueues via the firmware's own `queue_send`. Needs bit 5 of `0x40288190`
+  set so the console task exists.
+  **`#UPGRADE` is the lever for work item B** -- the upload path is now
+  drivable under emulation.
+
+- **Console, the DMA input path (still worth finishing).**
   UART8 receive never touches the CPU -- eDMA channel 34 writes into a
   1024-byte ring at `0x4FE1A000` and vector 154 drains it against the
   channel's live `DADDR` (`0xFC045450`). `emu/serial.py` injects input that
@@ -316,7 +327,10 @@ Established statically, not by flashing anything:
 | task_create / task_start | `0x400012c8` / `0x40001314` (16 sites, 10 reached) |
 | print | `0x400054b4` |
 | Boot-mode flag word | `0x40288190` -- bit5 = console task, bit6 = halt |
+| Part | NXP MCF5441x, ColdFire **V4m** -- MMU + EMAC, **no FPU** |
 | Bus clock | 132 MHz (`0x07DE2900`, UART divider at `0x400024a4`) |
+| Console strcmp / sscanf | `0x4017c300` / `0x400cc93a` (fmt `'%s'` `0x4022a912`) |
+| Serial sink pointer / setter | `[0x4029d864]`, set by `0x401109e0` |
 | PIT0/2/3 | RTOS tick 50 Hz / 60 Hz / intro frame 15 Hz |
 | Intro frame sem / ISR | `0x43131200` posted by vector 208 (`0x400d2d70`) |
 | Draw task frame loop | `0x400d402a` render, `0x400d4036` pend |
