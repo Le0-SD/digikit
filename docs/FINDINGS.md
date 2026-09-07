@@ -166,3 +166,40 @@ hour; noted in `emu/harness.py`.
   classes are visible; the partition and directory format is not mapped. **[O]**
 - `ERROR_headerVersion_wrong` and friends in MAIN OS are the **LZ4 frame error
   enum**, not OS versioning — a false lead worth recording.
+
+## Display
+
+The panel is **128 x 64, 8 bits per pixel**, read straight out of the firmware's
+own structures rather than guessed. **[V]**
+
+`intro_dither::px_copy_to_bitmap(PixelData&, Bitmap&)` at `0x400d315e` — the
+binary carries the *demangled* signature as an assert string at `0x401f7ef0`,
+which makes it an unusually good anchor. From its argument handling and copy
+loop:
+
+```
+Bitmap      +0x04  width
+            +0x08  height
+            +0x0C  setPixel fn ptr, called setPixel(Bitmap*, x, y, value)
+PixelData   +0x00  width
+            +0x04  height
+            +0x08  8bpp row-major pixel buffer
+```
+
+The intro's `PixelData` instance lives at `0x4028ae98` and reads
+`width=128, height=64, buffer=0x43139290`. The loop bound `cmpi.l #$2000`
+(8192 = 128x64) at `0x400d3640` corroborates it, as does the runtime struct,
+which reads back `0x80, 0x40, 0x43139290` under emulation.
+
+**Not yet captured: actual pixels.** The buffer is allocated at runtime and is
+still all zeros after 80M instructions — boot parks in DSP init before the intro
+renders. Two ways forward, neither attempted:
+
+1. Progress boot past the ColdFire<->SHARC handshake so the UI runs naturally.
+2. Call the intro renderer at `0x400d3372` directly. It has no direct callers
+   (`jsr (a2)`, `jsr (a5)` — invoked via lambda/vtable), so a harness would have
+   to supply the allocator and callback registers. **[O]**
+
+Note the drawing path is pure ColdFire — `MainScreenView`, `SoundBrowser::drawMain(Bitmap&)`,
+and ~140 item-renderer lambdas of shape `(int, Bitmap&, int, int, bool)`. Nothing
+in it needs the DSP, so route 2 should not require the SHARC at all.

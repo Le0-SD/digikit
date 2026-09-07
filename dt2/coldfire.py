@@ -36,6 +36,13 @@ def decode_mvsz(img, off):
     if mmm == 5:
         d16 = struct.unpack_from('>h', img, off+2)[0]
         return mn, '%s$%x(a%d), d%d' % ('-' if d16 < 0 else '', abs(d16), rrr, dn), 4
+    if mmm == 6:                      # (d8, An, Xn) -- indexed
+        ext = struct.unpack_from('>H', img, off+2)[0]
+        xn = (ext >> 12) & 0xF
+        xreg = ('a%d' % (xn - 8)) if xn >= 8 else ('d%d' % xn)
+        wl = 'l' if ext & 0x0800 else 'w'
+        disp = ext & 0xFF
+        return mn, '$%x(a%d, %s.%s), d%d' % (disp, rrr, xreg, wl, dn), 4
     simple = {0: 'd%d, d%%d' % rrr, 2: '(a%d), d%%d' % rrr,
               3: '(a%d)+, d%%d' % rrr, 4: '-(a%d), d%%d' % rrr}
     if mmm in simple:
