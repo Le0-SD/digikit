@@ -741,3 +741,177 @@ Key handles:
 
 Starting the console task manually from a snapshot runs but yields almost
 immediately into an idle spin, so it needs more of the system up first. **[O]**
+
+## Making the emulator actually run -- session 3
+
+Marks: **[V]** verified in this session, **[C]** corrects an earlier claim,
+**[O]** open.
+
+### The scheduler never worked, and one line explains it **[V][C]**
+
+Every run before this one scheduled exactly **one task**. The stated ceiling in
+`docs/NEXT.md` -- "1 new task per ~250M instructions, and the gaps are
+widening" -- was not a property of the firmware. It was this bug.
+
+`harness.raise_vector` pushed the *current* PC into the exception frame. The
+RTOS yields with `trap #0`, and Unicorn reports a trap with PC still pointing
+**at** the trap instruction. So every task that blocked in `sem_pend` got a
+stack frame that resumed onto its own `trap #0`. The instant the scheduler
+restored it, it trapped again. Tasks could block but could never wake.
+
+The evidence is direct: `emu/tasks.py` decodes each TCB's parked PC, and
+before the fix all eight blocked tasks sat at `0x40001486` / `0x40001414` --
+the `trap #0` instructions themselves. After it they sit at `0x40001488` /
+`0x40001416`, the `move.w d0,sr; rts` that follows.
+
+`raise_vector` now takes `from_instruction=True` from the interrupt hook and
+advances the pushed PC by 2 when the faulting word is `0x4E40-0x4E4F`.
+Asynchronous injections still push the interrupted PC, which is correct.
+
+**Distinct TCBs scheduled: 1 -> 5.** `emu/oracle.py` and
+`emu/screen.py selftest` both still pass.
+
+### TCB layout, from the context switcher **[V]**
+
+`0x40000410` gives it away:
+
+    movea.l $47d9adb4,a0        ; current TCB
+    movem.l d0-d7/a0-a7,$c(a0)  ; registers at TCB+0x0C
+    move.l  -4(a7),$2c(a0)      ; => a0 at +0x2C, a7 at +0x48
+    movea.l $4094c914,a1        ; ready-list cursor
+    movea.l (a1),a0 ; movea.l (a0),a0   ; TCB+0x00 = next pointer
+
+A parked task's PC is on its own stack: ColdFire pushes two longwords,
+`[a7]` = format/vector/SR and `[a7+4]` = PC. `emu/tasks.py` prints the whole
+table plus the ready list from any snapshot.
+
+**Priorities run low-number = low priority.** prio 0 and 1 are the init/idle
+tasks; the real work is at 5-10.
+
+### `0x400cf3e0` is not an idle spin needing ticks **[V][C]**
+
+`emu/dspboot.py`'s comment calls it "a different task/thread's idle point"
+that was blocking progress. It is actually where the prio-1 init task **parks
+after finishing its work**, reached by the `bra.b` at `0x400cf3f4` at the end
+of its main loop:
+
+    400cf3e2  jsr $4011311c
+    400cf3e8  jsr $4014635e
+    400cf3ee  jsr $400329ee
+    400cf3f4  bra.b $400cf3e0     ; -> bra self
+
+Feeding it timer ticks does nothing, because it is a *ready* task at priority
+1 and the scheduler correctly keeps choosing it. It parks there because
+everything above it is blocked.
+
+### A boot-mode flag word at `0x40288190` **[V]**
+
+Two bits of it gate real behaviour in the init task, and its value in every
+snapshot is `0x00000004`:
+
+| bit | test site | effect when set |
+|---|---|---|
+| 5 (`0x20`) | `0x400cf386` | creates and starts the **serial console task** |
+| 6 (`0x40`) | `0x400cf3d8` | falls into `bra self` at `0x400cf3e0` -- deliberate halt |
+
+Bit 5 clear is why the console task never existed. Setting it before the init
+task reaches `0x400cf384` creates it:
+`TASK entry=0x400cd594 prio=2 tcb=0x40383e58`.
+
+Note bit 6 is a *halt*, not a hang: `beq` past it is the normal path. The
+earlier reading of `0x400cf3e0` as an idle spin conflated the two.
+
+### The six task_create sites that never fire **[V]**
+
+`0x400cd594` has no absolute reference anywhere in MAIN OS -- it is pushed
+PC-relative (`pea.l $400cd594(pc)`), which is why searching for the address
+found nothing. Reading the entry operand out of each unreached site:
+
+| site | entry | prio | |
+|---|---|---|---|
+| `0x400ced72` | `0x400cd594` | 2 | serial console |
+| `0x401135a8` | `0x401136ee` | 3 | |
+| `0x401279e8` | `0x40127c78` | 4 | |
+| `0x40127a7c` | `0x40127d9e` | 4 | |
+| `0x40127960` | `0x40127b24` | 5 | |
+| `0x40125fde` | `0x4012606a` | 6 | |
+
+### Every task waits on a device event that never happens **[V]**
+
+With the trap fix in, tasks block properly -- and then all of them block, on
+semaphores that only real hardware would post. `dspboot` already force-satisfies
+one such semaphore (the DSP transport completion sem). Generalising that to
+*any* pend whose count is <= 0 is `longrun.build(unblock=True)`.
+
+Sweeping all ~20 installed device ISRs and injecting each one wakes nothing:
+the two that look like timers (`0x400cf424` vec 65, `0x400cf450` vec 68)
+dispatch a one-shot callback pointer that is null, so they are timeout slots,
+not the event source.
+
+### The panel draws **[V]**
+
+With `unblock=True` from `boot400M`, `Bitmap::setPixel` executes for the first
+time in this project: **688,128 calls = exactly 84 frames of 128x64**, all into
+one Bitmap object at **`0x4313b298`** -- the panel framebuffer instance, which
+was previously unknown. The rendered frame is the Elektron logo.
+
+`emu/frame.py` captures it and writes a PNG. This is firmware code drawing
+through the firmware's own `setPixel`; nothing about the raster is
+reimplemented.
+
+Note this also settles the older open item: the intro's rasteriser does run,
+and reaching it needed no new entry point -- only a scheduler that works.
+`unblock=True` does change semantics (nothing ever really waits), so
+inter-task ordering under it is not the hardware's.
+
+### Resume fidelity: the chunk-boundary tick was corrupting runs **[V][C]**
+
+`longrun.spin` injected a vector-32 trap at every 500k-instruction chunk
+boundary. Vector 32 *is* `trap #0`, the scheduler yield, so this forced a
+reschedule in the middle of arbitrary code. A run resumed from `boot200M` then
+never reached the init task's own flag test at `0x400cf384`, while
+`dspboot.run(resume_from=...)` reproduced the from-entry timeline exactly
+(task creations at n=257642531, 257710409, 257710486, 257710556, 416346994).
+
+`spin()` no longer ticks by default. `build()` instead installs the two
+behaviour hooks it had been missing -- the depack copy clamp and the idle-spin
+ticks -- so it now matches `dspboot.run` while staying ~2x quicker.
+This is trap 4 in a subtler dress: the hook set, not just the Machine, has to
+match the run that produced the snapshot.
+
+### Emulation is 3.2x faster again **[V]**
+
+`longrun.build` was calling `install_isa_patches` (a Python callback on every
+instruction) where the snapshots had been made with
+`install_isa_patches_scoped`. Switching to scoped: **0.79 -> 2.80M instr/sec**,
+with byte-identical state (same PC, `ff1=120821`, `movec=4`, same particle
+count). `isa='global'` remains available.
+
+### The console blocker, named exactly **[V][O]**
+
+With bit 5 set the console task starts, runs **22 instructions**, and blocks --
+never reaching the UART read or the `strcmp` dispatcher. The last instruction is
+
+    400cd5e6  pea.l $40388eac.l
+    400cd5ec  jsr   $40001928.l      ; queue-receive on the console input queue
+
+`0x40001928` is a ring-buffer queue receive. Reading it:
+
+    a2 = queue (0x40388eac)
+    d2 = a2 + 8                 ; the semaphore, 0x40388eb4
+    loop: if 4(a2) == 0 { pend(a2+8); repeat }
+    ...  head/tail at 0x1c(a2), mask at 0x10(a2), buffer at 0x14(a2)
+
+So the console needs an *item enqueued*, not merely a semaphore post -- posting
+`0x40388eb4` via the firmware's own post primitive (`0x4000148c`, driven from a
+synthetic ISR) lets the pend return, but `4(a2)` is still 0 so it loops
+straight back. Confirmed: 0 instructions of console-task code execute.
+
+`0x40388eac` has only three static references, all inside the console task and
+its own creation, so the producer reaches the queue through a pointer --
+most likely the object at `0x40303e50` registered at `0x400cd5a8`
+(`jsr $40110592`) right before the receive loop. **That registration is the
+thread to pull next.** **[O]**
+
+Also worth noting for whoever picks this up: the console protocol words are
+`#HELLO`, `#BREAK`, `#UPGRADE` and friends -- not `help`.

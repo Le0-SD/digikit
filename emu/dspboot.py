@@ -55,9 +55,16 @@ HALT = 0x400ceeb6
 # task's idle loop) is exactly this shape. Found a SECOND one blocking
 # progress at 0x400cf3e0 (a different task/thread's idle point, reached
 # right after it creates 4 more tasks at prio 5/6/7/8) that our original
-# single-address HALT hook never fed a timer tick to -- hence a genuine
-# 139M-instruction hang with zero code-coverage growth, unlike the earlier
-# "stall" false alarms (slow-but-live decompression/allocator loops).
+# single-address HALT hook never fed a timer tick to.
+#
+# CORRECTION (session 3): 0x400cf3e0 is NOT another task's idle point. It is
+# where the prio-1 init task parks after finishing, reached by the `bra.b` at
+# 0x400cf3f4 that ends its main loop. Ticking it changes nothing -- it is a
+# *ready* task at priority 1 and the scheduler correctly keeps picking it. It
+# sits there because everything above it is blocked, which before the
+# raise_vector trap-frame fix meant everything, forever. See docs/FINDINGS.md,
+# "Making the emulator actually run". Scanning for 0x60FE is still the right
+# generalisation; the reading of this particular address was wrong.
 # Scanning MAIN OS for every occurrence of this opcode and feeding all of
 # them ticks (not just the one instance anyone happened to trip over first)
 # should generalize past this whole class of blocker in one shot.

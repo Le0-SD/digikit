@@ -9,6 +9,7 @@ from unicorn import UcError
 from unicorn.m68k_const import UC_M68K_REG_PC
 import emu.dspboot as db
 from emu.snapshot import save, restore
+import emu.longrun as lr
 
 IMG = 'sections/section_3_MAIN_OS.bin'
 SYX = 'Digitakt_II_OS1.15C.syx'
@@ -47,39 +48,75 @@ def make(points, prefix='snapshots/boot'):
     return box['saved']
 
 
-def resume(path, extra_instrs, hook=None):
-    """Restore and run forward. Returns (machine, new_addrs, stop_reason)."""
-    m, extra, regs = restore(path)
-    seen = set(extra['seen'])
-    fresh = set()
-    n = [0]
+def resume(path, extra_instrs, hook=None, chunk=500_000):
+    """Restore and run forward. Returns (machine, new_addrs, stop_reason, n).
 
-    def code(uc, addr, size):
-        n[0] += 1
-        if addr not in seen:
-            seen.add(addr); fresh.add(addr)
-        if hook:
-            hook(uc, addr, size, n[0])
+    Resuming has to happen onto an ALREADY-hooked Machine: restoring onto a
+    bare one drops the flash HLE, the completion-semaphore patch and the
+    scheduler tick, and the run then diverges while still looking plausible
+    (docs/NEXT.md trap 4). longrun.build does the hooking, so go through it
+    rather than snapshot.restore().
+    """
+    from unicorn import UC_HOOK_CODE
+    m, ev, st, pc, inq, at = lr.build(path)
+    carried = set(st['seen'])
+    if hook:
+        m.uc.hook_add(UC_HOOK_CODE, hook)
+    pc, done, stop = lr.spin(m, pc, extra_instrs, chunk)
+    st['n'] += done
+    return m, st['seen'] - carried, stop, done, st, ev
 
-    m.install_isa_patches(extra_code_hook=code)
-    m.install_mmio()
-    m.install_exceptions()
-    try:
-        m.uc.emu_start(regs['pc'], 0, count=extra_instrs)
-        stop = 'limit'
-    except UcError as e:
-        stop = str(e)
-    return m, fresh, stop, n[0]
+
+def extend(path, points, prefix='snapshots/ext', chunk=500_000):
+    """Resume `path` and save a ladder of further checkpoints.
+
+    `points` are instruction counts measured FROM the resume point, so
+    extend('snapshots/boot280M.snap', [200e6, 400e6]) writes checkpoints at an
+    absolute 480M and 680M. Coverage (`seen`) is carried through unchanged --
+    tracking new coverage needs a global per-instruction hook, which costs ~3x
+    and is not worth paying just to keep a statistic warm.
+    """
+    m, ev, st, pc, inq, at = lr.build(path)
+    base_n = st['n']
+    todo, saved = sorted(points), []
+
+    def on_chunk(p, done):
+        while todo and done >= todo[0]:
+            todo.pop(0)
+            out = '%s%dM.snap' % (prefix, (base_n + done) // 1_000_000)
+            info = save(m, out, extra={'n': base_n + done,
+                                       'seen': sorted(st['seen']),
+                                       'tasks': {hex(k): v for k, v
+                                                 in st['task_create_hits'].items()},
+                                       'seen_stale': True})
+            saved.append((out, base_n + done))
+            print('  [%dM] %s  pc=0x%08x  %d B  tasks_seen_since=%d'
+                  % ((base_n + done) // 1_000_000, out, p,
+                     info['bytes_on_disk'], len(ev['tasks'])), flush=True)
+
+    pc, done, stop = lr.spin(m, pc, max(points), chunk, on_chunk=on_chunk)
+    return saved, m, ev, stop
 
 
 if __name__ == '__main__':
-    if sys.argv[1] == 'make':
+    import time
+    cmd = sys.argv[1]
+    if cmd == 'make':
         make([int(x) for x in sys.argv[2].split(',')])
+    elif cmd == 'extend':
+        snap = sys.argv[2]
+        pts = [int(x) for x in sys.argv[3].split(',')]
+        prefix = sys.argv[4] if len(sys.argv) > 4 else 'snapshots/ext'
+        t0 = time.time()
+        saved, m, ev, stop = extend(snap, pts, prefix)
+        print('extended %s by %dM in %.0fs, stop=%s' %
+              (snap, max(pts) // 1_000_000, time.time() - t0, stop))
+        print('new tasks: %s' % ['0x%08x/p%d' % (e, p) for e, p, _ in ev['tasks']])
+        print('prints   : %r' % ev['prints'][:20])
     else:
         path = sys.argv[2]
         extra = int(sys.argv[3]) if len(sys.argv) > 3 else 2_000_000
-        import time
         t0 = time.time()
-        m, fresh, stop, n = resume(path, extra)
+        m, fresh, stop, n, st, ev = resume(path, extra)
         print('resumed: ran %d instrs in %.1fs, %d NEW addrs, stop=%s pc=0x%08x'
               % (n, time.time() - t0, len(fresh), stop, m.uc.reg_read(UC_M68K_REG_PC)))

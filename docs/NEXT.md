@@ -39,7 +39,11 @@ All three should pass. If `oracle.py` throws `UC_ERR_MAP`, see Trap 3 below.
 | Render firmware graphics | `emu/screen.py` | pixel-exact vs ground truth |
 | Boot emulation, 10/16 tasks | `emu/dspboot.py` | 58,387 addrs |
 | Snapshots / checkpoints | `emu/snapshot.py`, `emu/checkpoint.py` | verified faithful |
-| Serial console model | `emu/console.py` | UART modelled; console task not reached |
+| Serial console model | `emu/console.py` | UART modelled; console task blocks on its input queue |
+| Task/ready-list inspector | `emu/tasks.py` | parked PC per task from any snapshot |
+| Blocker + hot-PC probe | `emu/probe.py` | pend sites, scheduler state, PC sampling |
+| Rendered panel frame -> PNG | `emu/frame.py` | **works** -- 84 frames, real `setPixel` |
+| Snapshot ladder from a snapshot | `emu/checkpoint.py extend` | works |
 
 **The single most important result**: the device's *own* depacker, run under
 emulation, decompresses our repacked image to byte-identical output. Byte-exact
@@ -50,19 +54,37 @@ original compressed bytes.
 
 ## 2. Work item A — the emulator
 
-### Honest ceiling, read this first
+### Honest ceiling -- REVISED, the old one was measuring a bug
 
-Full boot to a UI is **not reachable on a useful timescale**, and this is
-arithmetic rather than a guess:
+The previous version of this file said full boot was "not reachable on a useful
+timescale", from "1 new task per ~250M instructions, and the gaps are widening".
+That was not the firmware. It was `raise_vector` pushing the wrong PC into
+`trap #0` exception frames, so any task that blocked could never be resumed.
+See "The scheduler never worked" in FINDINGS. With that fixed:
 
-- with instrumentation on, throughput is **~0.83M instr/sec**
-  (the 2.72M figure in FINDINGS is a *bare* run that records nothing)
-- **1 new task per ~250M instructions**, and the gaps are widening
-  (tasks landed at 32M, 47M, 257M, 416M)
-- 6 tasks remain; the draw path and console task are past all of them
+- distinct TCBs scheduled went **1 -> 5**
+- throughput is **~2.1-2.8M instr/sec** (scoped ISA hooks), not 0.83M
+- the panel **draws**: 84 frames through the firmware's own `Bitmap::setPixel`
 
-That is hours per experiment with no guarantee. Do not launch multi-billion
-instruction runs expecting a UI.
+What is still true: no device interrupt ever fires under emulation, so with
+faithful semantics every task eventually parks on a semaphore only real
+hardware would post. That is a modelling gap, not a time budget.
+
+**Two levers, both already wired:**
+
+- `longrun.build(unblock=True)` force-satisfies any pend whose count is <= 0.
+  This is what makes the draw task draw. It changes semantics -- nothing ever
+  really waits -- so inter-task ordering under it is not the hardware's, and it
+  is wrong to enable before ~400M (it livelocks the early boot).
+- the boot-mode flag word at `0x40288190`: setting bit 5 creates the serial
+  console task. Bit 6 is a deliberate halt; leave it clear.
+
+**Fidelity rule, learned the hard way:** resuming a snapshot requires the same
+*hook set*, not just the same Machine. `spin()` must not inject ticks at chunk
+boundaries -- vector 32 is `trap #0`, so that forces a reschedule inside
+arbitrary code and the run silently diverges. `build()` now installs the depack
+clamp and idle-spin ticks to match `dspboot.run`; verified by reproducing the
+from-entry task-creation timeline exactly.
 
 ### What *is* worth doing
 
@@ -87,21 +109,29 @@ instruction runs expecting a UI.
 
 ### Concrete open leads
 
-- **Draw path**: `particles 0x44f52000 -> rasterise -> 8bpp 0x43139290 -> >>2 into
-  0x43137290 (loop at 0x400d3628) -> px_copy_to_bitmap 0x400d315e -> Bitmap`.
-  Both 8bpp stages are still zero; the rasteriser has never executed. Finding a
-  *callable* entry for it would give a rendered frame without waiting for boot.
-- **Console**: task entry `0x400cd594` (prio 2), dispatcher `strcmp` chain at
-  `0x400cd93e`, print function **`0x400054b4`** (hook it to capture all output —
-  no transport modelling needed). Starting the task by hand from a snapshot runs
-  but yields into an idle spin.
-- **Text rendering**: never located. None of the 27 `setPixel` callers walks a
-  string, and no static font table exists (searched 5x7/6x8 `'!'` glyph patterns).
-  Icons are runtime-constructed, so the font probably is too — look for a glyph
-  *decompressor*, working outward from `VerticalMenuView(const char*, int,
-  std::string, const Bitmap*, int)`.
+- **Console (nearest to done).** Set bit 5 of `0x40288190` before the init task
+  reaches `0x400cf384`, resuming from `boot200M`; the task is created and
+  starts. It then runs 22 instructions and blocks at
+  `jsr $40001928` on the queue at `0x40388eac`. That primitive is a ring buffer:
+  it loops while the item count at `4(a2)` is zero, pending on the semaphore at
+  `a2+8` (`0x40388eb4`). Posting that semaphore is **not** enough -- an item has
+  to be enqueued. The producer reaches the queue by pointer, so pull on the
+  registration at `0x400cd5a8` (`jsr $40110592`, object `0x40303e50`).
+  Hook `print` at `0x400054b4` to capture output; protocol words are `#HELLO`,
+  `#BREAK`, `#UPGRADE`, not `help`.
 
----
+- **Draw path: solved.** `emu/frame.py` from `boot400M` with `unblock=True`
+  renders 84 frames into the panel Bitmap at **`0x4313b298`**. The rasteriser
+  needed no callable entry point -- only a working scheduler.
+
+- **Text rendering**: still never located. Unchanged from before; the font is
+  probably runtime-constructed. Now that the panel actually draws, the cheaper
+  attack is to diff `setPixel` traces between UI states rather than hunt for a
+  glyph table statically.
+
+- **The five other uncreated tasks** (`0x401136ee` p3, `0x40127c78` p4,
+  `0x40127d9e` p4, `0x40127b24` p5, `0x4012606a` p6) are each gated somewhere
+  similar; the console one was gated on a single flag bit.
 
 ## 3. Work item B — the patcher (the original goal)
 
@@ -195,10 +225,18 @@ Established statically, not by flashing anything:
 6. **Check byte-position histograms before interpreting a buffer.** The intro
    buffer was read as floats and described as a dither field; only byte 3 of each
    word is ever non-zero — they are integer `(x, y)` coordinates.
-7. **"Stalled" metrics lie.** The stall detector flags any hot address after a
+7. **Vector 32 is `trap #0`.** Injecting it as a "timer tick" forces a
+   scheduler reschedule inside whatever code is running. It is not a timer, and
+   using it as one makes resumed runs diverge from the runs that produced their
+   snapshots. Tick idle spins instead (`build()` does).
+8. **A resumed run needs the same hooks, not just the same Machine.** Trap 4
+   above is the loud version; the quiet version is a *missing* hook -- `build()`
+   lacking the depack clamp and idle-spin ticks changed where boot went without
+   any error surfacing.
+9. **"Stalled" metrics lie.** The stall detector flags any hot address after a
    window with no *new* coverage, so ordinary hot arithmetic (`__mulsf3` at
    `0x40175288`) reads as a hang.
-8. **`ERROR_headerVersion_wrong`** and friends in MAIN OS are the **LZ4 frame
+10. **`ERROR_headerVersion_wrong`** and friends in MAIN OS are the **LZ4 frame
    error enum**, not OS versioning. A false lead.
 
 ---
@@ -219,6 +257,13 @@ Established statically, not by flashing anything:
 | Transport / completion sem | `0x40128c7c` / `0x44e4d69c` (pend at `0x40128d08`) |
 | task_create / task_start | `0x400012c8` / `0x40001314` (16 sites, 10 reached) |
 | print | `0x400054b4` |
+| Boot-mode flag word | `0x40288190` -- bit5 = console task, bit6 = halt |
+| TCB layout | `+00` next, `+0C` d0-d7/a0-a7, so `+2C` a0 and `+48` a7 |
+| Parked task PC | on its own stack: `[a7]` frame word, `[a7+4]` PC |
+| Panel Bitmap instance | `0x4313b298` |
+| Console task / queue | entry `0x400cd594`, queue `0x40388eac`, sem `+8` |
+| sem_pend A / B | `0x4000141a` / `0x400013a6`; sem_post `0x4000148c` |
+| queue receive | `0x40001928` |
 | Bitmap::setPixel | `0x40104eb4` — `setPixel(Bitmap*, x, y, val)` |
 | px_copy_to_bitmap | `0x400d315e` |
 | Bitmap layout | `+04` w, `+08` h, `+0C` stride (words/column), `+10` data |

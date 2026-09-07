@@ -162,18 +162,39 @@ class Machine:
                 uc.reg_write(UC_M68K_REG_PC, pc)
                 uc.reg_write(UC_M68K_REG_A7, sp + 8)
                 return
-            if not self.raise_vector(vec):
+            # A synchronous `trap #N` must resume *after* the trap, so let
+            # raise_vector advance the pushed PC past it. Asynchronous
+            # injections (the timer tick) keep the interrupted PC.
+            if not self.raise_vector(vec, from_instruction=True):
                 if on_unhandled:
                     on_unhandled(vec)
                 uc.emu_stop()
         self.uc.hook_add(UC_HOOK_INTR, on_intr)
 
-    def raise_vector(self, vec):
-        """Push an exception frame and jump to the handler. -> bool taken."""
+    def raise_vector(self, vec, from_instruction=False):
+        """Push an exception frame and jump to the handler. -> bool taken.
+
+        `from_instruction` marks an exception raised BY the instruction at PC
+        rather than injected asynchronously. It matters for `trap #N`, which
+        the RTOS uses as its scheduler yield: Unicorn reports the trap with PC
+        still pointing at the trap instruction, so pushing that PC unmodified
+        makes the frame resume *onto the trap again*. A task that blocked in
+        sem_pend then re-traps the instant the scheduler restores it and can
+        never leave the wait -- which is exactly why only one task ever ran,
+        no matter how long the boot was left going. TRAP #N is 2 bytes
+        (0x4E40-0x4E4F), so the frame has to resume at PC+2.
+        """
         handler = struct.unpack('>I', self.uc.mem_read(VBR + vec * 4, 4))[0]
         if handler == 0 or handler >= 0x48000000:
             return False
         pc = self.uc.reg_read(UC_M68K_REG_PC)
+        if from_instruction:
+            try:
+                w = struct.unpack('>H', self.uc.mem_read(pc, 2))[0]
+                if 0x4E40 <= w <= 0x4E4F:        # trap #0 .. trap #15
+                    pc += 2
+            except UcError:
+                pass
         sr = self.uc.reg_read(UC_M68K_REG_SR)
         sp = self.uc.reg_read(UC_M68K_REG_A7) - 8
         self.uc.mem_write(sp, struct.pack('>HHI', (vec << 2) & 0xFFFF, sr, pc))
