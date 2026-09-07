@@ -662,3 +662,27 @@ with a source image -> threshold into a `Bitmap`. The values are very small in
 absolute terms (both min and max print as 0.0000 at 4dp), so this is an
 intermediate, not the final image. **[O]** The `Bitmap` at `0x43139290` is still
 zero, so the threshold/copy step has not run yet in emulation.
+
+### The intro buffer is a particle array, not a framebuffer **[V]**
+
+The 32,768-byte buffer at `0x44f52000` is **not** floats, despite sitting next to
+heavy softfloat use. Only byte 3 of each 32-bit word is ever non-zero, so these
+are small big-endian integers. Splitting them by parity settles it:
+
+| | range | meaning |
+|---|---|---|
+| even indices | 0..127 | **x** — panel width |
+| odd indices | 0..63 | **y** — panel height |
+
+It is an array of **4,096 (x, y) particle positions** — the state of the boot
+animation, which is what `intro_dither` animates. Rendering the captured buffer
+plots all 4,096 in range and shows clear left-right mirror symmetry.
+
+So the chain is: animate particles at `0x44f52000` -> rasterise into the 8bpp
+`PixelData` at `0x43139290` -> `>>2` into `0x43137290` (loop at `0x400d3628`)
+-> `px_copy_to_bitmap` -> `Bitmap`. Both 8bpp stages are still zero in emulation,
+so the rasterise step has not run yet. **[O]**
+
+Note this corrects the previous entry, which read the buffer as floats and
+described it as a dither field. The values that made it look like a smoothly
+varying field were coordinates.
