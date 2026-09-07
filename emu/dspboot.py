@@ -138,7 +138,12 @@ def build_flash(syx_path, size=0x1000000):
 
 def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
         patch_sem=True, patch_depack=True, verbose=False, stall_window=3_000_000,
-        extra_hook=None, fast=True):
+        extra_hook=None, fast=True, resume_from=None):
+    """resume_from: path to a snapshot (see emu/snapshot.py). Loads registers
+    and memory instead of starting at ENTRY, but installs the *same* hooks, so
+    a resumed run behaves identically to the equivalent straight run. Without
+    that the resumed run would miss flash HLE, the semaphore patch and the
+    scheduler tick, and silently diverge."""
     """fast=True (default): FF1/MOVEC and every HOT_ADDRS side effect are
     registered as per-address Unicorn hooks (begin=end=addr) instead of one
     global UC_HOOK_CODE that runs Python on every instruction and then
@@ -290,12 +295,17 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
     m.mmio[0xEC03802C] = 0x80000000   # secondary SPI/serial TX-done status (bit31)
     m.install_mmio()
     m.install_exceptions()
-    m.load(main_img, MAIN_LOAD)
-    m.ensure(0x40800000)
-    m.uc.reg_write(UC_M68K_REG_SR, 0x2700)
-    m.uc.reg_write(UC_M68K_REG_A7, 0x40800000)
+    if resume_from:
+        from emu.snapshot import restore_into
+        start_pc = restore_into(m, resume_from, st)
+    else:
+        m.load(main_img, MAIN_LOAD)
+        m.ensure(0x40800000)
+        m.uc.reg_write(UC_M68K_REG_SR, 0x2700)
+        m.uc.reg_write(UC_M68K_REG_A7, 0x40800000)
+        start_pc = ENTRY
     try:
-        m.uc.emu_start(ENTRY, 0, count=limit)
+        m.uc.emu_start(start_pc, 0, count=limit)
         stop = 'instruction limit'
     except UcError as e:
         stop = str(e)

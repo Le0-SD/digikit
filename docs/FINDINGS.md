@@ -553,3 +553,30 @@ can capture the result.
 **So the next blocker to attack is the scheduler itself**, not another
 peripheral: find the real tick source, or drive the context-switch path directly
 against the ready-list/TCB structures so tasks round-robin properly. **[O]**
+
+### Snapshots — stop replaying boot **[V]**
+
+Chasing each blocker meant re-running from the entry point: ~32M instructions of
+identical setup (the memory-clear loop alone is ~8M) before reaching anything
+new, then 15M more to the next event. Every experiment paid that toll.
+
+`emu/snapshot.py` + `emu/checkpoint.py` remove it:
+
+```
+./venv/bin/python -m emu.checkpoint make 40000000 snapshots/boot40M.snap   # once
+./venv/bin/python -m emu.checkpoint resume snapshots/boot40M.snap 5000000  # thereafter
+```
+
+Checkpoint creation: **42 s**. Resume + 5M instructions: **6.9 s**. Only non-zero
+pages are stored (22 of 134 mapped), so 23 MB of live memory compresses to
+1.8 MB on disk.
+
+**Resume must happen inside `dspboot.run`, not onto a bare Machine.** The first
+attempt restored state onto a fresh `Machine` with only the base hooks, which
+silently dropped the flash HLE, the semaphore patch and the scheduler tick — and
+diverged by ~50 addresses over 5M instructions while looking plausible. Fixed by
+`restore_into()`, which loads onto an already-hooked Machine. Verified: snapshot
+at 40M + 5M resume gives **coverage identical** to a straight 45M run (37,616
+addresses both ways).
+
+Snapshots are firmware-derived state, so `snapshots/` and `*.snap` are gitignored.
