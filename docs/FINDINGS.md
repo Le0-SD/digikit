@@ -255,3 +255,39 @@ Not found yet, and the obvious routes came up empty:
 
 The rendering harness itself is done and verified, so once a text routine is
 located it can be driven immediately.
+
+### Why full boot stalls — the real reason **[V]**
+
+The RTOS task created at boot (entry `0x400cef6c`, stack `0x4000`, priority 1)
+**is the DSP bring-up task**. Walking the call tree upward from the ColdFire<->SHARC
+transport lands exactly on it:
+
+```
+0x40128c7c   transport: write arg -> DSPI 0xFC074004, kick 0x841b -> 0xFC074000,
+             then block on a semaphore the completion ISR would signal
+  <- 0x400cf000, 0x400cf928, 0x400cfd8a, 0x4012d46e   (4 call sites)
+    <- 0x400cef6c   the task entry itself
+```
+
+The transport installs an ISR at vector 97 (`0x40000184`), enables INTC sources
+`0x21`/`0x1d`, starts the transfer and waits. Firing the completion interrupt by
+hand gains only ~330 addresses; stubbing the transport outright gains nothing and
+just moves the stall to `0x400cf956`. Four call sites means DSP bring-up is a
+**stateful conversation**, not one transfer.
+
+This is a genuinely different wall from the SPI flash. There, the data we needed
+already existed in the `.syx`. Here the ColdFire is waiting on replies from a
+processor with no open emulator, so the responses would have to be *synthesised*
+from a protocol nobody has documented. Boot cannot complete without that, and the
+UI task presumably never starts because DSP init never finishes.
+
+**Recommendation: do not pursue full boot.** The emulator is already useful for
+everything the patching work needs, and none of it requires booting:
+
+| capability | status |
+|---|---|
+| CRC-32 oracle (`0x80001bd0`) | works, byte-exact |
+| aPLib depacker (`0x80000432`) | works, validates a 3.1 MB repack |
+| firmware graphics rendering (`emu/screen.py`) | works, pixel-exact vs ground truth |
+| Bitmap framebuffer encode/decode | works, verified two independent ways |
+| full boot to UI | blocked on synthesising SHARC replies |
