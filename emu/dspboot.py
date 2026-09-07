@@ -138,7 +138,8 @@ def build_flash(syx_path, size=0x1000000):
 
 def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
         patch_sem=True, patch_depack=True, verbose=False, stall_window=3_000_000,
-        extra_hook=None, fast=True, resume_from=None, machine_out=None):
+        extra_hook=None, fast=True, resume_from=None, machine_out=None,
+        pre_start=None):
     """resume_from: path to a snapshot (see emu/snapshot.py). Loads registers
     and memory instead of starting at ENTRY, but installs the *same* hooks, so
     a resumed run behaves identically to the equivalent straight run. Without
@@ -306,6 +307,8 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
         start_pc = ENTRY
     if machine_out is not None:
         machine_out['m'] = m
+    if pre_start:                 # add extra Unicorn hooks before execution starts
+        pre_start(m)
     try:
         m.uc.emu_start(start_pc, 0, count=limit)
         stop = 'instruction limit'

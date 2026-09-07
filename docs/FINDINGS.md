@@ -637,3 +637,28 @@ The known intro framebuffer at `0x43139290` is still all zeros after +100M, so
 either a frame has not completed or the output goes to a different buffer.
 Finding it is the next step — watch writes issued from the `0x400d3xxx` code
 range. **[O]**
+
+### Where the intro writes its pixels **[V]**
+
+Watching writes issued from the `0x400d3xxx` code range (via the new `pre_start`
+hook on `dspboot.run`) gives two destinations:
+
+| destination | writes | what |
+|---|---|---|
+| `0x43135000` | 161,621 | the intro task's own stack (`tcb=0x43135210`) — not output |
+| **`0x44f52000`** | 1024 per 4KB page | **the pixel work buffer** |
+
+1024 longword writes per 4KB page means every word is written. The footprint is
+**128 x 64 x 4 bytes = 32,768 bytes** — a float per pixel, matching the softfloat
+work and the `1/128` normalisation constant.
+
+Reading it back after +120M from the 280M checkpoint: **7,925 of 8,192 floats
+non-zero**, and rendering with a relative-intensity ramp shows clear structure
+with mirror symmetry — a smoothly varying field, consistent with `intro_dither`
+generating a dither/noise field rather than a finished logo.
+
+So the pipeline appears to be: generate a float field at `0x44f52000` -> combine
+with a source image -> threshold into a `Bitmap`. The values are very small in
+absolute terms (both min and max print as 0.0000 at 4dp), so this is an
+intermediate, not the final image. **[O]** The `Bitmap` at `0x43139290` is still
+zero, so the threshold/copy step has not run yet in emulation.
