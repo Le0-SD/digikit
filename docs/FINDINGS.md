@@ -1270,3 +1270,44 @@ core/2 that implies a 264 MHz core, slightly over the published maximum. The
 15 fps result does not depend on resolving this -- the PIT and UART share a
 clock domain and we used the firmware's own constant, cross-checked by three
 timers landing on round rates.
+
+## Live real-time is not reachable; the arithmetic **[V]**
+
+Measured, not estimated:
+
+| | |
+|---|---|
+| instructions per frame, both HLEs on | 312k |
+| Unicorn m68k ceiling here | 2.90M instr/s |
+| fps if handler cost were **zero** | 9.28 (62% of real time) |
+| fps measured | 4.43 (30% of real time) |
+| budget to hit 15 fps live | <= 193k instructions/frame |
+| the rasteriser alone (51%) | 159k |
+
+So even with perfect, free hooks we top out around 62% of real time, and the
+only way under the 193k budget is to stop emulating the rasteriser -- which is
+the thing the emulator exists to watch. **Live 15 fps is out of reach for
+Unicorn plus Python hooks.** Getting there would need a native hook layer or a
+different core, and `Replay 15fps` already shows the animation at true speed
+from pixel-identical frames.
+
+Remaining cheap headroom: the other ~17% of scattered math would be worth
+about 5.3 fps if fully HLEd. Not nothing, not real time.
+
+### A measurement mistake worth recording
+
+An earlier attempt to split "hook dispatch" from "handler work" gave dispatch
+4% and handler bodies 93%, which looked like large headroom in our Python.
+**That reading was wrong.** With no-op handlers the firmware still executes all
+the soft-float code, so the two runs cover completely different amounts of
+firmware work per instruction -- the comparison was not apples to apples.
+
+Acting on it produced only 8% (4.10 -> 4.43 fps): precompiled `struct.Struct`
+codecs, unpacking arguments directly as `>f` instead of bits-then-convert (the
+old `b2f`/`f2b` each cost a pack *and* an unpack), and caching Bitmap geometry
+per pointer instead of re-reading the header on all 8,192 setPixel calls per
+frame. All verified: both selftests still report 0 mismatches and frames stay
+pixel-identical. Worth keeping, but it did not change the conclusion.
+
+The lesson matches the earlier `install_mmio` one: only trust an A/B where the
+two sides do the same work.

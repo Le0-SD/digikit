@@ -103,6 +103,15 @@ ROUTINES = {
 }
 
 
+# Precompiled codecs. The stack already holds IEEE-754 binary32, so unpacking
+# the arguments directly as '>f' skips the bits->float step entirely; b2f/f2b
+# each cost a pack AND an unpack, and these handlers run tens of thousands of
+# times per frame.
+_ARGS = {1: struct.Struct('>If'), 2: struct.Struct('>I2f')}
+_PACK_F = struct.Struct('>f')
+_TO_BITS = struct.Struct('>I')
+
+
 def install(at, stats=None):
     """Register HLE hooks. `at(addr, fn)` is longrun.build's hook registrar.
 
@@ -110,28 +119,37 @@ def install(at, stats=None):
     caller to clean -- the same convention the real routines use, and the same
     one dspboot's flash-read HLE follows.
     """
-    def ret_of(words):
-        return words[0]
-
     def make(arity, fn, is_float, name):
-        size = 4 + 4 * arity
+        codec = _ARGS[arity]
+        size = codec.size
+        unpack = codec.unpack
+        pack_f = _PACK_F.pack
+        to_bits = _TO_BITS.unpack
+        fast = _fast
 
         def h(uc, addr, sz, data):
             sp = uc.reg_read(UC_M68K_REG_A7)
-            words = struct.unpack('>%dI' % (1 + arity), uc.mem_read(sp, size))
-            args = [b2f(w) for w in words[1:]]
-            if not all(_fast(a) for a in args):
-                if stats is not None:
-                    stats['deferred'] += 1
-                return                      # let the real routine run
+            vals = unpack(uc.mem_read(sp, size))
+            args = vals[1:]
+            for a in args:
+                if not fast(a):
+                    if stats is not None:
+                        stats['deferred'] += 1
+                    return                  # let the real routine run
             out = fn(*args)
-            if out is None or is_float and not (_fast(out) and out != 0.0):
+            if is_float:
+                if out is None or not (fast(out) and out != 0.0):
+                    if stats is not None:
+                        stats['deferred'] += 1
+                    return                  # signed zero / overflow: firmware decides
+                out = to_bits(pack_f(out))[0]
+            elif out is None:
                 if stats is not None:
                     stats['deferred'] += 1
-                return                      # signed zero / overflow: firmware decides
-            uc.reg_write(UC_M68K_REG_D0, f2b(out) if is_float else out & 0xFFFFFFFF)
+                return
+            uc.reg_write(UC_M68K_REG_D0, out & 0xFFFFFFFF)
             uc.reg_write(UC_M68K_REG_A7, sp + 4)
-            uc.reg_write(UC_M68K_REG_PC, ret_of(words))
+            uc.reg_write(UC_M68K_REG_PC, vals[0])
             if stats is not None:
                 stats[name] += 1
         return h

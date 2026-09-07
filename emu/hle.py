@@ -46,21 +46,34 @@ def install_bitmap(at, stats=None, on_pixel=None):
     without paying for a second hook. `bmp` is the Bitmap instance, which is
     worth keeping: it is how the panel framebuffer at 0x4313b298 was found."""
 
+    # A Bitmap's geometry does not change between setPixel calls, and the
+    # rasteriser makes 8,192 of them per frame, so re-reading the header every
+    # time is pure waste. Cache it per Bitmap; the cache is only ever read
+    # here and the firmware would have to rebuild a Bitmap to invalidate it,
+    # which shows up as a different pointer.
+    geom = {}
+    S5 = struct.Struct('>5I')
+    S4 = struct.Struct('>4I')
+    SI = struct.Struct('>I')
+
     def fields(uc, bmp):
-        w, h, stride, data = struct.unpack('>4I', uc.mem_read(bmp + 4, 16))
-        return _s32(w), _s32(h), _s32(stride), data
+        got = geom.get(bmp)
+        if got is None:
+            w, h, stride, data = S4.unpack(uc.mem_read(bmp + 4, 16))
+            got = geom[bmp] = (_s32(w), _s32(h), _s32(stride), data)
+        return got
 
     def do_set(uc, addr, size, data_):
         sp = uc.reg_read(UC_M68K_REG_A7)
-        ret, bmp, x, y, val = struct.unpack('>5I', uc.mem_read(sp, 20))
+        ret, bmp, x, y, val = S5.unpack(uc.mem_read(sp, 20))
         x, y = _s32(x), _s32(y)
         w, h, stride, base = fields(uc, bmp)
         if 0 <= x < w and 0 <= y < h:
             off = base + ((x * stride) + (y >> 5)) * 4
-            word = struct.unpack('>I', uc.mem_read(off, 4))[0]
+            word = SI.unpack(uc.mem_read(off, 4))[0]
             mask = 0x80000000 >> (y & 31)
             word = (word | mask) if (val & 1) else (word & ~mask & 0xFFFFFFFF)
-            uc.mem_write(off, struct.pack('>I', word))
+            uc.mem_write(off, SI.pack(word))
             if on_pixel is not None:
                 on_pixel(x, y, val & 1, bmp)
         uc.reg_write(UC_M68K_REG_A7, sp + 4)
@@ -70,13 +83,13 @@ def install_bitmap(at, stats=None, on_pixel=None):
 
     def do_get(uc, addr, size, data_):
         sp = uc.reg_read(UC_M68K_REG_A7)
-        ret, bmp, x, y = struct.unpack('>4I', uc.mem_read(sp, 16))
+        ret, bmp, x, y = S4.unpack(uc.mem_read(sp, 16))
         x, y = _s32(x), _s32(y)
         w, h, stride, base = fields(uc, bmp)
         out = 0
         if 0 <= x < w and 0 <= y < h:
             off = base + ((x * stride) + (y >> 5)) * 4
-            word = struct.unpack('>I', uc.mem_read(off, 4))[0]
+            word = SI.unpack(uc.mem_read(off, 4))[0]
             out = word & (0x80000000 >> (y & 31))
         uc.reg_write(UC_M68K_REG_D0, out & 0xFFFFFFFF)
         uc.reg_write(UC_M68K_REG_A7, sp + 4)

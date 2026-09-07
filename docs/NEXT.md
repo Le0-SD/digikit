@@ -172,6 +172,13 @@ from-entry task-creation timeline exactly.
   unpaced, not 15 fps; see FINDINGS for why driving vector 208 instead does
   not work without cycle accounting.
 
+- **Live real-time is out of reach; use Replay.** With both HLEs we run 312k
+  instructions per frame against a 2.90M instr/s Unicorn ceiling, so even with
+  zero handler cost the ceiling is 9.3 fps (62% of real time); measured is
+  4.43 (30%). Hitting 15 fps needs <=193k instr/frame and the rasteriser alone
+  is 159k -- i.e. it would mean not emulating the thing we want to watch. A
+  native hook layer or a different core is what that would take.
+
 - **Watch it at true speed now.** The GUI's **Replay 15fps** button plays the
   captured frames back at the firmware's own rate. Emulating at 15 fps needs
   ~3x more throughput than we have, but the frames are pixel-identical to a
