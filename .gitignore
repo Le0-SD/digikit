@@ -1,0 +1,11 @@
+# Elektron firmware and anything derived from it is copyright Elektron.
+# Never commit it. Users supply their own lawfully-obtained copy.
+*.syx
+*.zip
+*_readme.html
+sections/
+out/
+venv/
+__pycache__/
+*.pyc
+vendor/
