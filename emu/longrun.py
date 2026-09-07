@@ -288,7 +288,14 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False):
         try: m.uc.emu_start(pc, 0, count=min(chunk, instrs - done))
         except UcError as e: stop = str(e); break
         pc = m.uc.reg_read(UC_M68K_REG_PC); done += chunk
-        if on_chunk: on_chunk(pc, done)
+        if on_chunk:
+            on_chunk(pc, done)
+            # on_chunk may have raised a vector -- emu/pit.py does. That moves
+            # PC, and resuming at the stale one leaves the exception frame
+            # stranded on the stack: the next rts pops it as a return address
+            # and jumps to nowhere. Cost a session once, as a vector-4 fault
+            # exactly one timer tick after the first.
+            pc = m.uc.reg_read(UC_M68K_REG_PC)
         if tick and (m.uc.reg_read(UC_M68K_REG_SR) & 0x0700) != 0x0700:
             m.raise_vector(32); pc = m.uc.reg_read(UC_M68K_REG_PC)
     return pc, done, stop
