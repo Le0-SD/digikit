@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unicorn import UcError
 from unicorn.m68k_const import UC_M68K_REG_PC, UC_M68K_REG_SR
-from emu.longrun import build
+from emu.longrun import build, run_until
 from emu.screen import png
 
 # The intro's frame rate is not a guess. PIT3 is configured at 0x400d3a7a with
@@ -43,7 +43,10 @@ CURRENT_TCB = 0x47d9adb4
 # the ground is genuinely black rather than dark grey.
 OFF = b'\x0c\x0e\x12'
 ON = b'\xe8\xf6\xff'
-CHUNK = 250_000          # instructions between UI-visible updates
+# The emulator thread runs uncounted and stops at each completed panel frame
+# instead of every N instructions: `count=` on emu_start costs ~1.8x for the
+# same work (see longrun.run_until). A frame is also the only boundary the UI
+# actually cares about, so nothing is lost but the exact instruction tally.
 
 
 class Emulator(threading.Thread):
@@ -58,10 +61,11 @@ class Emulator(threading.Thread):
         self.pause = threading.Event()
         self.stop_flag = threading.Event()
         self.ready = threading.Event()
-        self.stats = {'instrs': 0, 'rate': 0.0, 'frames': 0, 'px': 0,
+        self.stats = {'frames': 0, 'px': 0,
                       'pc': 0, 'tcb': 0, 'tasks': 0, 'prints': 0, 'fps': 0.0,
                       'bmp': 0,
                       'status': 'loading snapshot'}
+        self._uc = None             # set once the machine is built
         self.error = None
         self._seen = set()
         self.version = 0            # bumped on every pixel, so the UI can
@@ -78,6 +82,11 @@ class Emulator(threading.Thread):
                 self.stats['fps'] = 1.0 / max(1e-6, now - self._frame_t)
                 self._frame_t = now
                 self._seen.clear()
+                # Hand control back to the worker loop so it can honour pause
+                # and stop. Safe here and nowhere else: the setPixel HLE has
+                # already written PC = return address, so the resume does not
+                # land back on this hook.
+                self._uc.emu_stop()
             self._seen.add((x, y))
             self.fb[y * W + x] = val
             self.stats['px'] += 1
@@ -103,28 +112,19 @@ class Emulator(threading.Thread):
             self.ready.set()
             return
 
+        self._uc = m.uc
         self.ready.set()
         self.stats['status'] = 'running'
-        t0, last, done = time.time(), 0, 0
         while not self.stop_flag.is_set():
             if self.pause.is_set():
                 self.stats['status'] = 'paused'
                 time.sleep(0.05)
-                t0, last = time.time(), done
                 continue
             self.stats['status'] = 'running'
-            try:
-                m.uc.emu_start(pc, 0, count=CHUNK)
-            except UcError as exc:
-                self.stats['status'] = 'halted: %s' % exc
+            pc, stop = run_until(m, pc)
+            if stop != 'stopped':
+                self.stats['status'] = 'halted: %s' % stop
                 break
-            pc = m.uc.reg_read(UC_M68K_REG_PC)
-            done += CHUNK
-            elapsed = time.time() - t0
-            if elapsed > 0.4:
-                self.stats['rate'] = (done - last) / elapsed / 1e6
-                t0, last = time.time(), done
-            self.stats['instrs'] = done
             self.stats['pc'] = pc
             self.stats['tasks'] = len(ev['tasks'])
             self.stats['prints'] = len(ev['prints'])
@@ -287,10 +287,9 @@ class App(tk.Tk):
                          % (s['frames'], s['fps'], FRAME_HZ,
                             100.0 * s['fps'] / FRAME_HZ))
                 self.status.configure(
-                    text='%s   %.1f fps   %.2fM instr/s   %dM executed\n'
+                    text='%s   %.1f fps   %d frames   %d tasks\n'
                          'pc 0x%08x   task 0x%08x   bitmap 0x%08x   setPixel %d'
-                         % (s['status'], s['fps'], s['rate'],
-                            s['instrs'] // 1_000_000,
+                         % (s['status'], s['fps'], s['frames'], s['tasks'],
                             s['pc'], s['tcb'], s['bmp'], s['px']),
                     fg='#9aa7b8')
         self.after(60, self.tick)
