@@ -1,4 +1,4 @@
-# Handover: the OS is up and idle -- make it draw
+# Handover: make PIT injection sound, then the OS can draw
 
 Previous goal (get past the intro into the main OS) is **half done, and be
 precise about which half**. Internally the intro runs all 175 frames, exits
@@ -66,124 +66,133 @@ snapshot taken after the intro.
 
 ---
 
-## 2. The actual problem now: the firmware throws a C++ exception
+## 2. The actual problem: our PIT injection is unsound
 
-PIT2 is landed (`emu/pit.py`) and the RTOS heartbeat runs -- over 20M
-instructions from `postintro.snap`, PIT2 fires 250 times, the software-timer
-wheel and the display callback each run 5586 times, no fault, no HALT.
+**Retraction.** An earlier version of this file said the blocker was a C++
+exception (`basic_string::_S_construct null not valid`) thrown by the
+firmware. That was wrong. The throw is **an artifact of where we inject the
+PIT interrupt**, not firmware behaviour. It appears and disappears with the
+chunk size, which no real firmware bug would do.
 
-With the heartbeat running the init task gets further and then **throws a C++
-exception that nothing can unwind**, so it calls `abort()` and spins there,
-starving the system (51M iterations of the spin).
+Same snapshot, same 60M instructions, only `spin`'s chunk size varying:
 
-### The exception, exactly
-
-Hooking the throw helper `0x401d0e24` and reading its argument as a C string:
-
-    basic_string::_S_construct null not valid
-
-That is libstdc++'s error for constructing a `std::string` from a NULL
-`const char*`. The whole `0x40176000`-`0x4017a000` region is **libgcc's DWARF
-unwinder**, which is why nothing there looked like application code:
-
-| address | what it is |
+| chunk | outcome |
 |---|---|
-| `0x401d0e24` | throw helper: `__cxa_allocate_exception(8)`, build `std::string`, `__cxa_throw` |
-| `0x401d5680` | `__cxa_throw` |
-| `0x401d3f16` | `basic_string::_S_construct` -- throws at `0x401d3fba` when `first == NULL && last != NULL` |
-| `0x401d43c4` | `std::string::string(const char*)` |
-| `0x4017a0e4` | `_Unwind_Find_FDE` |
-| `0x401772cc` | CFA program parser (the "varint" decoding is LEB128) |
-| `0x4012d2fa` | `abort()` -- `bra.b *`, jsr'd from 24 sites |
-| `0x44f1de80` / `0x44f1de84` | the unwinder's `seen_objects` / `unseen_objects` |
+| 30,000 | abort spin, 56M iterations |
+| 40,000 | 1280 faults |
+| **50,000** | **clean: 6 tasks, 11,282 display callbacks, no fault/throw/abort** |
+| 60,000 | the C++ throw, then abort |
+| 80,000 | 719 faults |
+| 100,000 | 535 faults |
 
-`0x474e5543` = `'GNUC'` appearing in the arguments, and `GNUCC++` in the
-fault-handler backtrace, is what identified it.
+chunk=50,000 working is luck. Nothing downstream of PIT injection can be
+trusted until this is fixed, and no conclusion drawn from a single chunk size
+means anything.
 
-### Why it aborts rather than unwinding
+### What it is not
 
-`_Unwind_Find_FDE` finds **both** object lists null, returns 0, the CFA parser
-returns an error and the caller at `0x4017847e` calls `abort()`. The three
-functions that would populate those lists (`0x40179f90`, `0x40179ea8`,
-`0x40179e64` -- i.e. `__register_frame_info` and friends) are referenced
-**nowhere in the image at all**, confirmed by both Ghidra xrefs and a raw byte
-search of ROM and live RAM. So no DWARF frame info is ever registered.
+All checked and ruled out, so do not spend the time again:
 
-Two readings, and they need different fixes -- **settle which one first**:
+* **Not user/supervisor stack confusion.** The CPU is in supervisor mode at
+  every injection point (SR bit 0x2000 set, 400/400 samples) and at IPL 0 for
+  384 of 400, so there is no USP/SSP switch being missed.
+* **Not the missing IPL mask.** Raising SR's IPL to the source's level while
+  the handler runs changes nothing (identical fire counts and outcomes).
+* **Not interrupt priority gating.** The INTC2 ICRs give real levels -- PIT0
+  level 1, PIT2 level 3, PIT3 level 3, at `0xFC050040 + source`, vector 205 =
+  source 13. Gating delivery on `current IPL < level` changes nothing.
+* **Not the synthetic vector-32 idle tick.** Disabling it entirely (patch
+  `db.find_idle_spins` to return `[]`) leaves every outcome unchanged.
+* **Not `unblock` breaking a mutex.** Over 40M instructions only six pends are
+  even candidates for force-satisfying, and the allocator makes **no pend
+  calls at all**.
+* **Not a Unicorn CPU bug.** `TST.L An` sets Z correctly; replaying the exact
+  instruction sequence with the exact runtime register values behaves
+  correctly; live code is byte-identical to the ROM image.
 
-1. **The throw is spurious**, caused by something we fail to provide, and on
-   hardware it never happens. Then find the null and the abort is moot.
-2. **The throw is normal** and on hardware it unwinds to a `catch`. Then the
-   registration must happen somewhere we have not found, and the fix is to
-   make the unwinder work.
+### What it was: PIT0 was missing
 
-Reading 1 is much more likely -- a boot that routinely throws and unwinds
-would be odd -- but it is not proven.
+**PIT0 is the RTOS time slice.** The context switcher at `0x40000410` re-arms
+it on every switch (`move.w #$53f,$fc080000`) and unmasks its INTC source
+(`and.l #$ffffdfff,$fc050014` clears IMRL bit 13 = source 13 = vector 205),
+and vector 205's handler *is* the switcher. Delivering PIT2 without PIT0 gave
+the RTOS timer-wheel ticks while denying it preemption.
 
-### Backtrace at the throw
+That is now fixed (`emu/pit.py` defaults to channels `(0, 2)`), and it removed
+every abort and every spurious exception:
 
-Built by scanning the stack for words preceded by a real `jsr`/`bsr` opcode
-(the technique is worth reusing; naive stack scanning gives nonsense):
+| chunk | PIT2 only | PIT0 + PIT2 |
+|---|---|---|
+| 20,000 | throw + abort | 523 faults |
+| 30,000 | abort, 56M iterations | clean |
+| 40,000 | 1280 faults | clean, 29,591 display callbacks |
+| 50,000 | clean, 11,282 callbacks | clean, 47,484 callbacks |
+| 60,000 | throw + abort | clean |
+| 80,000 | 719 faults | clean |
+| 100,000 | 535 faults | 558 faults |
 
-    0x401d3fba  throw            in _S_construct
-    0x401d43e8                   in std::string::string(const char*)
-    0x40055a72                   in fn 0x40055a56
-    0x4003f5ca                   in fn 0x4003f528
-    0x400445a8 / 0x400445cc      in fn 0x40044???
-    0x401113ec, 0x401868cc, 0x40030d16, 0x40186968, 0x40032f76
+The mechanism: every injection preceding a failure landed in
+`0x40111044`-`0x4011137e` and the faulting PC `0x40111458` is in the same
+range -- the **heap allocator** (`0x4011122c` is malloc). Preempting it with a
+reschedule the RTOS was not expecting corrupts the heap, and a null
+`const char*` out of a corrupted heap is exactly how
+`basic_string::_S_construct null not valid` appears.
 
-`0x40055a56` is a constructor that builds a `std::string("Observable")` and
-references `"Active Track"`; the literals near it are `Observable`,
-`FxSetup::updateMirror`, `14DataChan...`. So this is FX / data-channel setup.
+Measured separately: the INTC gating and the exception-frame format fix change
+no outcome on their own. PIT0 is what mattered. Both were kept anyway -- they
+are what the hardware does, and the format field was a latent trap (the
+ColdFire PRM: an RTE whose frame format is not 4-7 raises a format error; we
+were writing 0, and only got away with it because `rte` is implemented in
+`on_intr` and ignores the field).
 
-### What is NOT yet established, and the trap that got in the way
+### Still not sound -- fix this next
 
-**The identity of the null pointer.** Three attempts each gave a different
-answer, and two of them were wrong:
+chunk=20,000 and chunk=100,000 still fault, and the display-callback count
+swings between 2,511 and 47,484 across chunk sizes. **An outcome that depends
+on the chunk size is still an artifact.**
 
-* Hooking `_S_construct`'s entry and reading args off `A7`: **no null in any
-  call**, yet the throw happens.
-* Reading `A2`/`A6` at the throw instruction: reports `first = 0x40224e95`
-  ("Observable"), which cannot be right -- that path is only reachable when
-  `first == 0`.
-* A windowed `UC_HOOK_CODE` trace: shows `tst.l a2` with `a2 = 0x40224e95`
-  followed by `beq.w` **being taken**.
+The cause is structural: `Pits.service` is only called at chunk boundaries, so
+an interrupt is delivered at whatever instruction the boundary happens to land
+on rather than where the timer is actually due. The fix is to run to each
+deadline exactly -- compute `next_deadline - done` and pass that as the
+`count` to `emu_start`. A first attempt at this regressed badly, because
+`done += step` over-counts when `emu_start` returns early (after a fault it
+returns immediately, and the loop then races to the instruction budget in
+seconds). Accumulate what actually executed, not what was requested.
 
-That last one looks like a Unicorn bug and **is not one**. Checked and
-disproved: `TST.L An` sets Z correctly for An and Dn, and replaying the exact
-four-instruction sequence (`cmp.l a2,d0; beq.b; tst.l a2; beq.w`) with the
-exact runtime register values falls through correctly. The live code at
-`0x401d3f16..0x401d3fc6` is also byte-identical to the ROM image.
+PIT0 also is not really periodic -- the switcher re-arms it on every context
+switch, so it is a one-shot restarted per slice. `Pits` models it as periodic.
+Reading PCNTR is not an option (FINDINGS: MAIN OS never reads it), but
+re-arming our own deadline when the firmware writes PCSR would be closer.
 
-So the register values reported by mid-function `UC_HOOK_CODE` hooks are
-**not trustworthy** here -- they lag. The codebase's existing hooks all sit on
-function entry points, which are basic-block boundaries, and those are fine.
+### The best run so far, and what blocks it
 
-**Next step, with a method that cannot lag:** single-step (`emu_start` with
-`count=1`) through the last few hundred instructions before the throw, which
-forces a register sync at every step, and read `[a6+8]` from memory. Find the
-first frame where the pointer is null and walk back to whoever produced it.
+At chunk=50,000, 80M instructions from `postintro.snap`: 1007 PIT2 interrupts,
+11,282 display callbacks, 6 tasks, no fault, no throw, no abort. The hot PC is
+then `0x400cf4ec`/`0x400cf4f4` -- **the `0x8C000002` FIFO poll** -- 10.3M
+polls, 76% of the time, in the prio-3 task.
 
-### Two smaller things still open
+That poll is therefore the next functional blocker once injection is sound.
+`0x8C000000` is a FlexBus chip-select region and the device is still
+**unidentified**. Forcing bit 0 ("FIFO always ready") is **wrong**: it
+unblocks the task but the run then faults 245 times at `0x40111458`. Reads and
+writes share the address (read = status, write = data), so blanket-forcing
+reads corrupts anything that reads data from it. Identify the device first.
 
-**The `0x8C000002` FIFO status bit.** The prio-3 task (`0x400f1fce`) polls bit
-0 at `0x400cf4ec` before writing an 8-word burst, and nothing sets it.
-`0x8C000000` is a FlexBus chip-select region, still **unidentified**. Forcing
-the bit does unblock it and the task then does real work (610 genuinely
-satisfied pends, not spins). Deliberately **not committed**: a guess about an
-unnamed device, and the abort is reached identically without it.
+### Useful things found on the way
 
-**The display task has nothing to wake it.** `0x4012606a` (prio 6) blocks on
-`0x44e2d148`. Note `0x40126004` in the same module re-enables PIT3 (PMR
-0x4323, prescaler 1024), so the OS drives its own frame timer once it gets
-that far -- and `emu/pit.py` is PCSR-gated, so it will start delivering vector
-208 by itself when the firmware enables it.
-
-### A debugging channel worth using
-
-The fault handler prints a **stack backtrace** through `0x40000e82`, not just
-the `EXCEPTION DS%.04s` / `V%02x M%x P%08x` line. Hooking `0x40000e82` and
-decoding arguments as C strings is the cheapest window into any fault.
+* **`0x4012651e`** is the display tick callback, mask 1, in the timer wheel's
+  list at `0x4094cdb8` -- it runs at ~60 Hz once PIT2 ticks.
+* The `0x40176000`-`0x4017a000` region is **libgcc's DWARF unwinder**:
+  `0x4017a0e4` = `_Unwind_Find_FDE`, `0x401772cc` = the CFA/LEB128 parser,
+  `0x44f1de80`/`0x44f1de84` = its object lists (both null; no frame info is
+  ever registered), `0x4012d2fa` = `abort()`. `0x401d0e24` is a throw helper
+  that takes a `const char*` -- **hook it and read the argument to get any
+  exception message directly**. `0x401d5680` = `__cxa_throw`.
+* The fault handler prints a **stack backtrace** through `0x40000e82`.
+* To backtrace by hand, scan the stack for words preceded by a real
+  `jsr`/`bsr` opcode (`4EB9` at -6, `4EBA`/`4EB8`/`6100` at -4, `4E8x` at -2).
+  Naive stack scanning gives nonsense.
 
 ## 3. Speed: the previous ceiling claim was wrong
 
@@ -227,9 +236,9 @@ Where the rest goes, cProfile over 10M instructions with both HLEs on:
 (1.85M). **The next wins are fewer and cheaper crossings, not a better
 peripheral model.** Untried and worth trying, roughly in order:
 
-1. Batch register access -- `reg_read_batch`/`reg_write_batch` exist in the
-   Unicorn Python binding and would collapse several FFI calls per hook into
-   one.
+1. ~~Batch register access~~ -- measured and rejected: `reg_read_batch` is
+   **slower** than individual `reg_read` calls in unicorn 2.1.4 (0.74x over
+   200k iterations of 4 registers).
 2. Read memory into a preallocated buffer instead of letting `mem_read`
    allocate a fresh ctypes buffer per call.
 3. `build()` installs 252 code hooks (239 scoped ISA patches + 13 idle
@@ -250,28 +259,33 @@ Real time is no longer ruled out. It is a 1.6x away, not a 3x away.
    same address, re-fired the hook, and counted iterations that did no work.
 2. **Do not cache anything read from firmware structures** without proving it
    immutable. The Bitmap header cache is the standing example.
-3. **Register values read inside a mid-function `UC_HOOK_CODE` lag.** Every
+3. **A result that changes with the chunk size is an emulation artifact, not a
+   finding.** A whole session was spent characterising a C++ exception as the
+   post-intro blocker; it only occurs at some chunk sizes. Before believing
+   anything downstream of interrupt injection, sweep the chunk size and check
+   the result is stable. This is the same lesson as trap 1, one level up.
+4. **Register values read inside a mid-function `UC_HOOK_CODE` lag.** Every
    existing hook in this codebase sits on a function entry, which is a basic
    block boundary, and those read correctly. A hook in the middle of a
    function does not, and it will happily report an operand that contradicts
    the branch the CPU then takes -- which reads exactly like a CPU emulation
    bug and is not one. Read memory rather than registers, hook the entry, or
    single-step with `count=1` to force a sync.
-4. Only call `uc.emu_stop()` from a hook that has already advanced PC past the
+5. Only call `uc.emu_stop()` from a hook that has already advanced PC past the
    current instruction. The setPixel HLE writes `PC = return address`, so it
    qualifies; a plain code hook does not.
-5. A hook-only stop condition needs a wall-clock timeout as a floor, or the
+6. A hook-only stop condition needs a wall-clock timeout as a floor, or the
    caller hangs as soon as the firmware stops meeting the condition. Compute
    any status you display *before* the blocking call, not after -- otherwise
    the stale value is on screen for the whole block and the fresh one for
    microseconds.
-6. A resumed run needs the *same hook set*, not just the same Machine.
-7. Snapshots are gitignored. Use `postintro.snap` for OS work, `boot400M.snap`
+7. A resumed run needs the *same hook set*, not just the same Machine.
+8. Snapshots are gitignored. Use `postintro.snap` for OS work, `boot400M.snap`
    for intro/draw work, `console450M.snap` for the console task.
-8. `softfloat` and `bitmap` default **off** in `longrun.build` (they change
+9. `softfloat` and `bitmap` default **off** in `longrun.build` (they change
    instruction counts); `edma` defaults **on** -- it is a hardware model, not
    a shortcut, and there is no faithful configuration with it off.
-9. If you write a snapshot yourself, `extra['tasks']` keys must be hex
+10. If you write a snapshot yourself, `extra['tasks']` keys must be hex
    *strings*; `restore_into` does `int(k, 16)` on them.
 
 ---
