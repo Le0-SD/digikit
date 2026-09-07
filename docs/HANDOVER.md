@@ -1,9 +1,17 @@
 # Handover: the OS is up and idle -- make it draw
 
-Previous goal (get past the intro into the main OS) is **done**. The intro
-runs all 175 frames, exits properly, and six previously-missing tasks spawn.
-The new problem is different in kind: every task now blocks *correctly*, and
-the system sits idle waiting for interrupts nothing delivers.
+Previous goal (get past the intro into the main OS) is **half done, and be
+precise about which half**. Internally the intro runs all 175 frames, exits
+properly, and six previously-missing tasks spawn. **Visually nothing has
+changed yet:** `uv run python -m emu.gui` still ends on the last intro frame
+and the panel then sits still, because the task that drives the display is
+blocked. The status line now says so honestly -- "running, no frame for Ns",
+fps 0.00, tasks 6 -- instead of freezing while claiming 15 fps.
+
+The new problem is different in kind from the old one: every task now blocks
+*correctly*, and the system sits idle waiting for interrupts nothing
+delivers. Getting a pixel onto the panel again means supplying one of the
+three missing things in section 2, not undoing any of this.
 
 Read `docs/NEXT.md` for the project overview and `docs/FINDINGS.md` for
 evidence. This file is only about what is still open.
@@ -129,7 +137,22 @@ internal per-instruction hook to decrement the budget, costing **1.84x**
 (8.07s -> 4.39s over the same 40 rendered frames). The cost is `count`
 itself, not the call frequency -- 20k, 500k and 1e9 all measure within 3%.
 `emu/longrun.py:run_until` is the uncounted form, and `emu/gui.py` now stops
-per completed frame: **9.34 fps, 62% of the real 15.00 Hz, against ~30%**.
+per completed frame: **~8.7 fps, ~58% of the real 15.00 Hz, against ~30%**.
+
+`run_until` also takes `timeout_ms` (default 250), because a hook-only stop
+condition hangs the caller the moment the firmware stops meeting it -- which
+is exactly what the end of the intro does. **A timeout is free, unlike
+`count`.** Same 40 frames, identical 327,681 setPixel calls each way:
+
+| | |
+|---|---|
+| `count=250_000` | 8.03s |
+| uncounted | 4.45s |
+| uncounted + 0.5s timeout | 4.43s |
+
+`count` installs a per-instruction hook; a timeout only arms a timer thread.
+So bound wall-clock time freely, and never bound instruction counts unless
+something genuinely has to happen per fixed number of instructions.
 
 Where the rest goes, cProfile over 10M instructions with both HLEs on:
 
@@ -170,13 +193,18 @@ Real time is no longer ruled out. It is a 1.6x away, not a 3x away.
 3. Only call `uc.emu_stop()` from a hook that has already advanced PC past the
    current instruction. The setPixel HLE writes `PC = return address`, so it
    qualifies; a plain code hook does not.
-4. A resumed run needs the *same hook set*, not just the same Machine.
-5. Snapshots are gitignored. Use `postintro.snap` for OS work, `boot400M.snap`
+4. A hook-only stop condition needs a wall-clock timeout as a floor, or the
+   caller hangs as soon as the firmware stops meeting the condition. Compute
+   any status you display *before* the blocking call, not after -- otherwise
+   the stale value is on screen for the whole block and the fresh one for
+   microseconds.
+5. A resumed run needs the *same hook set*, not just the same Machine.
+6. Snapshots are gitignored. Use `postintro.snap` for OS work, `boot400M.snap`
    for intro/draw work, `console450M.snap` for the console task.
-6. `softfloat` and `bitmap` default **off** in `longrun.build` (they change
+7. `softfloat` and `bitmap` default **off** in `longrun.build` (they change
    instruction counts); `edma` defaults **on** -- it is a hardware model, not
    a shortcut, and there is no faithful configuration with it off.
-7. If you write a snapshot yourself, `extra['tasks']` keys must be hex
+8. If you write a snapshot yourself, `extra['tasks']` keys must be hex
    *strings*; `restore_into` does `int(k, 16)` on them.
 
 ---

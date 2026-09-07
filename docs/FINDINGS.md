@@ -1408,8 +1408,23 @@ immediately: the run then spins making no progress while appearing to
 iterate, which is how an early attempt at this measured a fictitious 118x.
 
 `emu/gui.py` now stops per completed panel frame instead of every 250k
-instructions: **9.34 fps during the intro, 62% of the real 15.00 Hz, against
-~30% before.**
+instructions: **~8.7-9.3 fps during the intro, ~58-62% of the real 15.00 Hz,
+against ~30% before.**
+
+A hook-only stop condition also needs a wall-clock floor, or the caller hangs
+the moment the firmware stops meeting it -- the end of the intro does exactly
+that. **A timeout is free, unlike `count`.** Same 40 frames, identical 327,681
+setPixel calls each way:
+
+| | |
+|---|---|
+| `count=250_000` | 8.03s |
+| uncounted | 4.45s |
+| uncounted + 0.5s timeout | 4.43s |
+
+`count` installs a per-instruction hook; a timeout only arms a timer thread.
+Bound wall-clock time freely; bound instruction counts only when something
+genuinely has to happen per fixed number of instructions.
 
 ### Where the remaining time goes
 
