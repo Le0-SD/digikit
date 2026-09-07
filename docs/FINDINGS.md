@@ -915,3 +915,97 @@ thread to pull next.** **[O]**
 
 Also worth noting for whoever picks this up: the console protocol words are
 `#HELLO`, `#BREAK`, `#UPGRADE` and friends -- not `help`.
+
+## Why the emulator was slow: 93% of it was soft-float **[V]**
+
+The GUI ran at ~1.3 firmware frames/sec. Profiling found the cause is not the
+harness at all -- a minimal machine (scoped ISA patches + mmio + exceptions)
+runs at 2.16M instr/sec and the full hooked machine at 2.19M, so **every hook
+in this project is free**. Chunk size makes no difference either. ~2.2M
+instr/sec is simply what Unicorn's m68k core does here.
+
+So the only way to go faster is to execute fewer instructions. An exact PC
+histogram over the intro says where they go:
+
+| region | share |
+|---|---|
+| `0x40174000-0x40176000` (soft-float) | **93.2%** |
+| everything else | 6.8% |
+
+This ColdFire build has no hardware FPU, so every float operation is a
+libgcc-style routine, and the particle animation is float-heavy.
+
+### Identifying the routines, rather than guessing
+
+Entry points were found by watching which addresses execution *enters* the
+region at (transitions from outside it), then identified by calling each one
+with known values and comparing against real arithmetic:
+
+| entry | routine | share |
+|---|---|---|
+| `0x40175204` | `__mulsf3` | 46.3% |
+| `0x40174f1c` | `__subsf3` -- `bchg.b #$1f,$8(a7)` then falls into add | 22.1% |
+| `0x40174f22` | `__addsf3` | |
+| `0x40175346` | `__divsf3` | 4.5% |
+| `0x40175a94` | `__fixsfsi` (float -> int, truncate) | |
+| `0x40174134` | `fabsf` | |
+| `0x40175834` | float compare -> -1/0/1 | |
+
+The other hot addresses in the region (`0x40175644`, `0x4017550a`, ...) are
+internal helpers of these, so intercepting the entries removes them too.
+
+### The firmware's float routines are not IEEE-754 **[V]**
+
+Comparing a native implementation against the firmware's own code found
+systematic disagreement, all at the edges: the add returns **-0.0 on exact
+cancellation** where IEEE gives +0.0, and it gets **infinity signs wrong**
+(`-1.0 - inf` yields `+inf`). `__fixsfsi` returns `0xFFFFFFFF` for
+out-of-range input, which is undefined behaviour in C.
+
+Rather than replicate those quirks, `emu/softfloat.py` intercepts **only the
+fast path** -- finite arguments producing a finite, normal, non-zero result --
+and falls through to the real routine for everything else, which then defines
+the answer by construction. Same shape as the sem_pend patch, which takes the
+primitive's own fast path instead of reimplementing it.
+
+For normal values this is not an approximation: computing in float64 and
+rounding once to float32 gives exactly the correctly-rounded float32 result
+for +, -, * and /, since 2*24+2 = 50 <= 53 bits. `uv run python -m emu.softfloat`
+checks all seven routines against the firmware's: **1,774 intercepted cases,
+0 mismatches**, 1,154 edge cases deferred.
+
+### Then setPixel became the bottleneck **[V]**
+
+With the float work gone, the soft-float region fell to 1.9% and the top cost
+became `Bitmap::setPixel` (`0x40104eb4`) plus `getPixel` (`0x40104f80`) at
+~54% combined -- the rasteriser touches all 8,192 pixels per frame and reads
+many back. Both are small, fully understood bit-twiddlers, HLE'd in
+`emu/hle.py`. Two details matter: the bounds comparisons are **signed**, and
+the value is tested with `btst.b #0`, so **val=2 clears a pixel**. The HLE
+writes the same bits into emulated memory, so anything reading the bitmap back
+sees identical state. Verified: 680 cases, 0 mismatches.
+
+### Result
+
+| configuration | fps | instructions for 12 frames | |
+|---|---|---|---|
+| all emulated | 1.32 | 20,750,000 | 1.0x |
+| + soft-float HLE | 2.37 | 9,250,000 | 1.8x |
+| + bitmap HLE | 4.06 | 3,750,000 | **3.1x** |
+
+Frames are **pixel-identical** across all three, which is the gate that makes
+the optimisation trustworthy.
+
+What is left is mostly the rasteriser itself (`0x400d3d7e` 39%, `0x400d3bea`
+12%) -- the firmware logic the whole exercise exists to watch, so HLE'ing it
+would defeat the point. Another ~17% is scattered math worth maybe 1.2x more.
+
+Both HLEs are **off by default** in `longrun.build`. They are bit-exact so
+program state evolves identically, but instruction *counts* change, and too
+much here depends on a resumed run matching the run that made its snapshot.
+`emu/frame.py` and `emu/gui.py` opt in; `FAST=1` turns them on for the
+`emu.longrun` CLI.
+
+The GUI's own redraw was measured at 0.94ms (~2% of a core) and was never the
+problem; it now skips redrawing when no pixel changed, and reuses one zoomed
+image instead of allocating per frame.

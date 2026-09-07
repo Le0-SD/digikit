@@ -28,7 +28,7 @@ PEND_A, PEND_B = 0x4000141a, 0x400013a6   # sem object is the arg at 4(a7)
 
 
 def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
-          unblock=False):
+          unblock=False, softfloat=False, bitmap=False, on_pixel=None):
     """Stand up a hooked Machine and restore `snapshot` onto it.
 
     -> (m, ev, st, pc, inq, at) where `at(addr, fn)` registers a further
@@ -50,6 +50,22 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
     to every wait, and it is what makes the draw task actually draw.
     It does change semantics: nothing ever really waits, so inter-task
     ordering is not the hardware's.
+
+    softfloat=True runs the firmware's float routines natively instead of
+    emulating them. It is OFF by default: it is bit-exact but changes
+    instruction counts, and too much in this project depends on a resumed run
+    matching the run that made its snapshot. Turn it on for watching, leave it
+    off for coverage, differential or checkpoint work. 93% of executed instructions were soft-float, so this is
+    the difference between ~2M and ~20M instructions/sec. It is bit-exact --
+    only the fast path is intercepted and everything else defers to the real
+    routine (see emu/softfloat.py) -- so program state evolves identically.
+    Instruction *counts* do not: a run with it on is not comparable to one
+    without, so turn it off for coverage or differential work.
+
+    bitmap=True does the same for Bitmap::setPixel/getPixel, the top cost once
+    the float work is gone. `on_pixel(x, y, val)` then receives every pixel
+    drawn, which is how the frame capture observes drawing -- so callers must
+    not also register their own setPixel hook.
     """
     flash = db.build_flash(syx)
     m = Machine(); st = {'seen': set(), 'n': 0, 'task_create_hits': {}}
@@ -123,6 +139,16 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
     for spin_addr in db.find_idle_spins(main_img, db.MAIN_LOAD):
         at(spin_addr, do_halt)
 
+    if softfloat:                      # see emu/softfloat.py
+        from emu.softfloat import install as install_softfloat
+        ev['softfloat'] = collections.Counter()
+        install_softfloat(at, ev['softfloat'])
+
+    if bitmap:
+        from emu.hle import install_bitmap
+        ev['bitmap'] = collections.Counter()
+        install_bitmap(at, ev['bitmap'], on_pixel)
+
     if unblock:
         def satisfy(uc, a, s, d):
             sp = uc.reg_read(UC_M68K_REG_A7)
@@ -172,8 +198,9 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False):
     return pc, done, stop
 
 
-def main(snapshot, instrs, chunk=500_000, send=b'', unblock=False):
-    m, ev, st, pc, inq, at = build(snapshot, send, unblock=unblock)
+def main(snapshot, instrs, chunk=500_000, send=b'', unblock=False, fast=False):
+    m, ev, st, pc, inq, at = build(snapshot, send, unblock=unblock,
+                                   softfloat=fast, bitmap=fast)
     t0 = time.time()
 
     def note(pc_, done):
@@ -190,7 +217,8 @@ if __name__ == '__main__':
     snap = sys.argv[1]; n = int(sys.argv[2])
     send = (sys.argv[3]+'\r\n').encode() if len(sys.argv) > 3 else b''
     m, ev, done, dt, stop = main(snap, n, send=send,
-                                 unblock=bool(os.environ.get('UNBLOCK')))
+                                 unblock=bool(os.environ.get('UNBLOCK')),
+                                 fast=bool(os.environ.get('FAST')))
     print('\n=== %d instrs in %.0fs (%.2fM/s) stop=%s ===' % (done, dt, done/dt/1e6, stop))
     print('new tasks : %d' % len(ev['tasks']))
     print('prints    : %d' % len(ev['prints']))

@@ -22,12 +22,11 @@ from tkinter import ttk
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unicorn import UcError
-from unicorn.m68k_const import UC_M68K_REG_A7, UC_M68K_REG_PC
+from unicorn.m68k_const import UC_M68K_REG_PC
 from emu.longrun import build
 from emu.screen import png
 
 W, H = 128, 64
-SET_PIXEL = 0x40104eb4
 CURRENT_TCB = 0x47d9adb4
 
 # Panel palette: an OLED is emissive, so the lit pixel is the bright thing and
@@ -50,31 +49,37 @@ class Emulator(threading.Thread):
         self.stop_flag = threading.Event()
         self.ready = threading.Event()
         self.stats = {'instrs': 0, 'rate': 0.0, 'frames': 0, 'px': 0,
-                      'pc': 0, 'tcb': 0, 'tasks': 0, 'prints': 0,
+                      'pc': 0, 'tcb': 0, 'tasks': 0, 'prints': 0, 'fps': 0.0,
+                      'bmp': 0,
                       'status': 'loading snapshot'}
         self.error = None
         self._seen = set()
+        self.version = 0            # bumped on every pixel, so the UI can
+        self._frame_t = time.time()  # skip redrawing an unchanged panel
 
     def run(self):
+        def on_pixel(x, y, val, bmp):
+            self.stats['bmp'] = bmp
+            if (x, y) in self._seen and len(self._seen) > W * H // 2:
+                now = time.time()
+                self.stats['frames'] += 1              # coordinate repeat = new frame
+                self.stats['fps'] = 1.0 / max(1e-6, now - self._frame_t)
+                self._frame_t = now
+                self._seen.clear()
+            self._seen.add((x, y))
+            self.fb[y * W + x] = val
+            self.stats['px'] += 1
+            self.version += 1
+
         try:
-            m, ev, st, pc, inq, at = build(self.snapshot, unblock=True)
+            m, ev, st, pc, inq, at = build(self.snapshot, unblock=True,
+                                           softfloat=True, bitmap=True,
+                                           on_pixel=on_pixel)
         except Exception as exc:                       # noqa: BLE001
             self.error = '%s: %s' % (type(exc).__name__, exc)
             self.stats['status'] = 'failed to load'
             self.ready.set()
             return
-
-        def on_setpixel(uc, a, s, d):
-            sp = uc.reg_read(UC_M68K_REG_A7)
-            _ret, _this, x, y, val = struct.unpack('>IIIII', uc.mem_read(sp, 20))
-            if x < W and y < H:
-                if (x, y) in self._seen and len(self._seen) > W * H // 2:
-                    self.stats['frames'] += 1          # coordinate repeat = new frame
-                    self._seen.clear()
-                self._seen.add((x, y))
-                self.fb[y * W + x] = 1 if val else 0
-                self.stats['px'] += 1
-        at(SET_PIXEL, on_setpixel)
 
         self.ready.set()
         self.stats['status'] = 'running'
@@ -115,7 +120,9 @@ class Panel(tk.Frame):
         super().__init__(master, bg='#0b0d10')
         self.scale = scale
         self.img = tk.PhotoImage(width=W, height=H)
-        self.view = tk.Label(self, bd=0, highlightthickness=0, bg='#0b0d10')
+        self.big = tk.PhotoImage(width=W * scale, height=H * scale)
+        self.view = tk.Label(self, bd=0, highlightthickness=0, bg='#0b0d10',
+                             image=self.big)
         self.view.pack(padx=18, pady=18)
         self._blank()
 
@@ -125,8 +132,9 @@ class Panel(tk.Frame):
     def draw(self, fb):
         body = b''.join(ON if v else OFF for v in fb)
         self.img.put(b'P6\n%d %d\n255\n' % (W, H) + body, to=(0, 0, W, H))
-        self._zoomed = self.img.zoom(self.scale, self.scale)
-        self.view.configure(image=self._zoomed)
+        # copy -zoom writes into the existing image; PhotoImage.zoom would
+        # allocate a new one every refresh.
+        self.tk.call(self.big, 'copy', self.img, '-zoom', self.scale, self.scale)
 
 
 class App(tk.Tk):
@@ -156,6 +164,7 @@ class App(tk.Tk):
         self.status.pack(fill='x', padx=20, pady=(0, 14))
 
         self.emu = None
+        self.shown = -1
         self.start()
         self.protocol('WM_DELETE_WINDOW', self.quit_all)
         self.after(60, self.tick)
@@ -167,7 +176,10 @@ class App(tk.Tk):
     def restart(self):
         if self.emu:
             self.emu.stop_flag.set()
+            self.emu.pause.clear()
+            self.emu.join(timeout=3)
         self.panel._blank()
+        self.shown = -1
         self.start()
         self.btn.configure(text='Pause')
 
@@ -201,20 +213,28 @@ class App(tk.Tk):
             if e.error:
                 self.status.configure(text=e.error, fg='#ff8f8f')
             else:
-                self.panel.draw(e.fb)
+                if e.version != self.shown:
+                    self.panel.draw(e.fb)      # skip if nothing was drawn
+                    self.shown = e.version
                 s = e.stats
                 self.frames_lbl.configure(text='frame %d' % s['frames'])
                 self.status.configure(
-                    text='%s   %.2fM instr/s   %dM executed\n'
-                         'pc 0x%08x   task 0x%08x   setPixel %d   tasks +%d'
-                         % (s['status'], s['rate'], s['instrs'] // 1_000_000,
-                            s['pc'], s['tcb'], s['px'], s['tasks']),
+                    text='%s   %.1f fps   %.2fM instr/s   %dM executed\n'
+                         'pc 0x%08x   task 0x%08x   bitmap 0x%08x   setPixel %d'
+                         % (s['status'], s['fps'], s['rate'],
+                            s['instrs'] // 1_000_000,
+                            s['pc'], s['tcb'], s['bmp'], s['px']),
                     fg='#9aa7b8')
         self.after(60, self.tick)
 
     def quit_all(self):
+        # Join before tearing down: the worker is inside Unicorn between
+        # chunks, and letting the interpreter kill a daemon thread mid-
+        # emu_start crashes the process on exit (SIGBUS).
         if self.emu:
             self.emu.stop_flag.set()
+            self.emu.pause.clear()
+            self.emu.join(timeout=3)
         self.destroy()
 
 

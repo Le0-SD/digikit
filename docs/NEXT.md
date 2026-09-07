@@ -21,6 +21,8 @@ elektron-firmware-tool -i Digitakt_II_OS1.15C.syx -o sections/
 uv run python -m dt2.container Digitakt_II_OS1.15C.syx   # section table
 uv run python emu/oracle.py                              # CRC oracle, seconds
 uv run python emu/screen.py selftest                     # graphics, seconds
+uv run python -m emu.softfloat                           # float HLE vs firmware
+uv run python -m emu.hle                                 # bitmap HLE vs firmware
 ```
 
 All three should pass. If `oracle.py` throws `UC_ERR_MAP`, see Trap 3 below.
@@ -57,7 +59,9 @@ window. uv's managed CPython bundles tkinter, so `uv sync` is the whole setup
 | Task/ready-list inspector | `emu/tasks.py` | parked PC per task from any snapshot |
 | Blocker + hot-PC probe | `emu/probe.py` | pend sites, scheduler state, PC sampling |
 | Rendered panel frame -> PNG | `emu/frame.py` | **works** -- 84 frames, real `setPixel` |
-| Live panel GUI | `emu/gui.py` | **works** -- tkinter, emulator on a worker thread |
+| Live panel GUI | `emu/gui.py` | **works** -- tkinter, ~4.7 fps |
+| Native soft-float | `emu/softfloat.py` | bit-exact, verified vs firmware |
+| Native setPixel/getPixel | `emu/hle.py` | bit-exact, verified vs firmware |
 | Snapshot ladder from a snapshot | `emu/checkpoint.py extend` | works |
 
 **The single most important result**: the device's *own* depacker, run under
@@ -134,6 +138,15 @@ from-entry task-creation timeline exactly.
   registration at `0x400cd5a8` (`jsr $40110592`, object `0x40303e50`).
   Hook `print` at `0x400054b4` to capture output; protocol words are `#HELLO`,
   `#BREAK`, `#UPGRADE`, not `help`.
+
+- **Speed: 3.1x, and the ceiling is understood.** 93% of emulated instructions
+  were soft-float; `emu/softfloat.py` and `emu/hle.py` run those and
+  setPixel/getPixel natively, bit-exact and verified against the firmware's own
+  routines. Unicorn's m68k core does ~2.2M instr/sec here and no hook in this
+  project costs anything measurable, so further gains have to come from
+  executing fewer instructions, not from tuning the harness. Both HLEs are
+  off by default because they change instruction counts; `FAST=1` for the
+  longrun CLI.
 
 - **Draw path: solved.** `emu/frame.py` from `boot400M` with `unblock=True`
   renders 84 frames into the panel Bitmap at **`0x4313b298`**. The rasteriser

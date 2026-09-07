@@ -35,24 +35,23 @@ def capture(snapshot, instrs):
     a list of {(x, y): value} for each completed frame and `partial` is the
     frame still being drawn when the run ended.
     """
-    m, ev, st, pc, inq, at = build(snapshot, unblock=True)
-    stats = collections.Counter()
-
     fb = {}
     frames = []
+    stats = collections.Counter()
     bitmaps = collections.Counter()
 
-    def on_setpixel(uc, a, s, d):
-        sp = uc.reg_read(UC_M68K_REG_A7)
-        ret, this, x, y, val = struct.unpack('>IIIII', uc.mem_read(sp, 20))
-        bitmaps[this] += 1
+    def on_pixel(x, y, val, bmp):
         stats['px'] += 1
+        bitmaps[bmp] += 1
         if x < W and y < H:
             if (x, y) in fb and len(fb) > W * H // 2:
                 frames.append(dict(fb))      # coordinate repeat -> new frame
                 fb.clear()
-            fb[(x, y)] = val & 0xFF
-    at(SET_PIXEL, on_setpixel)
+            fb[(x, y)] = val
+    # softfloat/bitmap HLE on: this path exists to watch drawing, and both
+    # are verified bit-exact (emu/softfloat.py, emu/hle.py selftests).
+    m, ev, st, pc, inq, at = build(snapshot, unblock=True, softfloat=True,
+                                   bitmap=True, on_pixel=on_pixel)
 
     t0 = time.time()
     pc, done, stop = spin(m, pc, instrs)
