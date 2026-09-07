@@ -224,7 +224,14 @@ class Machine:
                 pass
         sr = self.uc.reg_read(UC_M68K_REG_SR)
         sp = self.uc.reg_read(UC_M68K_REG_A7) - 8
-        self.uc.mem_write(sp, struct.pack('>HHI', (vec << 2) & 0xFFFF, sr, pc))
+        # Format nibble 4. The ColdFire PRM is explicit: an RTE whose frame
+        # format is not 4-7 raises a format error. We wrote 0 for a long time
+        # and never saw it, only because `rte` is implemented in on_intr above
+        # and ignores the field -- but anything that reads a frame we built
+        # (emu/tasks.py, the RTOS context switcher at 0x40000410) saw a frame
+        # real hardware would have rejected.
+        self.uc.mem_write(sp, struct.pack('>HHI', 0x4000 | ((vec << 2) & 0x0FFC),
+                                          sr, pc))
         self.uc.reg_write(UC_M68K_REG_A7, sp)
         self.uc.reg_write(UC_M68K_REG_PC, handler)
         return True
