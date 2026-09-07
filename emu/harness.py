@@ -70,7 +70,59 @@ class Machine:
         self.ensure(addr)
         self.uc.mem_write(addr, image)
 
-    # -- ISA gaps ----------------------------------------------------------
+    # -- ISA gaps (scoped, fast) --------------------------------------------
+    def install_isa_patches_scoped(self, image, load_addr):
+        """Same FF1/MOVEC emulation as install_isa_patches, but registered as
+        per-address hooks (Unicorn `begin=addr, end=addr`) instead of one
+        global UC_HOOK_CODE that runs a Python callback -- with a mem_read +
+        struct.unpack -- on *every single instruction executed*, just to see
+        if it happens to be one of these two rare opcodes.
+
+        Pre-scans `image` once for the exact addresses where these opcodes
+        occur and hooks only those. A found offset that never actually ends
+        up as a real instruction boundary (e.g. it's the operand byte of some
+        other instruction) simply never fires -- PC only ever equals real
+        instruction-boundary addresses during execution, so this is safe.
+        This was the single biggest cost in long dspboot.py runs: removing it
+        from the hot path is roughly a 2-4x wall-clock win on decompression-
+        and allocator-loop-heavy stretches of boot.
+        """
+        def make_ff1(reg):
+            def h(uc, addr, size, data):
+                v = uc.reg_read(reg) & 0xFFFFFFFF
+                out = 32 if v == 0 else 31 - v.bit_length() + 1
+                uc.reg_write(reg, out)
+                uc.reg_write(UC_M68K_REG_PC, addr + 2)
+                self.ff1_count += 1
+            return h
+
+        def make_movec(addr, w):
+            def h(uc, addr_, size, data):
+                ext = struct.unpack('>H', uc.mem_read(addr + 2, 2))[0]
+                rc = ext & 0x0FFF
+                reg = UC_M68K_REG_D0 + ((ext >> 12) & 7)
+                if w == 0x4E7B:
+                    self.ctlregs[rc] = uc.reg_read(reg)
+                else:
+                    uc.reg_write(reg, self.ctlregs.get(rc, 0))
+                uc.reg_write(UC_M68K_REG_PC, addr + 4)
+                self.movec_count += 1
+            return h
+
+        n_ff1 = n_movec = 0
+        for off in range(0, len(image) - 1, 2):
+            w = image[off] << 8 | image[off + 1]
+            addr = load_addr + off
+            if 0x04C0 <= w <= 0x04C7:
+                reg = UC_M68K_REG_D0 + (w & 7)
+                self.uc.hook_add(UC_HOOK_CODE, make_ff1(reg), begin=addr, end=addr)
+                n_ff1 += 1
+            elif w in (0x4E7A, 0x4E7B):
+                self.uc.hook_add(UC_HOOK_CODE, make_movec(addr, w), begin=addr, end=addr)
+                n_movec += 1
+        return n_ff1, n_movec
+
+    # -- ISA gaps ------------------------------------------------------------
     def install_isa_patches(self, extra_code_hook=None):
         """Emulate the ColdFire instructions Unicorn lacks."""
         def on_code(uc, addr, size, data):

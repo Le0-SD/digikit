@@ -281,8 +281,12 @@ processor with no open emulator, so the responses would have to be *synthesised*
 from a protocol nobody has documented. Boot cannot complete without that, and the
 UI task presumably never starts because DSP init never finishes.
 
-**Recommendation: do not pursue full boot.** The emulator is already useful for
-everything the patching work needs, and none of it requires booting:
+**Update (next session): the "do not pursue" call above was too pessimistic.**
+The DSP handshake did not need real SHARC replies synthesized -- it needed the
+*ColdFire-side* synchronization primitives satisfied, which turned out to be
+inspectable and fakeable without modeling the SHARC at all. See "DSP bring-up
+-- session 2" below: `task_create` sites reached went from 4/16 to 10/16 this
+way. The capability table remains accurate for what *doesn't* need booting:
 
 | capability | status |
 |---|---|
@@ -290,4 +294,226 @@ everything the patching work needs, and none of it requires booting:
 | aPLib depacker (`0x80000432`) | works, validates a 3.1 MB repack |
 | firmware graphics rendering (`emu/screen.py`) | works, pixel-exact vs ground truth |
 | Bitmap framebuffer encode/decode | works, verified two independent ways |
-| full boot to UI | blocked on synthesising SHARC replies |
+| full boot to UI | in progress -- 10/16 `task_create` sites reached, see below |
+
+## DSP bring-up -- session 2
+
+Starting point: 4/16 `task_create` (`0x400012c8`) call sites reached, ~37,627
+distinct code addresses, stuck inside the DSP-transport wait at `0x40128c7c`.
+Ending point: **10/16 `task_create` sites, 58,337 distinct addresses.** New
+tooling: `emu/dspboot.py` (instrumented boot harness, reusable) and a scoped-hook
+speedup added to `emu/harness.py`. All of it verified by running, not inferred.
+
+### Blocker 1 (cleared): the transport is a mutex+semaphore wrapper, not an RPC
+
+Re-reading `0x40128c7c` disassembly line by line (not just skimming) shows it
+is **not** "send a request word, wait for a reply word" as the earlier session
+guessed. It is:
+
+```
+lock mutex @0x44e4d6a4                          (0x400015a0)
+  (first call only: install ISR @0x40128c4c at vector 97,
+   enable INTC sources 0x21/0x1d, init completion sem @0x44e4d69c to 0)
+write timeout(!) -> 0xFC074004
+write control word 0x841b -> 0xFC074000          (kicks the transfer)
+jsr 0x4000141a   (sem_pend on 0x44e4d69c)        <-- blocks here
+unlock mutex (tail call into 0x400016d2)
+```
+
+The value each of the 4 call sites pushes (`0xF4240`, `0x3E8`, `0x64`,
+`0x2DC6C0` = 1,000,000 / 1,000 / 100 / 3,000,000) is a **microsecond timeout**
+written to hardware, not a command/payload word -- it is never read back by the
+ColdFire side. The real completion signal is the semaphore at `0x44e4d69c`,
+which the would-be completion ISR at `0x40128c4c` posts to via
+`0x4000155c -> 0x400011ee`.
+
+Critically, `0x4000141a` (sem-pend) has a fast, non-blocking path: if the
+semaphore's count field is already `>0`, it clears it and returns immediately
+without ever calling the scheduler (`trap #0`) -- and **every one of the 4
+callers discards its D0 return value** (overwritten immediately after the
+call), so nothing downstream ever checks "did the transfer really succeed."
+
+**Patch**: at `PC == 0x40128d08` (the `jsr 0x4000141a` instruction itself),
+write `1` into the 4 bytes at `0x44e4d69c` before it executes. No interrupt
+firing, no scheduler re-entry, no `rte` -- just pre-satisfying the flag the
+very next instruction is about to check. This is different from, and more
+surgical than, the earlier session's attempts (firing vector 97/33/29 by hand,
+or blanket-stubbing the whole transport function), which is presumably why
+those only gained ~330 addresses or moved the stall without progress.
+
+Result: the one transport call site actually reached at this point in boot
+(`0x400cf928`, timeout `0x3E8`) goes through. Two more polled hardware status
+registers immediately downstream needed the same treatment, discovered by
+running and reading what changed at the new stall PC:
+
+- `0xEC03802C` bit 31 (`0x400cf956`, a byte-at-a-time TX loop unrelated to the
+  already-known UART8/DSPI0 mocks -- a *second* status register pair,
+  `0xEC094018`/`0xEC03802C`, spent uploading what is very likely the SHARC ADI
+  loader blob byte-by-byte after the handshake succeeds)
+- `0xFC05C02C` bit 28 / RFDF (`0x40129da2`) -- same DSPI0 status register
+  already mocked for RXCTR, but a *different* bit, tested by a second,
+  synchronous SPI0 read routine reached only after the transport unblocks
+
+Both mocked the same way as the pre-existing UART8/DSPI0 mocks: force the
+polled bit permanently set in `Machine.mmio`.
+
+### A red herring that turned out to be correct behavior, not a bug
+
+Past the above, boot hit a second embedded aPLib-style depacker at
+`0x4012ab70` (distinct from the bootstrap's `0x80000432`, and from the
+flash-section-table depacker used by MAIN OS's own boot-time decompression --
+this one runs on in-memory buffers during DSP bring-up). One invocation
+(source `0x402489b4`, a *static address inside the already-loaded MAIN OS
+image*, not flash- or DSP-reply-dependent) appeared to run away: 2.6M+ hits at
+the same 3 addresses (`0x4012acba/bc/be`, its copy loop) with zero new code
+coverage for tens of millions of instructions -- classic infinite-loop
+signature.
+
+It is not one. Register tracing (dump D2/D3/A1 on every entry to the copy
+loop) showed match lengths never exceeding ~2KB; the "stall" was thousands of
+small, legitimate tokens through a tight loop, which the coverage-based stall
+heuristic cannot distinguish from a hang because it only tracks *new* PCs, not
+forward progress within a loop. Independently ruled out a Unicorn MVZ/MVS
+decode bug (the specific opcode class flagged as broken in Capstone) by
+testing `mvz.b`/`mvs.b` in isolation, register and `(a0)`/`(a0)+` addressing --
+all matched 68k semantics exactly. Given more instruction budget (400M+) this
+depacker completes normally and boot proceeds. A defensive safety valve was
+added anyway (clamp the copy count if it ever exceeds 64K, `DEPACK_COPY` in
+`emu/dspboot.py`) but it has never actually fired -- included for whatever
+comes next, not because it was needed here.
+
+**Lesson for next time**: before concluding a repeating-PC "stall" is a hang,
+dump the actual loop-bound register(s) a few times. A slow-but-finite loop and
+an infinite one look identical to a coverage-only heuristic.
+
+### Blocker 2 (cleared, and generalized): idle spins need timer ticks too
+
+With the above fixed, boot progressed in a large burst: task_create sites went
+4 -> 5 -> 9 -> 10 as longer instruction budgets were tried (47M, 257M, 416M).
+Between two of those bursts, boot hung again -- this time truly, 139M+
+instructions with zero new coverage, at `0x400cf3e0`.
+
+`0x400cf3e0` disassembles to `bra.b $400cf3e0` -- a literal self-branch. This
+is the **exact same idiom** as the already-known `HALT` idle loop
+(`0x400ceeb6`, also `bra.b $self`), which the harness already fed periodic
+timer ticks (vector 32) to keep the RTOS scheduler moving. But the harness only
+ever ticked *that one hardcoded address* -- a second thread/task's own
+idle-wait-for-scheduler point at a different address got no ticks at all, so
+once execution reached it, nothing could ever preempt it.
+
+**Fix, generalized rather than special-cased**: scanned all of MAIN OS for the
+opcode `0x60FE` (`bra.b -2`, i.e. branch-to-self) -- 13 occurrences total --
+and feed periodic timer ticks to *all* of them, not just the one instance
+someone happened to hit first (`find_idle_spins` in `emu/dspboot.py`). This is
+exactly the kind of fix the diverging/converging distinction in the task brief
+calls for: a class of blocker, not a single address.
+
+This got two of the three known idle points working correctly (`0x400ceeb6`
+and `0x400cf3e0` both now receive ticks and both did unblock at least once,
+confirmed by `spin_by_addr` counters saturating at clean multiples of
+`tick_every`).
+
+### Where it stands now: a new, different kind of stop
+
+After the burst that reached 10/16 (last new task at instruction ~416M,
+`0x400f1a6c` -> entry `0x400f1eb6`, prio 2), execution parked at `0x400cf3e0`
+and stayed there for the rest of a 1.4B-instruction run -- ~48,000 further
+timer ticks, zero new coverage.
+
+Traced precisely (not just inferred from the address repeating): `0x400cf3e0`
+sits between a one-shot guard and a permanent idle trap in the *same* function
+that produces 3 of the burst's 4 tasks:
+
+```
+400cf3d6  moveq #$40,d0
+400cf3d8  and.l $40288190.l,d0
+400cf3de  beq.b 400cf3e2                 ; bit clear -> do the work (it was clear: confirmed 0x40288190=0x04 at runtime)
+400cf3e0  bra.b 400cf3e0                 ; <-- idle trap, same idiom as HALT
+400cf3e2  jsr 0x4011311c                 ; wrapper containing task_create site 0x401131d2 (prio 7)
+400cf3e8  jsr 0x4014635e                 ; wrapper containing task_create site 0x4014638e (prio 5)
+400cf3ee  jsr 0x400329ee                 ; wrapper containing task_create site 0x40032a20 (prio 6)
+400cf3f4  bra.b 400cf3e0                 ; done -- park here forever by design, same as HALT
+```
+
+So this is **not** a guard repeatedly failing -- it passed once, did its
+one-shot job (matching the 3 near-simultaneous hits at instructions
+257710408/257710485/257710555), and then deliberately loops to the same idle
+trap as its designed terminal state, exactly like `HALT`. There is nothing
+further for *this* thread to do; it is functioning correctly. This resolves
+what looked like an open question in an earlier draft of this note.
+
+The real open question is why **no other** thread creates any of the
+remaining 6 `task_create` sites even after tens of thousands of scheduler
+ticks. The newly-created prio 2/5/6/7/8 tasks are themselves candidates to be
+the ones that would create more (or not -- they may simply be leaf worker
+tasks). Two live hypotheses, neither confirmed:
+
+1. One of the **other three** DSP transport call sites (`0x400cf000` timeout
+   `0xF4240`, `0x400cfd8a` timeout `0x64`, `0x4012d46e` timeout `0x2DC6C0`) is
+   what some other task is blocked on -- all session, only one of the four
+   (`0x400cf928`) has ever been exercised (`transport calls: 1` in every run).
+   If a task is parked in a *real* semaphore wait (`trap #0`, correctly
+   descheduled by the RTOS) rather than a self-branch idle loop, our idle-spin
+   fix does not apply to it -- it needs the same treatment as blocker 1
+   (satisfy whatever it is actually waiting on), not more timer ticks.
+2. The remaining 6 sites are in code that is reachable only through a
+   different subsystem-init path this cascade never calls into at all under
+   this configuration (not blocked -- just not on the current call graph).
+
+**Checked, and it points at hypothesis 1.** For each of the 6 tasks created
+after the first burst (prio 7/8/7/5/6/2), coverage tracking shows the RTOS
+scheduler *did* switch into every single one of them -- their entry addresses
+are all in `seen`, each followed by a small additional cluster of newly-hit
+addresses (6 to 31 distinct addresses within a few hundred bytes of its entry
+point). So `task_start` is not merely called on all 10 tasks
+(`task_start hits: 10`, already known) -- the scheduler genuinely gave CPU
+time to the 6 newest ones, each ran a handful of real instructions, and then
+every single one went quiet with no further coverage growth for the rest of
+a 450M/1.4B-instruction run. That is the signature of each one reaching its
+own short init sequence and then hitting a genuine blocking wait very
+quickly -- not of the scheduler failing to reach them (hypothesis 2, now
+effectively ruled out) and not of them running unboundedly (they are not
+CPU-bound). **Concrete next step**: for each of these 6, disassemble the
+handful of instructions right past where its coverage cluster ends -- that
+boundary is exactly where each one blocks, and is a small, bounded amount of
+code to read per task (nothing like the earlier multi-hundred-instruction
+transport functions).
+
+### Convergence assessment
+
+Up to 10/16: **converging**. Each fix (semaphore fast-path, two MMIO bit
+forces, generalized idle-spin ticking) unlocked either the next blocker or a
+burst of several `task_create` sites at once, and the depacker "stall" that
+looked alarming turned out to be a false alarm resolved by patience, not a
+patch. Past 10/16: **stalled, not diverging** -- one clearly-identified
+address, no new blockers appearing, but the fix used for the last two blockers
+(generic timer ticking) is confirmed insufficient here and the next fix needs
+actual tracing of `0x40288190`'s producer(s), most plausibly tied to one of
+the three still-unexercised transport call sites.
+
+### Performance: a 2x+ harness speedup, reusable
+
+`emu/harness.py` and `emu/dspboot.py`'s original hot path ran a single global
+`UC_HOOK_CODE` callback on *every instruction*, which for the FF1/MOVEC
+patches did a `mem_read` + `struct.unpack` unconditionally to check "is this
+one of the two rare opcodes" -- on every single instruction of the run, not
+just the rare ones. `Machine.install_isa_patches_scoped` (new) pre-scans the
+image once for the actual FF1 (`0x04C0`-`0x04C7`, 232 hits) and MOVEC
+(`0x4E7A`/`0x4E7B`, 7 hits) opcode addresses and registers a Unicorn hook
+scoped to each exact address (`begin=addr, end=addr`) instead. `emu/dspboot.py`
+does the same for its own instrumentation points (`fast=True`, the default;
+`fast=False` keeps the original global-hook path for cross-checking). Measured
+on identical 60M-instruction runs: 146s -> 73s wall-clock, same result
+(verified byte-for-byte identical task_create hits, addresses, priorities).
+This matters because runs at the scale needed here are 400M-1.4B instructions
+(9-25+ minutes each even with the speedup).
+
+### Reusable artifacts from this session
+
+- `emu/dspboot.py` -- the instrumented DSP bring-up harness. Reports
+  `task_create` sites reached (with entry/priority/tcb), transport call sites
+  hit, semaphore-satisfy count, depack-clamp count, idle-spin addresses found
+  and hit counts, distinct-address coverage curve, and stall PCs. Run directly:
+  `./venv/bin/python -m emu.dspboot <instruction_limit> <patch_sem 0|1>`.
+- `emu/harness.py` -- added `Machine.install_isa_patches_scoped`, a drop-in,
+  much faster alternative to `install_isa_patches` for long runs.
