@@ -1,17 +1,16 @@
-# Handover: make PIT injection sound, then the OS can draw
+# Handover: make interrupt delivery sound, then the OS can draw
 
-Previous goal (get past the intro into the main OS) is **half done, and be
-precise about which half**. Internally the intro runs all 175 frames, exits
-properly, and six previously-missing tasks spawn. **Visually nothing has
-changed yet:** `uv run python -m emu.gui` still ends on the last intro frame
-and the panel then sits still, because the task that drives the display is
-blocked. The status line now says so honestly -- "running, no frame for Ns",
-fps 0.00, tasks 6 -- instead of freezing while claiming 15 fps.
+The intro problem is solved. Internally the intro runs all 175 frames, exits,
+six previously-missing tasks spawn, the RTOS heartbeat runs and the display
+callback fires tens of thousands of times. **Visually nothing has changed
+yet:** `uv run python -m emu.gui` still ends on the last intro frame and sits
+there, because the GUI does not drive the PIT model (see section 2) and the
+panel task is not drawing. The status line says so honestly now -- "running,
+no frame for Ns", fps 0.00 -- rather than freezing while claiming 15 fps.
 
-The new problem is different in kind from the old one: every task now blocks
-*correctly*, and the system sits idle waiting for interrupts nothing
-delivers. Getting a pixel onto the panel again means supplying one of the
-three missing things in section 2, not undoing any of this.
+**Do not trust any post-intro result until section 2 is fixed.** Outcomes
+still depend on `spin`'s chunk size, which means they are artifacts. A whole
+session was lost to a C++ exception that turned out to be one.
 
 Read `docs/NEXT.md` for the project overview and `docs/FINDINGS.md` for
 evidence. This file is only about what is still open.
@@ -20,8 +19,7 @@ evidence. This file is only about what is still open.
 
 ## 0. Working tree is clean
 
-Three commits landed this session; nothing is left uncommitted. All checks
-pass -- run them before doing anything else:
+Everything below is committed. Run these first:
 
     uv run python -m emu.hle          # header-mutation ok=True
     uv run python -m emu.softfloat    # 0 mismatches
@@ -30,13 +28,26 @@ pass -- run them before doing anything else:
     uv run python -m emu.frame snapshots/boot400M.snap 20000000 out/frame.png
         # expect: setPixel 616823, 75 frames, 344 lit   <- the canary
 
-The canary moved from 617694 this session (eDMA now drains the TX ring, so
-the console-enqueue routine takes its short path instead of spinning). The
-rendered output is unchanged: still 75 frames, still 344 lit pixels.
+`snapshots/postintro.snap` (54.7M instructions past `boot400M.snap`) is the
+one to use for OS work: the intro is over, the draw task is parked, all six OS
+tasks exist, and iterating from it takes seconds. It needs no special setup
+any more -- the sites that used to have to be passed by hand are defaults now
+(`RECHECK_PENDS` in `emu/longrun.py`). The minimal harness is:
 
-`snapshots/postintro.snap` (54.7M instructions past `boot400M.snap`) is new
-and is the one to use -- the intro is over, the draw task is parked, all six
-OS tasks exist. Iterating from it takes seconds.
+    from emu.longrun import build, spin
+    from emu.pit import Pits
+    m, ev, st, pc, inq, at = build('snapshots/postintro.snap', unblock=True,
+                                   softfloat=True, bitmap=True)
+    p = Pits(m)
+    spin(m, pc, 60_000_000, chunk=50_000, on_chunk=lambda pc_, n: p.service(n))
+
+which currently gives PIT0 602, PIT2 728, 47,484 display callbacks, and no
+fault, throw or abort.
+
+One caveat: `postintro.snap` was written before `raise_vector` started using
+format nibble 4, so any exception frames already sitting on task stacks in it
+carry format 0. Harmless while `rte` is implemented in `on_intr` and ignores
+the field; it would matter if that ever became format-aware.
 
 ---
 
@@ -310,6 +321,17 @@ Real time is no longer ruled out. It is a 1.6x away, not a 3x away.
 | prio-3 task / FIFO poll / FIFO port | `0x400f1fce` / `0x400cf4ec` / `0x8C000002`, `0x8C00000A` |
 | PIT0..3 PCSR | `0xFC080000` / `84000` / `88000` / `8C000` |
 | PIT0/1/2/3 vectors | 205 `0x40000410` / 206 `0x40001252` / 207 `0x40002a18` / 208 `0x400d2d70` |
+| **RTOS context switcher** | `0x40000410` -- re-arms PIT0 and unmasks its INTC source on every switch |
+| **PIT2 ISR -> timer-wheel sem** | `0x40002a18` -> posts `0x47d9ade0` |
+| **timer-wheel task / callback list** | `0x40002a46` / `0x4094cdb8` (7 nodes; mask 1 = every tick) |
+| **display tick callback** | `0x4012651e` (mask 1) |
+| **INTC ICR / IMR** | `<intc>+0x40+source` / `+0x08` (IMRH), `+0x0C` (IMRL); INTC2 = `0xFC050000`, vector 205 = source 13 |
+| **PIT levels** | PIT0 1, PIT2 3, PIT3 3 |
+| **heap allocator** | malloc `0x4011122c`; body `0x40111044`-`0x4011137e` (do not preempt it unsoundly) |
+| **libgcc unwinder** | `_Unwind_Find_FDE` `0x4017a0e4`, LEB128/CFA parser `0x401772cc`, object lists `0x44f1de80`/`0x44f1de84`, `abort()` `0x4012d2fa` |
+| **C++ throw helper (takes a message)** | `0x401d0e24` -- hook it, read arg 1 as a C string |
+| **`__cxa_throw` / `_S_construct`** | `0x401d5680` / `0x401d3f16` |
+| **pend-and-recheck sites (never unblock)** | `0x40001946`, `0x400d4068`, `0x401260c2` |
 | INTC1 SIMR / CIMR | `0xFC04C01C` / `0xFC04C01D` |
 | string-format helper (UI log) | `0x40000e82` |
 | fault handler / HALT | `0x4010fcae` / `0x4010fd50` |

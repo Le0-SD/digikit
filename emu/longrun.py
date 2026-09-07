@@ -26,13 +26,27 @@ MAIN_IMG = 'sections/section_3_MAIN_OS.bin'
 
 PEND_A, PEND_B = 0x4000141a, 0x400013a6   # sem object is the arg at 4(a7)
 
-# Sites that decide how far `unblock` may go. QUEUE_RECV is the pend inside
-# queue_receive (0x40001928): it waits on the queue's own semaphore at
-# queue+8, then re-reads queue->count and loops. Satisfying that semaphore
-# without also enqueuing an item turns a sleep into an infinite spin --
-# measured at 8.9M iterations, ~92% of all post-intro cycles, on one queue.
-# Blocking there is the correct behaviour: nothing has arrived.
-QUEUE_RECV = 0x40001946                   # return address of that pend
+# Sites that decide how far `unblock` may go. Each of these is a pend whose
+# caller re-checks a condition afterwards and loops, so force-satisfying the
+# semaphore turns a sleep into an infinite spin. Blocking is the correct
+# behaviour at all of them: nothing has arrived.
+#
+#   QUEUE_RECV  the pend inside queue_receive (0x40001928). It waits on the
+#               queue's own semaphore at queue+8, then re-reads queue->count.
+#               Measured at 8.9M iterations, ~92% of all post-intro cycles.
+#   INTRO_PARK  the intro task's park loop (0x400d4060). It pends the SAME
+#               semaphore the intro loop pends at 0x400d4038, which must be
+#               satisfied -- so this has to be told apart by caller, not by
+#               semaphore. Blocking here is what frees the CPU once the intro
+#               is over, and unlike the INTRO_DONE hook below it also works on
+#               a snapshot taken after the intro had already finished.
+#   DISPLAY_WAIT  the prio-6 display task (0x4012606a) waiting on 0x44e2d148
+#               and re-checking a flag at 0x44e2d5cc.
+QUEUE_RECV   = 0x40001946
+INTRO_PARK   = 0x400d4068
+DISPLAY_WAIT = 0x401260c2
+RECHECK_PENDS = (QUEUE_RECV, INTRO_PARK, DISPLAY_WAIT)
+
 INTRO_DONE = 0x400d403c                   # intro loop's exit branch target
 FRAME_SEM  = 0x43131200                   # intro frame-pacing semaphore
 
@@ -65,10 +79,12 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
     frame semaphore 0x43131200 is the case that matters, since satisfying it
     is what makes the animation run unpaced.
 
-    `unblock` never satisfies a pend made from inside queue_receive: that one
-    re-checks the queue's item count after the wait, so satisfying it without
-    enqueuing anything spins instead of sleeping. It also stops satisfying the
-    intro frame semaphore by itself once the intro's exit path is reached.
+    `unblock` never satisfies a pend from any of RECHECK_PENDS -- call sites
+    that re-check a condition after the wait and loop, so satisfying them
+    spins instead of sleeping. It also stops satisfying the intro frame
+    semaphore by itself once the intro's exit path is reached, which covers a
+    run that executes the intro; RECHECK_PENDS covers a run resumed from a
+    snapshot taken after it.
 
     softfloat=True runs the firmware's float routines natively instead of
     emulating them. It is OFF by default: it is bit-exact but changes
@@ -190,7 +206,7 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
         # each caller -- getting it wrong is silent, it just looks like a hang.
         skip = set(unblock_except)
         ev['unblock_skip'] = skip
-        skip_callers = {QUEUE_RECV}
+        skip_callers = set(RECHECK_PENDS)
         ev['unblock_skip_callers'] = skip_callers
 
         def satisfy(uc, a, s, d):
