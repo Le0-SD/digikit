@@ -1244,6 +1244,105 @@ would be normally; output is captured by hooking `print` at `0x400054B4`.
 firmware-upload path is now drivable under emulation, so a patched image can
 be pushed at the device's own acceptance logic without touching hardware.
 
+## Boot reaches the main OS: the stall was eDMA, not a semaphore **[V]**
+
+The previous session's conclusion -- that `unblock=True` was needed for the
+intro and poisoned everything after it, and that `0x400d404a` was unreachable
+in 900M instructions -- had the right symptom and the wrong cause. The intro
+was not failing to *exit*; it was failing to *finish*. It stopped rendering at
+exactly frame 88 of 175, every time, and never got near its exit path.
+
+### The intro's own termination condition
+
+`0x400d3e94` (the render call at `0x400d402a`) returns 0 when the intro is
+over, and it is driven purely by call count, not by time:
+
+| | |
+|---|---|
+| scene count `[0x4313b290]` | 1 |
+| scene table `[0x4313b294]` | `0x4028ae2c` |
+| draw fn / frames | `0x400d3ab6` / **175** |
+
+So the intro is 176 render calls and nothing else. It is not waiting for a
+timer, and there was never a reason it could not finish.
+
+### Where it actually stopped
+
+`0x4000220c` is the firmware's "queue bytes for the console" routine. It opens
+with a spin loop waiting for room in a 4096-byte ring at `0x4FE1B000`:
+
+    4000221c  d2 = [0x4094cd90] + len          ; bytes wanted
+    40002232  d1 = w[0xFC045474]               ; TCD35.CITER
+    40002238  d3 = w[0xFC04547C]               ; TCD35.BITER
+    40002244  d1 = (d1 - d3) + ([cd88] - [cd94])
+    40002246  d1 &= 0xfff                      ; -> bytes still in the ring
+    40002252  if 0x1000 - d1 < d2: goto 4000221c
+
+Nothing advanced that channel, so the ring never drained. The intro draw task
+span there at priority 7 and starved everything -- which looked exactly like
+the priority-7 busy-spin `unblock=True` was blamed for.
+
+### Channel 35 is UART8 transmit
+
+TCD35 at `0xFC045460`, in the **ColdFire** eDMA layout where CITER is at +0x14
+and BITER at +0x1C (not the Kinetis order):
+
+    SADDR  = 0x4FE1B000   ring; ATTR = 0x6000 -> SMOD 12, source modulo 4096
+    NBYTES = 1            one byte per request
+    DADDR  = 0xEC07000C   UDR8, DOFF = 0
+
+`0xFC044018` is EDMA_SERQ (start), `0xFC044019` CERQ (stop). Vector **155**
+points at `0x40001e7c`, the channel-35 completion ISR -- ch34 (RX) is 154, so
+the vectors are contiguous. The ISR clears EDMA_CINT, sets `[cd94] = [cd88]`,
+and either parks the channel or chains the next transfer.
+
+`emu/edma.py` runs the whole major loop on a SERQ write, advances SADDR with
+the ring modulo, reloads CITER from BITER as hardware does at major-loop
+completion, and raises vector 155 so the firmware's own ISR does the
+bookkeeping. The completion is queued rather than raised inside the write
+hook: the enqueue routine writes SERQ with SR = 0x2700, so hardware could not
+deliver it there either.
+
+The firmware ring fields, all confirmed against the enqueue routine and the
+ISR: `cd74` state (0 idle / 1 running / 2 draining), `cd7c` ring base, `cd88`
+head, `cd8c` write index, `cd90` bytes queued but not yet handed to DMA,
+`cd94` offset fully drained.
+
+### Result
+
+Intro runs all 175 frames, then reaches `0x400d404a`, `0x400d4058` and
+`0x400d4060`. Six previously-missing tasks spawn (`0x400f1eb6` prio 2,
+`0x4012606a` prio 6, `0x400f1fce` prio 3, `0x40127b24` prio 5, `0x40127c78`
+and `0x40127d9e` prio 4) and `0x40000e82` formats real parameter values:
+`'%s: %.16s' 'ONE'`, `'FWD'`, `'OFF'`, `'0.00'`.
+
+PIT3's PCSR goes `0x093f -> 0x0000` across the intro, by the firmware's own
+`move.w d0,$fc08c000` -- so a PCSR-gated PIT model stops delivering frames
+after the intro without being told to. PIT0 (50 Hz, vec 205) and PIT2
+(59.998 Hz, vec 207) stay enabled; PIT1 is off.
+
+### `unblock` had to be narrowed, not removed **[V]**
+
+Blanket-satisfying every pend hid a second copy of the same mistake.
+`queue_receive` (`0x40001928`) pends on the queue's own semaphore at queue+8
+and then **re-reads `queue->count`**. Satisfying the semaphore without also
+enqueuing an item turns a sleep into an infinite spin: 8.9M iterations, ~92%
+of all post-intro cycles, on one queue.
+
+The fix is caller-based, not semaphore-based, so it generalises to every queue
+in the system: never satisfy a pend whose return address is `0x40001946`. The
+same shape appears again at `0x401260c2` in the prio-6 task, which pends on
+`0x44e2d148` then re-checks a flag at `0x44e2d5cc`.
+
+Caller-based discrimination also removes the intro handoff entirely. The intro
+loop pends the frame semaphore from `0x400d4038` and must be satisfied; the
+park loop pends the *same* semaphore from `0x400d4068` and must not be. Two
+different callers, one rule, no state to hand over -- and it survives a
+snapshot taken after the intro.
+
+Post-intro pends satisfied: **8.9M -> 1.** Nine tasks reach clean blocking
+waits instead of spinning.
+
 ## The part is an NXP MCF5441x (ColdFire V4m) **[V]**
 
 Established from the peripheral map the firmware itself uses, which is an
@@ -1271,28 +1370,63 @@ core/2 that implies a 264 MHz core, slightly over the published maximum. The
 clock domain and we used the firmware's own constant, cross-checked by three
 timers landing on round rates.
 
-## Live real-time is not reachable; the arithmetic **[V]**
+## What actually limits speed: our hook layer, not Unicorn **[V]**
 
-Measured, not estimated:
+Superseded by measurement. An earlier version of this section reported
+"Unicorn m68k ceiling here 2.90M instr/s" and concluded that live 15 fps was
+out of reach for Unicorn plus Python hooks. **The ceiling figure was
+mis-attributed.** It is the speed of *this workload with our hooks*, not
+anything Unicorn imposes.
+
+| measured on this machine | |
+|---|---|
+| hook-free m68k loop, `count=` on | **250.8M instr/s** |
+| our workload, both HLEs on | 1.3-2.5M instr/s |
+
+Two orders of magnitude sit between those, and all of it is ours.
+
+### `count=` on emu_start costs 1.84x
+
+Passing `count` makes Unicorn install an internal per-instruction hook to
+decrement the budget, which defeats its fast dispatch path. Over the same 40
+rendered frames:
 
 | | |
 |---|---|
-| instructions per frame, both HLEs on | 312k |
-| Unicorn m68k ceiling here | 2.90M instr/s |
-| fps if handler cost were **zero** | 9.28 (62% of real time) |
-| fps measured | 4.43 (30% of real time) |
-| budget to hit 15 fps live | <= 193k instructions/frame |
-| the rasteriser alone (51%) | 159k |
+| `count=250_000`, chunked loop | 8.07s |
+| uncounted, stop from a hook at frame completion | 4.39s |
 
-So even with perfect, free hooks we top out around 62% of real time, and the
-only way under the 193k budget is to stop emulating the rasteriser -- which is
-the thing the emulator exists to watch. **Live 15 fps is out of reach for
-Unicorn plus Python hooks.** Getting there would need a native hook layer or a
-different core, and `Replay 15fps` already shows the animation at true speed
-from pixel-identical frames.
+The cost is `count` itself, not the number of emu_start calls: over the same
+100 frames, `count=20k` (1308 calls), `count=500k` (53 calls) and `count=1e9`
+(1 call) all land within 3% of each other. Chunking was never the price.
 
-Remaining cheap headroom: the other ~17% of scattered math would be worth
-about 5.3 fps if fully HLEd. Not nothing, not real time.
+`emu/longrun.py:run_until` is the uncounted form. Stop only from a hook that
+has already advanced PC past the current instruction -- the setPixel HLE
+writes PC = return address, so it qualifies. Stopping from a plain code hook
+leaves PC on the hooked address and the resume re-enters the same hook
+immediately: the run then spins making no progress while appearing to
+iterate, which is how an early attempt at this measured a fictitious 118x.
+
+`emu/gui.py` now stops per completed panel frame instead of every 250k
+instructions: **9.34 fps during the intro, 62% of the real 15.00 Hz, against
+~30% before.**
+
+### Where the remaining time goes
+
+cProfile over 10M instructions, both HLEs on:
+
+| | share |
+|---|---|
+| `emu_start` -- Unicorn actually executing m68k | 34% |
+| Unicorn's Python ctypes binding | ~54% |
+| our own handler logic | ~12% |
+
+1.02M of 10M instructions cross into Python. Per crossing we pay a ctypes
+`create_string_buffer` allocation for every `mem_read` (1.94M of them) and a
+separate FFI call for every `reg_write` (1.85M). The dominant cost is the FFI
+boundary, not our logic and not the chip model -- so the next wins are fewer
+crossings and cheaper crossings, not a better peripheral model. Real time is
+no longer ruled out.
 
 ### A measurement mistake worth recording
 
@@ -1303,11 +1437,12 @@ the soft-float code, so the two runs cover completely different amounts of
 firmware work per instruction -- the comparison was not apples to apples.
 
 Acting on it produced only 8% (4.10 -> 4.43 fps): precompiled `struct.Struct`
-codecs, unpacking arguments directly as `>f` instead of bits-then-convert (the
-old `b2f`/`f2b` each cost a pack *and* an unpack), and caching Bitmap geometry
-per pointer instead of re-reading the header on all 8,192 setPixel calls per
-frame. All verified: both selftests still report 0 mismatches and frames stay
-pixel-identical. Worth keeping, but it did not change the conclusion.
+codecs and unpacking arguments directly as `>f` instead of bits-then-convert
+(the old `b2f`/`f2b` each cost a pack *and* an unpack). Those are worth
+keeping. The third change in that batch -- caching Bitmap geometry per pointer
+-- was **a bug**, not a win, and has been reverted: the firmware mutates the
+fields of an existing Bitmap. See the note in `emu/hle.py`.
 
-The lesson matches the earlier `install_mmio` one: only trust an A/B where the
-two sides do the same work.
+The lesson matches the earlier `install_mmio` one, and the fictitious 118x
+above, and the "2.90M ceiling" this section replaces: only trust an A/B where
+the two sides do the same work.
