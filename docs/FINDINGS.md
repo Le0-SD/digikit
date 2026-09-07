@@ -686,3 +686,24 @@ so the rasterise step has not run yet. **[O]**
 Note this corrects the previous entry, which read the buffer as floats and
 described it as a dither field. The values that made it look like a smoothly
 varying field were coordinates.
+
+### The firmware's draw path has not executed — timeboxed negative **[V]**
+
+Two traces from the 280M checkpoint, 100M instructions each:
+
+- **No reads of the particle array** at `0x44f52000` — so nothing has consumed
+  the animation state yet.
+- **No writes to either 8bpp buffer** (`0x43139290`, `0x43137290`).
+- **`Bitmap::setPixel` (0x40104eb4): 0 calls. `px_copy_to_bitmap` (0x400d315e):
+  0 calls.**
+
+So the intro task is still in its *compute* phase — animating particles — and the
+rasterise/draw stage begins later, or waits on something not yet satisfied. No
+callable entry point for it was found, so per the agreed timebox this stops here
+rather than becoming another grind.
+
+What we do have: the animation state itself is readable and renderable
+(4,096 particles plotted on the real 128x64 geometry), and the final stage
+(`px_copy_to_bitmap` -> `Bitmap` -> decode) is independently verified pixel-exact
+by `emu/screen.py`. Only the middle link — particles to 8bpp raster — is missing,
+and it is missing because it has not *run*, not because it is not understood.
