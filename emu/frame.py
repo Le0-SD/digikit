@@ -8,7 +8,7 @@ any pend whose count is <= 0, i.e. "the awaited event has always just
 happened". With that, the draw task runs and Bitmap::setPixel executes for
 the first time.
 
-Usage: python -m emu.frame [snapshot] [instrs] [out.png]
+Usage: python -m emu.frame [snapshot] [instrs] [out.png] [scale]
 """
 import struct, sys, os, time, collections
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,7 +27,7 @@ def ascii_art(fb, w=W, h=H):
     return '\n'.join(rows)
 
 
-def main(snapshot, instrs, out='out/frame.png'):
+def main(snapshot, instrs, out='out/frame.png', scale=6):
     m, ev, st, pc, inq, at = build(snapshot, unblock=True)
     stats = collections.Counter()
 
@@ -63,11 +63,19 @@ def main(snapshot, instrs, out='out/frame.png'):
     lit = sum(1 for v in shot.values() if v)
     print('frame           : %d pixels set, %d lit' % (len(shot), lit))
     os.makedirs(os.path.dirname(out) or '.', exist_ok=True)
-    px = bytearray(W * H)
+    # The panel is 128x64, which is unreadable at 1:1 in any image viewer, so
+    # nearest-neighbour it up. Scaling is integer, so no pixel is invented.
+    s = max(1, scale)
+    px = bytearray(W * s * H * s)
     for (x, y), v in shot.items():
-        px[y * W + x] = 255 if v else 0
-    open(out, 'wb').write(png(px, W, H))
-    print('wrote %s' % out)
+        val = 255 if v else 0
+        if val:
+            for dy in range(s):
+                row = (y * s + dy) * W * s + x * s
+                for dx in range(s):
+                    px[row + dx] = val
+    open(out, 'wb').write(png(px, W * s, H * s))
+    print('wrote %s  (%dx%d, %dx scale)' % (out, W * s, H * s, s))
     print()
     print(ascii_art(shot))
 
@@ -76,4 +84,5 @@ if __name__ == '__main__':
     snap = sys.argv[1] if len(sys.argv) > 1 else 'snapshots/boot400M.snap'
     n = int(sys.argv[2]) if len(sys.argv) > 2 else 60_000_000
     out = sys.argv[3] if len(sys.argv) > 3 else 'out/frame.png'
-    main(snap, n, out)
+    sc = int(sys.argv[4]) if len(sys.argv) > 4 else 6
+    main(snap, n, out, sc)
