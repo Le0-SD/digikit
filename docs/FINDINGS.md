@@ -517,3 +517,39 @@ This matters because runs at the scale needed here are 400M-1.4B instructions
   `./venv/bin/python -m emu.dspboot <instruction_limit> <patch_sem 0|1>`.
 - `emu/harness.py` -- added `Machine.install_isa_patches_scoped`, a drop-in,
   much faster alternative to `install_isa_patches` for long runs.
+
+### Next blockers, named **[V]**
+
+After reaching 10/16 tasks, the remaining ones start and then go quiet. Measured,
+not guessed:
+
+1. **They are not blocked on semaphores.** There are two counting-semaphore pend
+   primitives, both with a fast path when count > 0: `0x4000141a` and
+   `0x400013a6`. Logging every call to both across 150M instructions finds
+   **exactly one** — the already-patched transport wait at `0x40128d0e`. So the
+   stalled tasks are not waiting on anything; they are not being scheduled.
+   (`emu/blockers.py` does this logging.)
+2. **The scheduler is hand-cranked.** Injecting `trap #0` (vector 32 — the
+   task-switch trap) is the only thing that helps. Compared at 60M instructions:
+
+   | injected vector | tasks | distinct addrs |
+   |---|---|---|
+   | 32 (trap #0) | 5 | 38,247 |
+   | 66 | 2 | 329 |
+   | 221 | 2 | 260 |
+   | 222 | 2 | 260 |
+
+   The candidate hardware ISRs installed during init (vectors 221/222/66 →
+   handlers `0x400019bc`/`0x400019e6`/`0x40001a10`) are **not** the system tick.
+   So we are forcing context switches rather than running a real scheduler.
+
+**The prize is identified.** Task `0x400d3fb6` (prio 7, created at instr 47M) is
+the **intro/animation task**: it calls a RNG at `0x40144bd8`, compares results
+against `0x7fdf` and `0x3ffe`, and selects among static structs at
+`0x4028ae5c`/`0x4028ae6c` — the same neighbourhood as the known intro
+`PixelData` at `0x4028ae98`. If that task runs, it draws, and `emu/screen.py`
+can capture the result.
+
+**So the next blocker to attack is the scheduler itself**, not another
+peripheral: find the real tick source, or drive the context-switch path directly
+against the ready-list/TCB structures so tasks round-robin properly. **[O]**
