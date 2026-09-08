@@ -516,6 +516,10 @@ resolution, and `emu_stop` under `spin` is forbidden.
 
 ## 6b. Storage: the eSDHC, and why there is none
 
+**README.md states storage as unsupported**, which is the honest public
+position until block data is served. Keep it that way until item 2 below lands.
+
+
 The goal is an emulated MMC backed by a host folder. This is the reconnaissance
 for it. **Nothing here is implemented yet.**
 
@@ -1015,6 +1019,7 @@ hook-free. The gap is hook-induced translation-block fragmentation plus
 ## 14. Tools
 
     uv sync
+    uv run python -m emu.run [syx] [--weakptr]     # syx -> running, one command
     uv run python -m emu.gui [snap] [--weakptr] [--slc] [--scale N]  # live panel
     uv run python -m emu.uiprobe sweep             # the section 1 table
     uv run python -m emu.uiprobe run <snap> <n> 3  # one run + panel + backtrace
