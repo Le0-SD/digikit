@@ -23,7 +23,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unicorn import UcError
 from unicorn.m68k_const import UC_M68K_REG_PC, UC_M68K_REG_SR
-from emu.longrun import build, run_until
+from emu.longrun import build, spin, INTRO_DONE
+from emu.pit import Pits, intro_running
 from emu.screen import png
 
 # The intro's frame rate is not a guess. PIT3 is configured at 0x400d3a7a with
@@ -43,10 +44,18 @@ CURRENT_TCB = 0x47d9adb4
 # the ground is genuinely black rather than dark grey.
 OFF = b'\x0c\x0e\x12'
 ON = b'\xe8\xf6\xff'
-# The emulator thread runs uncounted and stops at each completed panel frame
-# instead of every N instructions: `count=` on emu_start costs ~1.8x for the
-# same work (see longrun.run_until). A frame is also the only boundary the UI
-# actually cares about, so nothing is lost but the exact instruction tally.
+# The worker runs under spin(pits=...), which steps to each PIT deadline and
+# so delivers the OS heartbeat: the RTOS time slice (PIT0), the software timer
+# wheel (PIT2) and the display frame timer (PIT3). Without it the GUI ran the
+# firmware with no interrupts at all, which is why it showed none of the
+# post-intro progress the harness could already reach -- the display task sat
+# blocked on a semaphore only PIT3's handler ever posts.
+#
+# It costs about 1.8x: deadline stepping needs `count=` on emu_start, and that
+# makes Unicorn install an internal per-instruction hook (see longrun.spin).
+# The cost is in `count` itself and not in how often emu_start is called, so
+# there is nothing to win by making BUDGET bigger than responsiveness wants.
+BUDGET = 1_000_000        # instructions per pass, ~0.4s: pause/stop latency
 
 
 class Emulator(threading.Thread):
@@ -63,7 +72,7 @@ class Emulator(threading.Thread):
         self.ready = threading.Event()
         self.stats = {'frames': 0, 'px': 0,
                       'pc': 0, 'tcb': 0, 'tasks': 0, 'prints': 0, 'fps': 0.0,
-                      'bmp': 0,
+                      'bmp': 0, 'instrs': 0, 'pit': (0, 0, 0),
                       'status': 'loading snapshot'}
         self._uc = None             # set once the machine is built
         self.error = None
@@ -82,11 +91,14 @@ class Emulator(threading.Thread):
                 self.stats['fps'] = 1.0 / max(1e-6, now - self._frame_t)
                 self._frame_t = now
                 self._seen.clear()
-                # Hand control back to the worker loop so it can honour pause
-                # and stop. Safe here and nowhere else: the setPixel HLE has
-                # already written PC = return address, so the resume does not
-                # land back on this hook.
-                self._uc.emu_stop()
+                # Deliberately no emu_stop here any more. Under spin() a hook
+                # that stops the run early makes the instruction accounting a
+                # lie -- emu_start returns having executed fewer than it was
+                # asked for, the loop credits itself the full step, and every
+                # timer deadline drifts away from the instructions actually
+                # executed. The worker regains control every BUDGET
+                # instructions instead, which is soon enough for pause and
+                # stop to feel immediate.
             self._seen.add((x, y))
             self.fb[y * W + x] = val
             self.stats['px'] += 1
@@ -113,6 +125,14 @@ class Emulator(threading.Thread):
             return
 
         self._uc = m.uc
+        # PIT0 time slice, PIT2 wheel, PIT3 display -- but not until the intro
+        # has handed over. Delivering into a running intro stops it ever
+        # ending (PIT3 double-posts the frame semaphore that unblock is
+        # already satisfying) and stops the OS tasks spawning (PIT2). See
+        # emu.pit.Pits.
+        pits = Pits(m, hold=intro_running(m))
+        if pits.held:
+            at(INTRO_DONE, lambda uc, a, s, d: pits.release())
         self.ready.set()
         self.stats['status'] = 'running'
         while not self.stop_flag.is_set():
@@ -120,8 +140,8 @@ class Emulator(threading.Thread):
                 self.stats['status'] = 'paused'
                 time.sleep(0.05)
                 continue
-            # Work out the status BEFORE blocking, not after: run_until sits
-            # inside Unicorn for up to its timeout, so whatever is set here is
+            # Work out the status BEFORE blocking, not after: spin sits
+            # inside Unicorn for a whole BUDGET, so whatever is set here is
             # what the UI shows for that whole window. Setting it afterwards
             # leaves the stale value on screen for the entire block and the
             # fresh one for microseconds.
@@ -135,10 +155,12 @@ class Emulator(threading.Thread):
                 self.stats['status'] = 'running, no frame for %.0fs' % idle
             else:
                 self.stats['status'] = 'running'
-            pc, stop = run_until(m, pc)
-            if stop != 'stopped':
+            pc, executed, stop = spin(m, pc, BUDGET, pits=pits)
+            if stop != 'limit':
                 self.stats['status'] = 'halted: %s' % stop
                 break
+            self.stats['instrs'] += executed
+            self.stats['pit'] = (pits.fired[0], pits.fired[2], pits.fired[3])
             self.stats['pc'] = pc
             self.stats['tasks'] = len(ev['tasks'])
             self.stats['prints'] = len(ev['prints'])
@@ -302,9 +324,12 @@ class App(tk.Tk):
                             100.0 * s['fps'] / FRAME_HZ))
                 self.status.configure(
                     text='%s   %.1f fps   %d frames   %d tasks\n'
-                         'pc 0x%08x   task 0x%08x   bitmap 0x%08x   setPixel %d'
+                         'pc 0x%08x   task 0x%08x   bitmap 0x%08x   setPixel %d\n'
+                         'PIT0 %d   PIT2 %d   PIT3 %d   %.1fM instructions'
                          % (s['status'], s['fps'], s['frames'], s['tasks'],
-                            s['pc'], s['tcb'], s['bmp'], s['px']),
+                            s['pc'], s['tcb'], s['bmp'], s['px'],
+                            s['pit'][0], s['pit'][1], s['pit'][2],
+                            s['instrs'] / 1e6),
                     fg='#9aa7b8')
         self.after(60, self.tick)
 

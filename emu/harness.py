@@ -35,6 +35,11 @@ class Machine:
         self.ctlregs = {}       # MOVEC control registers
         self.ff1_count = 0
         self.movec_count = 0
+        # Set by install_exceptions when a vector has no handler and the run
+        # is stopped from inside the hook. emu_start then returns *without
+        # raising*, so a caller that assumes it executed its full budget will
+        # race to the end of a run that never happened.
+        self.halt_vec = None
         self.uc.hook_add(UC_HOOK_MEM_INVALID, self._fault)
 
     # -- memory ------------------------------------------------------------
@@ -195,6 +200,7 @@ class Machine:
             if not self.raise_vector(vec, from_instruction=True):
                 if on_unhandled:
                     on_unhandled(vec)
+                self.halt_vec = vec
                 uc.emu_stop()
         self.uc.hook_add(UC_HOOK_INTR, on_intr)
 

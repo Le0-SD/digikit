@@ -284,8 +284,38 @@ def run_until(m, pc, timeout_ms=250):
     return m.uc.reg_read(UC_M68K_REG_PC), stop
 
 
-def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False):
+def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None,
+         cap=None):
     """Run in chunks. -> (pc, executed, stop_reason).
+
+    Pass `pits` (an emu.pit.Pits) to run to each timer deadline exactly
+    instead of to a fixed chunk. `chunk` is then unused: the step is
+    whatever remains before the next PIT is due, so an interrupt lands on
+    the instruction the timer was due at. Without this, the same run from
+    the same snapshot gives different fault counts and different display
+    callback counts for nothing but a different chunk size. `cap` bounds a
+    single step for a caller that needs to regain control periodically.
+    Servicing the timers is part of this loop when `pits` is given, so do
+    not also service them from `on_chunk`.
+
+    A `Pits` holds its deadlines as absolute instruction counts, and `done`
+    here restarts at zero on every call, so successive calls with the same
+    `Pits` resume from `pits.now` rather than rewinding the clock. Without
+    that, a caller that spins in a loop -- the GUI does -- gets timer ticks
+    during its first call and silence afterwards, because every deadline is
+    already in the past-that-is-now-the-future.
+
+    In `pits` mode `instrs` is a floor, not a ceiling: the loop finishes the
+    deadline step it is on, so it returns having executed up to one timer
+    period more than asked. That is deliberate. It makes one call of N
+    instructions and ten calls of N/10 execute the identical instruction
+    stream, which is what lets the GUI and the measurement harness agree.
+
+    Accounting is of what actually executed, not what was requested. When a
+    vector has no handler, `install_exceptions` stops the run from inside
+    the hook: emu_start returns normally, having executed nothing, and a
+    loop that credits itself the full step races to the instruction budget
+    in seconds and reports a run that never happened.
 
     tick=True injects a vector-32 (scheduler) trap at every chunk boundary.
     That is NOT what the hardware does and NOT what dspboot.run does -- it
@@ -300,17 +330,32 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False):
     something genuinely has to happen per fixed number of instructions.
     """
     done, stop = 0, 'limit'
+    base = pits.now if pits is not None else 0      # resume, do not rewind
     while done < instrs:
-        try: m.uc.emu_start(pc, 0, count=min(chunk, instrs - done))
+        # No `remaining` in pits mode: run the whole deadline step and
+        # overshoot `instrs` rather than truncating, so every emu_start
+        # boundary is a timer deadline no matter how the caller splits its
+        # budget. See Pits.step.
+        step = (pits.step(base + done, None, cap) if pits is not None
+                else min(chunk, instrs - done))
+        m.halt_vec = None
+        try: m.uc.emu_start(pc, 0, count=step)
         except UcError as e: stop = str(e); break
-        pc = m.uc.reg_read(UC_M68K_REG_PC); done += chunk
+        pc = m.uc.reg_read(UC_M68K_REG_PC)
+        if m.halt_vec is not None:
+            stop = 'unhandled vector %d at %#010x' % (m.halt_vec, pc)
+            break
+        done += step
+        if pits is not None:
+            pits.now = base + done
+            pits.service(base + done)
+            # raise_vector moves PC. Resuming at the stale one leaves the
+            # exception frame stranded on the stack: the next rts pops it as
+            # a return address and jumps to nowhere. Cost a session once, as
+            # a vector-4 fault exactly one timer tick after the first.
+            pc = m.uc.reg_read(UC_M68K_REG_PC)
         if on_chunk:
             on_chunk(pc, done)
-            # on_chunk may have raised a vector -- emu/pit.py does. That moves
-            # PC, and resuming at the stale one leaves the exception frame
-            # stranded on the stack: the next rts pops it as a return address
-            # and jumps to nowhere. Cost a session once, as a vector-4 fault
-            # exactly one timer tick after the first.
             pc = m.uc.reg_read(UC_M68K_REG_PC)
         if tick and (m.uc.reg_read(UC_M68K_REG_SR) & 0x0700) != 0x0700:
             m.raise_vector(32); pc = m.uc.reg_read(UC_M68K_REG_PC)

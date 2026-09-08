@@ -17,7 +17,11 @@
 set -e
 
 GHIDRA=${GHIDRA:-/opt/homebrew/Cellar/ghidra/12.1.3/libexec/support/analyzeHeadless}
-PROJ=${GHIDRA_PROJ:-$HOME/.cache/dt2-ghidra}
+# NOT under ~/.cache: Ghidra rejects any project path element beginning with a
+# dot ("Path element starting with '.' is not permitted") and both `import`
+# and `run` died on it, `run` quietly enough that it looked like the scripts
+# were returning no results.
+PROJ=${GHIDRA_PROJ:-$HOME/ghidra-projects/dt2}
 NAME=dt2
 IMG=sections/section_3_MAIN_OS.bin
 BASE=0x40000400            # dspboot.MAIN_LOAD

@@ -30,6 +30,20 @@ slower -- it is unstable. Measured over 60M instructions from
 tried; adding PIT0 removed every abort and every spurious exception, and left
 faults at only two. So both are on by default.
 
+**PIT3 is the display frame timer, and it is what the OS is waiting for.**
+The intro switches PIT3 off on its way out, so it looks dead after the intro
+and was left out of `channels` for a long time. It is not dead: the display
+module's start routine at `0x40126004` re-points vector 208 from the intro's
+handler to its own at `0x40125f3c`, reprograms PMR to `0x4323` and sets
+EN|PIE, and that handler does one thing -- ack PIT3 and post semaphore
+`0x44e2d148`. The prio-6 display task at `0x4012606a` pends on exactly that
+semaphore. Deliver PIT0 and PIT2 but not PIT3 and the task blocks forever on
+a semaphore nothing in the system ever posts: measured over 60M instructions
+from `postintro.snap`, the task ran once, pended once, and never woke.
+Adding PIT3 takes the same run from 2 spawned tasks to 6, runs the display
+geometry setter at `0x40125f6a` eleven times, and reaches the first
+`px_copy_to_bitmap`.
+
 Delivery is gated on PCSR bit 0 (enable) and bit 3 (interrupt enable), so the
 intro switching PIT3 off with its own `move.w d0,$fc08c000` stops frame
 delivery without the emulator being told, and the display module switching
@@ -57,6 +71,7 @@ exactly one tick after the first. `emu/longrun.py:spin` does this correctly;
 a hand-rolled loop is where it goes wrong.
 """
 import collections
+import math
 import struct
 
 from unicorn.m68k_const import UC_M68K_REG_SR
@@ -73,22 +88,94 @@ INSTR_PER_SEC = 4_680_000             # 312k instructions per frame at 15 fps
 INTC = ((0xFC048000, 64), (0xFC04C000, 128), (0xFC050000, 192))
 ICR_BASE, IMR_BASE = 0x40, 0x08
 
+# How far to run in one go when every timer is switched off and there is no
+# deadline to aim at. Only the pacing of a dead clock depends on it.
+IDLE_STEP = 1_000_000
+
+INTRO_PIT3_ISR = 0x400d2d70       # the intro's own vector-208 handler
+PIT3_VECTOR_SLOT = 0x40000340     # VBR + 208*4
+
+
+def intro_running(m):
+    """-> True while the intro still owns PIT3.
+
+    The intro paces its own frames off PIT3 (vector 208 -> 0x400d2d70) and
+    switches the timer off on its way out; the display module then claims the
+    same vector for itself. So "vector 208 still points at the intro's
+    handler and PIT3 is enabled" is exactly the window in which the intro is
+    live, and it distinguishes `boot400M.snap` (enabled) from
+    `postintro.snap` (switched off) without either being told apart by name.
+    """
+    try:
+        slot = struct.unpack('>I', m.uc.mem_read(PIT3_VECTOR_SLOT, 4))[0]
+        pcsr = struct.unpack('>H', m.uc.mem_read(BASES[3], 2))[0]
+    except Exception:
+        return False
+    return slot == INTRO_PIT3_ISR and bool(pcsr & EN)
+
 
 class Pits:
     """Deliver PIT interrupts on an instruction-count clock.
 
-    `channels` defaults to PIT0 and PIT2: the time slice and the timer-wheel
-    tick. Delivering only one of them is measurably worse than delivering
-    both -- see the module docstring.
+    `channels` defaults to PIT3, PIT2 and PIT0: the display frame timer, the
+    timer-wheel tick, and the time slice. Delivering only some of them is
+    measurably worse than delivering all -- see the module docstring.
+    Listing a channel does not deliver it: `period` returns None while the
+    firmware has the timer switched off, so an unused channel costs two
+    memory reads per step and nothing else.
+
+    **The order is load-bearing, and it is a stopgap.** `service` walks the
+    list, and the first timer taken raises IPL to its own level, which
+    refuses any later one at the same level. PIT3's period is exactly eight
+    times PIT2's, so once their deadlines line up they collide on the same
+    instruction for ever, and both sources are INTC level 3. Measured from
+    `boot400M.snap` over 250M instructions: listed as `(0, 2, 3)`, PIT3 is
+    due 281 times and taken **none** of them and the display task never
+    wakes; listed as `(3, 2, 0)`, PIT3 is taken 130 times, at the cost of
+    PIT2's misses rising from 29 to 160. Losing 6% of timer-wheel ticks is a
+    much smaller price than never running the display timer, so PIT3 leads.
+
+    What this really wants is a latched PIF per channel -- a refused tick
+    held and delivered when IPL drops, which is what the hardware does --
+    rather than an arbitrary tie-break. That was tried both ways and both
+    are worse: retrying at the next timer deadline lands the interrupt
+    wherever that deadline falls and halts the run on an unhandled vector at
+    58.7M instructions, and delivering from the `rte` handler is correct but
+    puts a Python callback on every `rte`, including the RTOS's trap-based
+    yields, which is far too slow to finish a run. Note also that the real
+    tie-break between two same-level sources is the INTC's, by source
+    number, and we have not read the MCF5441x manual to find out which way
+    it goes -- PIT2 is INTC2 source 15 and PIT3 is source 16.
+
+    **Do not deliver anything while the intro is still running.** The intro is
+    driven by `unblock` force-satisfying its frame semaphore, and a real PIT3
+    tick posts that same semaphore a second time: the draw loop then never
+    reaches its exit test and the intro never ends. PIT2 is worse in a quieter
+    way -- the intro exits, but the six OS tasks that should spawn afterwards
+    never do. Measured from `boot400M.snap` over 90M instructions: channels
+    `()` and `(0,)` both reach six tasks, and `(2,)`, `(3,)`, `(0, 2)` and
+    `(0, 2, 3)` all reach zero. Construct with `hold=intro_running(m)` and
+    call `release()` from a hook on `longrun.INTRO_DONE`.
     """
 
-    def __init__(self, m, channels=(0, 2), instr_per_sec=INSTR_PER_SEC):
+    def __init__(self, m, channels=(3, 2, 0), instr_per_sec=INSTR_PER_SEC,
+                 hold=False):
         self.m = m
         self.channels = tuple(channels)
+        self.held = bool(hold)
         self.ips = instr_per_sec
         self.next = [None] * 4
+        # Instruction count at the last step, and the epoch a fresh `spin`
+        # resumes from. Deadlines in `self.next` are absolute counts measured
+        # against it, so a caller that makes repeated short `spin` calls with
+        # one `Pits` keeps a continuous clock instead of restarting it.
+        self.now = 0
         self.fired = collections.Counter()
         self.missed = collections.Counter()
+
+    def release(self):
+        """Start delivering. Safe to call more than once."""
+        self.held = False
 
     def period(self, ch):
         """-> instructions between interrupts, or None while the timer is off."""
@@ -117,11 +204,75 @@ class Pits:
         masked = (imrl >> src) & 1 if src < 32 else (imrh >> (src - 32)) & 1
         return None if masked else icr
 
+    def deadline(self, done):
+        """-> the instruction count at which the next channel is due.
+
+        Arms any channel that is enabled but unarmed, and disarms any that
+        the firmware has switched off, so the answer always reflects the
+        registers as they are now. None while every channel is off.
+        """
+        if self.held:
+            return None
+        best = None
+        for ch in self.channels:
+            p = self.period(ch)
+            if p is None:
+                self.next[ch] = None       # off; restart the clock if it returns
+                continue
+            if self.next[ch] is None:
+                self.next[ch] = done + p
+            if best is None or self.next[ch] < best:
+                best = self.next[ch]
+        return best
+
+    def step(self, done, remaining=None, cap=None):
+        """-> instructions to run before the next `service` call is due.
+
+        Run this many and a timer lands on the instruction it was due at,
+        instead of at whatever chunk boundary happens to follow it. That is
+        the whole point: with a fixed chunk the same 60M instructions from
+        the same snapshot produce different fault counts, different display
+        callback counts and different surviving task counts depending only
+        on the chunk size, which makes every post-intro measurement an
+        artifact of the harness rather than a property of the firmware.
+
+        `remaining` bounds the step to what is left of a caller's budget.
+        Leave it None to let the step run to the deadline and overshoot the
+        budget instead, which is what a caller wants when it is spending its
+        budget in several calls: truncating the last step of each call puts
+        an emu_start boundary somewhere no timer was due, and boundaries in
+        the wrong place are exactly what deadline stepping exists to avoid.
+        The overshoot is under one timer period.
+
+        `cap` bounds a single step for a caller that needs to regain control
+        (a GUI honouring a stop flag). Capping only ever makes a step
+        shorter, and a `service` call before its deadline does nothing but
+        re-arm, so a cap changes pacing but not delivery -- as long as it is
+        not so small that arming a newly-enabled timer moves measurably.
+        """
+        d = self.deadline(done)
+        n = IDLE_STEP if d is None else max(1, int(math.ceil(d - done)))
+        if d is None and remaining is not None:
+            n = remaining
+        if cap:
+            n = min(n, cap)
+        if remaining is not None:
+            n = min(n, remaining)
+        return max(1, n)
+
     def service(self, done):
         """Call at a chunk boundary with the instruction count so far.
 
         The caller MUST re-read PC afterwards -- see the module docstring.
+
+        `channels` is walked in the order given, and that order is the
+        tie-break when two timers come due on the same instruction: the first
+        one taken raises IPL to its own level, which refuses any later one at
+        the same level. That is not a hypothetical -- see the class docstring
+        on PIT3.
         """
+        if self.held:
+            return
         for ch in self.channels:
             p = self.period(ch)
             if p is None:
@@ -133,6 +284,8 @@ class Pits:
             if done < self.next[ch]:
                 continue
             self.next[ch] += p
+            if self.next[ch] <= done:      # overshot by more than a period
+                self.next[ch] = done + p   # drop the backlog, do not chase it
             vec = VECTORS[ch]
             lvl = self.level(vec)
             sr = self.m.uc.reg_read(UC_M68K_REG_SR)
