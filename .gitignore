@@ -14,3 +14,9 @@ snapshots/
 
 # uv
 .venv/
+
+# NXP reference manuals: ~11 MB of vendor PDF, plus the text dump generated
+# from one of them. Fetch your own copies; the notes extracted from them
+# (docs/refs/*.md) are committed and cite chapter and table numbers.
+docs/refs/*.pdf
+docs/refs/rm.txt

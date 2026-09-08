@@ -21,6 +21,23 @@ from unicorn.m68k_const import (UC_CPU_M68K_CFV4E, UC_M68K_REG_A7,
 
 PAGE = 0x100000
 EXCP_RTE = 0x100
+
+# Exception-entry trampolines. See Machine.install_srtrap for why they exist.
+# Unicorn's m68k is in ColdFire mode, so: no predecrement MOVEM, no .W forms
+# of ANDI/ORI, and MOVEM only addresses (d16,An). These encodings respect that.
+#
+# There is one trampoline per interrupt level, with its immediates baked in,
+# because patching a shared one is self-modifying code and QEMU caches
+# translation blocks: every delivery after the first then re-ran the FIRST
+# level and handler ever patched in. Measured -- DTIM3 delivered 283 times and
+# its ISR at 0x400c30e4 ran zero times. `ctl_remove_cache` "fixes" that and
+# takes the whole run to zero tasks, so the answer is to not write code at
+# runtime at all.
+SRTRAP_ADDR   = 0x10000000        # away from ROM (0x4000_0000) and all MMIO
+SRTRAP_STRIDE = 0x40              # one slot per level, 0..7 then "unchanged"
+SRTRAP_SLOTS  = 9
+SRTRAP_EXIT   = 30                # the trailing nop, hooked to set PC
+SRTRAP_FRAME  = 12                # bytes pushed: 4 scratch + 8 frame
 VBR = 0x40000000            # m68k vector table; MAIN OS loads at VBR+0x400
 
 
@@ -32,6 +49,8 @@ class Machine:
         self.uc.ctl_set_cpu_model(cpu)
         self.mapped = set()
         self.mmio = {}          # addr -> int, forced on read
+        self.srtrap = None      # set by install_srtrap
+        self._srtrap_target = 0
         self.ctlregs = {}       # MOVEC control registers
         self.ff1_count = 0
         self.movec_count = 0
@@ -204,7 +223,7 @@ class Machine:
                 uc.emu_stop()
         self.uc.hook_add(UC_HOOK_INTR, on_intr)
 
-    def raise_vector(self, vec, from_instruction=False):
+    def raise_vector(self, vec, from_instruction=False, level=None):
         """Push an exception frame and jump to the handler. -> bool taken.
 
         `from_instruction` marks an exception raised BY the instruction at PC
@@ -228,19 +247,114 @@ class Machine:
                     pc += 2
             except UcError:
                 pass
-        sr = self.uc.reg_read(UC_M68K_REG_SR)
-        sp = self.uc.reg_read(UC_M68K_REG_A7) - 8
+        # The SR slot is filled in by the guest, not from here. Writing what
+        # `reg_read(UC_M68K_REG_SR)` returns puts a stale condition-code byte
+        # in the frame, and `rte` then installs it over the flags of the code
+        # being resumed. See install_srtrap.
+        if self.srtrap is None:
+            sr = self.uc.reg_read(UC_M68K_REG_SR)
+            sp = self.uc.reg_read(UC_M68K_REG_A7) - 8
+            self.uc.mem_write(sp, struct.pack(
+                '>HHI', 0x4000 | ((vec << 2) & 0x0FFC), sr, pc))
+            self.uc.reg_write(UC_M68K_REG_A7, sp)
+            self.uc.reg_write(UC_M68K_REG_PC, handler)
+            return True
+
+        # Twelve bytes: a scratch longword holding d0, then the frame. The
+        # trampoline restores d0 from the scratch and then `lea`s past it, so
+        # the handler sees A7 at the frame base exactly as before -- the
+        # layout emu/tasks.py and the RTOS context switcher at 0x40000410
+        # both read.
+        sp = self.uc.reg_read(UC_M68K_REG_A7) - SRTRAP_FRAME
+        self.uc.mem_write(sp, struct.pack('>I', self.uc.reg_read(UC_M68K_REG_D0)))
         # Format nibble 4. The ColdFire PRM is explicit: an RTE whose frame
-        # format is not 4-7 raises a format error. We wrote 0 for a long time
-        # and never saw it, only because `rte` is implemented in on_intr above
-        # and ignores the field -- but anything that reads a frame we built
-        # (emu/tasks.py, the RTOS context switcher at 0x40000410) saw a frame
-        # real hardware would have rejected.
-        self.uc.mem_write(sp, struct.pack('>HHI', 0x4000 | ((vec << 2) & 0x0FFC),
-                                          sr, pc))
+        # format is not 4-7 raises a format error. The SR word is a
+        # placeholder; the trampoline overwrites it with the real one.
+        self.uc.mem_write(sp + 4, struct.pack(
+            '>HHI', 0x4000 | ((vec << 2) & 0x0FFC), 0, pc))
         self.uc.reg_write(UC_M68K_REG_A7, sp)
-        self.uc.reg_write(UC_M68K_REG_PC, handler)
+        # Pick the trampoline for this level. `trap #N` does not raise the
+        # interrupt mask on m68k, so it uses the "leave the mask alone" slot.
+        slot = SRTRAP_SLOTS - 1 if level is None else (level & 7)
+        self._srtrap_target = handler
+        self.uc.reg_write(UC_M68K_REG_PC, self.srtrap + slot * SRTRAP_STRIDE)
         return True
+
+    def install_srtrap(self, addr=SRTRAP_ADDR):
+        """Route exception entry through guest code that saves the true SR.
+
+        Unicorn's m68k keeps the condition codes in TCG's lazy `cc_op` form
+        and `reg_read(UC_M68K_REG_SR)` returns only what was last *written* --
+        never the computed flags. Proved directly: after `tst.l d0` with d0
+        non-zero, SR still reads back the seeded value with Z set. So an SR
+        read is stale, and an SR *write* built from one installs wrong flags.
+        An identity `reg_write(SR, reg_read(SR))` around a `tst.l`/`beq` flips
+        the branch.
+
+        That is not a hypothetical. Every delivered interrupt used to corrupt
+        the flags of the code it interrupted three times over: `raise_vector`
+        pushed a stale SR into the frame, `Pits.service` wrote a stale-derived
+        SR back, and `rte` restored the stale frame value onto the resumed
+        instruction stream. It is almost certainly the whole of HANDOVER
+        section 10 -- "a `bgt` at 0x40111070 taking opposite branches from
+        identical PC, A7, D0 and A0" is what a corrupted Z looks like.
+
+        The CPU can compute what we cannot read: `move.w sr,d0` executed by
+        the guest returns the true flags. So exception entry goes through this
+        trampoline instead of straight to the handler:
+
+            move.w  sr,d0         ; the TRUE SR, flags materialised by the CPU
+            move.w  d0,$6(a7)     ; -> the frame's SR slot
+            andi.l  #$f8ff,d0     ; clear the old interrupt mask
+            ori.l   #level,d0     ; set S and this source's level
+            move.w  d0,sr         ; a guest-side SR write, so the CCR survives
+            movem.l $0(a7),d0     ; restore d0; MOVEM has no CCR effect
+            lea.l   $4(a7),a7     ; drop the scratch longword
+            jmp     handler.l
+
+        `move.w d0,sr` is the trick that makes this faithful: the low byte of
+        the value it writes is the CCR the CPU itself just produced, so the
+        handler starts with the interrupted code's flags, exactly as hardware
+        leaves them.
+
+        The handler address and the level word are patched per delivery.
+        Returns the trampoline address, also kept on `self.srtrap`.
+        """
+        try:
+            self.uc.mem_map(addr, PAGE)
+        except UcError:
+            pass                      # already mapped
+
+        def slot_code(mask, ipl):
+            return (b'\x40\xc0'                          #  0 move.w sr,d0
+                    b'\x3f\x40\x00\x06'                  #  2 move.w d0,$6(a7)
+                    + b'\x02\x80' + struct.pack('>I', mask)   #  6 andi.l
+                    + b'\x00\x80' + struct.pack('>I', ipl)    # 12 ori.l
+                    + b'\x46\xc0'                        # 18 move.w d0,sr
+                    b'\x4c\xef\x00\x01\x00\x00'          # 20 movem.l $0(a7),d0
+                    b'\x4f\xef\x00\x04'                  # 26 lea.l $4(a7),a7
+                    b'\x4e\x71')                         # 30 nop  <- hooked
+
+        for slot in range(SRTRAP_SLOTS):
+            if slot == SRTRAP_SLOTS - 1:
+                mask, ipl = 0xFFFFFFFF, 0x2000          # leave the mask alone
+            else:
+                mask, ipl = 0x0000F8FF, 0x2000 | (slot << 8)
+            base = addr + slot * SRTRAP_STRIDE
+            self.uc.mem_write(base, slot_code(mask, ipl))
+            self.uc.hook_add(UC_HOOK_CODE, self._srtrap_exit,
+                             begin=base + SRTRAP_EXIT, end=base + SRTRAP_EXIT)
+        self.srtrap = addr
+        return addr
+
+    def _srtrap_exit(self, uc, addr, size, data):
+        """Leave the trampoline for the handler the last raise_vector chose.
+
+        A jump would have to be patched per delivery, and patching is the
+        self-modifying-code problem the constants above describe. Redirecting
+        PC from a hook is what the rest of this codebase already does.
+        """
+        uc.reg_write(UC_M68K_REG_PC, self._srtrap_target)
 
 
 def call(machine, func, args, ret_magic=0xDEADBEE0, stack_top=None, limit=800_000_000):

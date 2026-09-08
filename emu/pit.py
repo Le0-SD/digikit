@@ -291,9 +291,10 @@ class Pits:
             sr = self.m.uc.reg_read(UC_M68K_REG_SR)
             if lvl is None or ((sr >> 8) & 0x07) >= lvl:
                 self.missed[ch] += 1       # the hardware could not take it either
-            elif self.m.raise_vector(vec):
+            elif self.m.raise_vector(vec, level=lvl):
                 # Taking an interrupt raises the mask to its own level, so the
-                # handler cannot be re-entered by the same source.
-                self.m.uc.reg_write(UC_M68K_REG_SR,
-                                    (sr & ~0x0700) | (lvl << 8) | 0x2000)
+                # handler cannot be re-entered by the same source. That is done
+                # by the entry trampoline, in guest code: writing SR from here
+                # would install a stale condition-code byte over the flags of
+                # the code being interrupted. See Machine.install_srtrap.
                 self.fired[ch] += 1
