@@ -597,24 +597,60 @@ forever at `0x4012001e` waiting for `SYSCTL` bit 27 `INITA` to self-clear. Our
 registers are plain RAM and hand back whatever was written, so it never does.
 That spin is the next thing to fix, and it is item 1 in the list below.
 
-### What a model must satisfy
+### The controller model — `emu/esdhc.py`, and card init now completes
 
-0. **`SYSCTL` bit 27 `INITA` must self-clear** after the firmware sets it, or
-   `0x4012001e` spins — 37M reads and counting. This is the first thing the
-   driver does after `sdgate=True` lets it start, so it is where to begin.
-1. Deliver **vector 222** such that `0x44e26f38` gets posted, or every block
-   read hangs in `0x4011fe10`.
-2. `PRSSTAT` bit 3 `SDSTB` = 1 after a `SYSCTL` divisor write, or `0x4012019a`
-   spins. Bit 24 `DLSL` = 1 or `0x40120168` spins. Bit 11 `BREN` or
-   `0x401202b2` spins.
-3. During init a `DATPORT` word must have **low byte `0xA5`** or init aborts −3
-   (`0x401202c4`).
-4. `CMD1` (arg `0x40FF8000`) must eventually return OCR bit 31 set — the retry
-   loop at `0x40120074` has **no timeout**.
-5. The card identity must match one of the 7 entries at **`0x4029e01c`**
-   (0x20 bytes each, tag bytes `0x11`, `0x15`, `0x70`, each with a name string
-   at `0x40243e4f`+ compared by memcmp), or `0x40120450` reports "unknown card".
-6. `IRQSTAT` bit 0 `CC` for the reflash-only path, which busy-polls it.
+`build(sdgate=True, esdhc=True)`. The gate alone reaches the driver; the model
+is what gets through it. From `boot40M.snap`, the full eMMC identification
+sequence runs and `0x4011fed6` returns instead of spinning:
+
+    CMD0  CMD1(OCR)  CMD2(CID)  CMD3(RCA 2)  CMD10  CMD9(CSD)  CMD7(select)
+    CMD6(HS_TIMING)  CMD6(BUS_WIDTH)  CMD19/CMD14(bus test)  CMD16(blocklen)
+    CMD6  CMD8(SEND_EXT_CSD)
+
+`PRSSTAT` reads go from **36,988,314 to 7**. Requirements 0-4 of the old list
+are met; what satisfied them:
+
+* **`SYSCTL` self-clearing bits (INITA, RSTA/RSTC/RSTD)** are cleared on
+  **read**, not on write. This is the one that matters: *a Unicorn write hook
+  runs before the store lands*, so clearing a bit from inside one is undone by
+  the store that follows, and reading the register back there gives the
+  previous value. Handled wrongly it looks exactly like the model not being
+  installed at all. The same applies to XFERTYP -- take the command word from
+  the hook's `value` argument.
+* **`PRSSTAT`** starts at the documented `0xFF8800F8` **plus `CINS`**, since a
+  card is inserted. `BWEN`/`BREN` are raised when a data command is issued,
+  per direction, or the driver spins at `0x40120236` and `0x401202b2`.
+* **The bus test is a real handshake, not the magic number it looks like.**
+  `0x40120242` writes `0x5A` to DATPORT under CMD19 (BUSTEST_W); CMD14
+  (BUSTEST_R) must return a word whose low byte XORed with `0xA5` is zero.
+  `~0x5A == 0xA5` -- the card returns the inverse of what the host sent, so
+  the model inverts the captured pattern instead of hardcoding `0xA5`.
+* **CMD1** returns an OCR with bit 31 set immediately; the retry loop at
+  `0x40120074` has no timeout, so this cannot be deferred.
+
+### What is still missing
+
+1. **EXT_CSD content.** `CMD8` (SEND_EXT_CSD) is issued and the model returns
+   zeros. This is almost certainly where `0x4fe49198` comes from — section 1
+   showed the SLC flag has no static writer, and `0x40120712` provisions the
+   enhanced (pseudo-SLC) area through `ENH_SIZE_MULT`/`ENH_START_ADDR`. Serve
+   a real EXT_CSD and `slc=True` should stop being a guess and become a
+   consequence. **Do this next**; it retires an open question rather than
+   adding a feature.
+2. **Bulk block data.** `read_blocks` (`0x401208fe`, CMD18) is called and
+   returns zeros. Data does not come through DATPORT reads by the CPU — it
+   moves through the SoC's eDMA programmed with `SADDR = DATPORT`, TCD
+   registers at `0xFC0457xx`, channel config at `0xFC044018`. Backing this is
+   what makes storage real, and it is the bridge to the folder below.
+3. **Card identity.** The CID/CSD the model returns are placeholders. The
+   descriptor built by `0x401205b4` must match one of the seven entries at
+   `0x4029e01c` (0x20 bytes each, tag bytes `0x11`/`0x15`/`0x70`, name strings
+   at `0x40243e4f`+ compared by memcmp) or `0x40120450` reports "unknown card".
+4. **Vector 222 is still not delivered**, and `0x44e26f38` is still never
+   posted by the firmware. Today `unblock` satisfies the wait and the model
+   writes the ISR's status word `0x44e26f1c` itself. That is HLE standing in
+   for an interrupt; it works, and it is not the hardware's behaviour. Revisit
+   when the exception model of section 10 is sound.
 
 ### Then, and only then, the folder
 
@@ -675,6 +711,9 @@ plain memory read and installs no hook, so it is free and cannot perturb a run;
 `Capture` hooks the diff entry to collect untorn frame *sequences* and
 therefore does change the run it watches. `emu.uiprobe.measure` uses `read`, so
 the sweep gained a `panel` column without any of its other numbers moving.
+
+**The eSDHC and its eMMC — `emu/esdhc.py`.** Section 6b. Needs `sdgate=True`
+to be reached at all.
 
 **The SD gate — `emu/gpio.py`.** The board loopback on GPIO ports C and D that
 `0x4011fe60` checks before storage init. Section 6b. Off by default: it is

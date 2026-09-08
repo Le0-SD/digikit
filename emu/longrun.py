@@ -82,7 +82,7 @@ FRAME_SEM  = 0x43131200                   # intro frame-pacing semaphore
 def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
           unblock=False, softfloat=False, bitmap=False, on_pixel=None,
           unblock_except=(), edma=True, real_sleep=False, dsp=False,
-          srtrap=False, weakptr=False, slc=False, sdgate=False):
+          srtrap=False, weakptr=False, slc=False, sdgate=False, esdhc=False):
     """Stand up a hooked Machine and restore `snapshot` onto it.
 
     -> (m, ev, st, pc, inq, at) where `at(addr, fn)` registers a further
@@ -201,6 +201,20 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
     `0x400cf216` skips the eSDHC card init entirely -- measured from
     boot40M.snap over 120M instructions, the driver is never entered and not
     one eSDHC register is ever touched. See emu/gpio.py.
+
+    esdhc=True models the SD/MMC controller at 0xFC0CC000 and a minimal eMMC
+    behind it, which is what `sdgate=True` exists to reach. It carries the
+    whole card identification sequence -- CMD0, CMD1 until OCR bit 31 sets,
+    CMD2/3/10/9 for CID and CSD, CMD7 select, CMD6 for HS_TIMING and
+    BUS_WIDTH, the CMD19/CMD14 bus test, CMD16 block length, and CMD8
+    SEND_EXT_CSD -- and card init runs to completion instead of spinning.
+    See emu/esdhc.py.
+
+    It needs `sdgate=True` to be any use: without the gate the driver is never
+    entered and the model is never touched. With both, PRSSTAT goes from
+    36,988,314 reads to 7. Bulk block data is NOT served yet -- CMD18 reads
+    move through the SoC eDMA with SADDR=DATPORT and nothing backs them, so
+    read_blocks returns zeros.
 
     It is a hardware model, not a shortcut, but it is OFF by default because
     on its own it makes things worse: with the gate satisfied the driver
@@ -370,6 +384,9 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
     if sdgate:
         from emu.gpio import SdGate
         ev['sdgate'] = SdGate(m)
+    if esdhc:
+        from emu.esdhc import Esdhc
+        ev['esdhc'] = Esdhc(m)
     m.install_mmio()
     if tx is not None:
         from emu.edma import kick
