@@ -43,7 +43,7 @@ from unicorn.m68k_const import (UC_M68K_REG_A7, UC_M68K_REG_PC, UC_M68K_REG_SR,
                                  UC_M68K_REG_D0, UC_M68K_REG_D2, UC_M68K_REG_D3)
 from emu.harness import Machine, VBR
 from dt2.container import container
-from emu import config
+from emu import config, symbols
 
 MAIN_LOAD, ENTRY = 0x40000400, 0x400004e8
 FLASH_READ = 0x401296fe
@@ -162,6 +162,14 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
     fast=False keeps the original single-global-hook implementation, useful
     to cross-check the two give identical results.
     """
+    # Resolve every address this run needs from the image itself, instead of
+    # the module-level constants above (which stay put as the Digitakt
+    # reference -- other modules, e.g. console.py and fastrun.py, still read
+    # them directly and are unaffected by this). See emu/symbols.py. This is
+    # what lets a second firmware (different addresses, same RTOS) run here
+    # instead of failing silently on every hook.
+    profile = symbols.resolve(main_img, load_addr=MAIN_LOAD)
+
     flash = build_flash(syx_path)
     m = Machine()
     st = {
@@ -188,8 +196,13 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
     def do_transport_call(addr):
         st['transport_calls'].append((st['n'], addr))
         if verbose:
-            print('  [n=%d] transport call site 0x%08x timeout=0x%x' %
-                  (st['n'], addr, CALL_SITES_MAP[addr]))
+            # CALL_SITES_MAP is Digitakt-specific reference data (the known
+            # timeout argument at each of its 4 sites) kept only for this
+            # print; a resolved-but-different-firmware call site just prints
+            # without one rather than a KeyError.
+            timeout = CALL_SITES_MAP.get(addr)
+            print('  [n=%d] transport call site 0x%08x timeout=%s' %
+                  (st['n'], addr, '0x%x' % timeout if timeout is not None else '?'))
 
     def do_depack_copy(uc):
         d2 = uc.reg_read(UC_M68K_REG_D2)
@@ -201,11 +214,11 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
                       (st['n'], d2, st['depack_clamps']))
 
     def do_pend_call(uc):
-        uc.mem_write(COMPLETION_SEM, struct.pack('>I', 1))
+        uc.mem_write(profile.completion_sem, struct.pack('>I', 1))
         st['sem_kicks'] += 1
         if verbose:
             print('  [n=%d] satisfied completion sem @0x%08x (kick #%d)' %
-                  (st['n'], COMPLETION_SEM, st['sem_kicks']))
+                  (st['n'], profile.completion_sem, st['sem_kicks']))
 
     def do_task_create(uc, addr):
         if addr in st['task_create_hits']:
@@ -231,6 +244,13 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
     idle_spins = set(find_idle_spins(main_img, MAIN_LOAD))
     st['idle_spins_found'] = sorted(idle_spins)
 
+    # task_create_sites and call_sites are diagnostic only (do_task_create and
+    # do_transport_call only ever record/print; neither touches a register or
+    # memory), so an unresolved OPTIONAL profile symbol just means fewer
+    # hooks installed here, not a degraded run -- see emu/symbols.py.
+    task_create_sites = set(profile.task_create_sites or ())
+    call_sites = set(profile.call_sites or ())
+
     if fast:
         # lightweight, GLOBAL: only counting + coverage (must see every insn)
         def cover(uc, addr, size, data):
@@ -249,21 +269,23 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
 
         def scoped(addr, fn):
             m.uc.hook_add(UC_HOOK_CODE, lambda uc, a, s, d: fn(uc), begin=addr, end=addr)
-        scoped(FLASH_READ, do_flash_read)
-        for site in CALL_SITES_MAP:
+        scoped(profile.flash_read, do_flash_read)
+        for site in call_sites:
             m.uc.hook_add(UC_HOOK_CODE, (lambda s: lambda uc, a, sz, d: do_transport_call(s))(site),
                           begin=site, end=site)
-        scoped(DEPACK_COPY, lambda uc: patch_depack and do_depack_copy(uc))
-        scoped(PEND_CALL, lambda uc: patch_sem and do_pend_call(uc))
-        for site in TASK_CREATE_SET:
+        scoped(profile.depack_copy, lambda uc: patch_depack and do_depack_copy(uc))
+        scoped(profile.pend_call, lambda uc: patch_sem and do_pend_call(uc))
+        for site in task_create_sites:
             m.uc.hook_add(UC_HOOK_CODE, (lambda s: lambda uc, a, sz, d: do_task_create(uc, s))(site),
                           begin=site, end=site)
-        m.uc.hook_add(UC_HOOK_CODE, lambda uc, a, s, d: do_task_start(uc), begin=TASK_START, end=TASK_START)
+        m.uc.hook_add(UC_HOOK_CODE, lambda uc, a, s, d: do_task_start(uc),
+                      begin=profile.task_start, end=profile.task_start)
         for spin_addr in idle_spins:
             m.uc.hook_add(UC_HOOK_CODE, (lambda a: lambda uc, ax, sz, d: do_halt(a))(spin_addr),
                           begin=spin_addr, end=spin_addr)
     else:
-        hot_addrs = HOT_ADDRS_BASE | idle_spins
+        hot_addrs = ({profile.flash_read, profile.depack_copy, profile.pend_call, profile.task_start} |
+                     call_sites | task_create_sites | idle_spins)
 
         def extra(uc, addr, size):
             st['n'] += 1
@@ -280,18 +302,18 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
                     extra_hook(uc, addr, size, st)
                 return
 
-            if addr == FLASH_READ:
+            if addr == profile.flash_read:
                 do_flash_read(uc)
                 return
-            if addr in CALL_SITES_MAP:
+            if addr in call_sites:
                 do_transport_call(addr)
-            if addr == DEPACK_COPY and patch_depack:
+            if addr == profile.depack_copy and patch_depack:
                 do_depack_copy(uc)
-            if addr == PEND_CALL and patch_sem:
+            if addr == profile.pend_call and patch_sem:
                 do_pend_call(uc)
-            if addr in TASK_CREATE_SET:
+            if addr in task_create_sites:
                 do_task_create(uc, addr)
-            if addr == TASK_START:
+            if addr == profile.task_start:
                 do_task_start(uc)
             if addr in idle_spins:
                 do_halt(addr)
@@ -312,7 +334,7 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
         m.ensure(0x40800000)
         m.uc.reg_write(UC_M68K_REG_SR, 0x2700)
         m.uc.reg_write(UC_M68K_REG_A7, 0x40800000)
-        start_pc = ENTRY
+        start_pc = profile.entry
     if machine_out is not None:
         machine_out['m'] = m
     if pre_start:                 # add extra Unicorn hooks before execution starts
@@ -330,6 +352,12 @@ if __name__ == '__main__':
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else 120_000_000
     patch = (sys.argv[2] != '0') if len(sys.argv) > 2 else True
     img = open(config.main_image(), 'rb').read()
+    # run() resolves the same profile internally (cached by image SHA-256),
+    # so this is a second lookup, not a second scan -- see emu/symbols.py.
+    # It is only needed here for the site COUNT printed below, which must
+    # match whichever firmware was actually loaded, not the Digitakt
+    # TASK_CREATE_SITES module constant.
+    n_task_create_sites = len(symbols.resolve(img).task_create_sites or ())
     m, st, stop = run(syx, img, limit=limit, patch_sem=patch, verbose=True)
     print('=' * 70)
     print('instructions      : %d' % st['n'])
@@ -342,7 +370,7 @@ if __name__ == '__main__':
           (len(st['idle_spins_found']), [hex(a) for a in st['idle_spins_found']]))
     print('idle spins hit    : %s' %
           {hex(a): c for a, c in st['spin_by_addr'].items()})
-    print('task_create hit   : %d / %d' % (len(st['task_create_hits']), len(TASK_CREATE_SITES)))
+    print('task_create hit   : %d / %d' % (len(st['task_create_hits']), n_task_create_sites))
     for a, info in st['task_create_hits'].items():
         print('    site=0x%08x  entry=0x%08x  prio=%-3d  tcb=0x%08x  n=%d' %
               (a, info['entry'], info['prio'], info['tcb'], info['n']))

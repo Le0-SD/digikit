@@ -107,11 +107,8 @@ def main_image(explicit=None):
     if not found:
         raise NotFound(
             'No MAIN OS image in %s/.\n\n'
-            'The sections inside a .syx are compressed and this repo cannot\n'
-            'decompress them yet. Extract them once with\n'
-            'elektron-firmware-tool (device 0x14 = Digitakt II):\n\n'
-            '    elektron-firmware-tool -i <firmware.syx> -o %s/\n\n'
-            '    https://github.com/mischa85/elektron-firmware-tool\n\n'
+            'The sections inside a .syx are compressed. Decompress them once:\n\n'
+            '    uv run python -m emu.extract <firmware.syx> -o %s/\n\n'
             'Or set DT2_MAIN_IMG to an image you already have.' % (d, d))
     raise NotFound('Several MAIN OS images in %s/:\n%s\n\nSet DT2_MAIN_IMG.'
                    % (d, '\n'.join('    ' + f for f in found)))

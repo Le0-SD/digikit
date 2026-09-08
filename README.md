@@ -38,23 +38,22 @@ uv run python -m emu.run Digitakt_II_OS1.15C.syx --weakptr
 That checks each prerequisite, builds the boot snapshots on first run (one cold
 boot from reset, a few minutes — it happens once), and opens the live panel.
 
-**One step is not automated.** The sections inside the `.syx` are compressed,
-and this repo cannot decompress them yet, so extract them once with
-[mischa85/elektron-firmware-tool](https://github.com/mischa85/elektron-firmware-tool)
-(MIT, supports device `0x14` = Digitakt II):
+That includes decompressing the sections out of the `.syx`, which no longer
+needs an outside tool. To do it on its own:
 
 ```sh
-elektron-firmware-tool -i Digitakt_II_OS1.15C.syx -o sections/
+uv run python -m emu.extract Digitakt_II_OS1.15C.syx -o sections/
 ```
 
-`emu.run` will tell you this if the sections are missing. Why it is not
-automated: the only implementation of the decompressor known to be correct is
-the device's own, at `0x80000432`, which `emu/oracle.py` can run — but it lives
-inside section 2, which is itself compressed, so it cannot bootstrap itself.
-The stream is *not* stock aPLib (a stock depacker takes the first data byte as
-a literal; here that byte is a tag byte with `1` meaning literal). Closing this
-means writing a depacker against that observation and checking it byte-for-byte
-against `emu.oracle.depack`.
+The decompressor is the device's own. It lives at `0x80000432` inside section
+2 — which is itself compressed, so it cannot bootstrap itself, and that is why
+this used to need
+[elektron-firmware-tool](https://github.com/mischa85/elektron-firmware-tool).
+It does not: section 4 is the *updater*, it is stored **raw**, and an updater
+has to unpack the image it installs, so it carries its own copy of the same
+routine. `emu/extract.py` runs that copy under Unicorn. Its output is
+byte-identical to `emu.oracle.depack` — the device's own section-2 routine —
+for every compressed section of both Digitakt II 1.15C and Digitone II 1.10E.
 
 ### Options
 

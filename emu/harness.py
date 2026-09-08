@@ -223,6 +223,23 @@ class Machine:
                 uc.emu_stop()
         self.uc.hook_add(UC_HOOK_INTR, on_intr)
 
+    def _ensure_frame(self, sp, size):
+        """Map the pages an exception frame is about to be pushed onto.
+
+        Guest accesses to an unmapped page are mapped lazily by `_fault`, but
+        that is a UC_HOOK_MEM_INVALID hook and `uc.mem_write` from Python does
+        not trigger it. So a frame pushed onto a task stack the guest has not
+        touched yet dies with UC_ERR_WRITE_UNMAPPED instead of being mapped
+        the way the identical write from guest code would be. Digitakt II
+        1.15C never hit this -- its task stacks share pages the guest has
+        already written -- which is exactly the kind of firmware-specific luck
+        that hides a general defect until a second firmware runs.
+
+        The frame can straddle a page boundary, so map both ends.
+        """
+        self.ensure(sp)
+        self.ensure(sp + size - 1)
+
     def raise_vector(self, vec, from_instruction=False, level=None):
         """Push an exception frame and jump to the handler. -> bool taken.
 
@@ -254,6 +271,7 @@ class Machine:
         if self.srtrap is None:
             sr = self.uc.reg_read(UC_M68K_REG_SR)
             sp = self.uc.reg_read(UC_M68K_REG_A7) - 8
+            self._ensure_frame(sp, 8)
             self.uc.mem_write(sp, struct.pack(
                 '>HHI', 0x4000 | ((vec << 2) & 0x0FFC), sr, pc))
             self.uc.reg_write(UC_M68K_REG_A7, sp)
@@ -266,6 +284,7 @@ class Machine:
         # layout emu/tasks.py and the RTOS context switcher at 0x40000410
         # both read.
         sp = self.uc.reg_read(UC_M68K_REG_A7) - SRTRAP_FRAME
+        self._ensure_frame(sp, SRTRAP_FRAME)
         self.uc.mem_write(sp, struct.pack('>I', self.uc.reg_read(UC_M68K_REG_D0)))
         # Format nibble 4. The ColdFire PRM is explicit: an RTE whose frame
         # format is not 4-7 raises a format error. The SR word is a
