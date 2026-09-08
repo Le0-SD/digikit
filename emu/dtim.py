@@ -59,6 +59,7 @@ import math
 import struct
 
 from unicorn import UC_HOOK_MEM_WRITE
+from unicorn.m68k_const import UC_M68K_REG_SR
 
 from emu.pit import F_BUS, INSTR_PER_SEC, IDLE_STEP, INTC, ICR_BASE, IMR_BASE
 
@@ -276,10 +277,8 @@ class Dtims:
             self.m.uc.mem_write(BASES[ch] + DTER, bytes([dter | 0x02]))
             vec = VECTORS[ch]
             lvl = self.level(vec)
-            # The mask comes from the shadow, not from reg_read(SR) -- see
-            # Machine.install_ipl_shadow and emu/pit.py:Pits.service.
-            ipl = self.m.ipl
-            if lvl is None or ipl is None or ipl >= lvl:
+            sr = self.m.uc.reg_read(UC_M68K_REG_SR)
+            if lvl is None or ((sr >> 8) & 0x07) >= lvl:
                 self.missed[ch] += 1
                 continue
             elif self.m.raise_vector(vec, level=lvl):

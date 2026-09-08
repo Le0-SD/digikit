@@ -241,9 +241,6 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
         m.install_isa_patches_scoped(main_img, db.MAIN_LOAD)
     else:
         m.install_isa_patches()
-    # Track the interrupt mask so the timer gate never has to read SR at a
-    # chunk boundary -- see Machine.install_ipl_shadow.
-    ev['ipl_sites'] = m.install_ipl_shadow(main_img, db.MAIN_LOAD)
 
     def at(addr, fn):
         m.uc.hook_add(UC_HOOK_CODE, fn, begin=addr, end=addr)
@@ -394,9 +391,6 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     # registers a hook per address, so it has to come after the merge or a
     # snapshot-carried address would go unhooked.
     pc = restore_into(m, snapshot, st)
-    # Seed the IPL shadow from the restored SR. Safe here and only here:
-    # nothing has executed yet, so there are no pending flags to lose.
-    m.sync_ipl()
     if weakptr:
         # After restore_into, or the snapshot's own copy of MAIN OS would
         # overwrite the patch.
@@ -537,9 +531,7 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None,
         if on_chunk:
             on_chunk(pc, done)
             pc = m.uc.reg_read(UC_M68K_REG_PC)
-        # m.ipl, not reg_read(SR): the same boundary hazard as the timer
-        # gate -- see Machine.install_ipl_shadow.
-        if tick and m.ipl != 7:
+        if tick and (m.uc.reg_read(UC_M68K_REG_SR) & 0x0700) != 0x0700:
             m.raise_vector(32); pc = m.uc.reg_read(UC_M68K_REG_PC)
     return pc, done, stop
 
