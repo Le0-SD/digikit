@@ -56,6 +56,11 @@ import struct
 import sys
 
 W, H = 128, 64
+# Digitakt II 1.15C reference values, kept as defaults for callers that have
+# no resolved Profile (a REPL, a script against a known-Digitakt Machine).
+# Anything that knows which image is loaded should resolve one via
+# emu.symbols and pass fb_front/fb_back/panel_diff explicitly -- see
+# emu.gui.Emulator and main() below, both of which do.
 FRONT = 0x4029f650      # -> the buffer just rendered (at diff entry)
 BACK = 0x4029f654       # -> the buffer on the panel (after the diff's swap)
 DIFF = 0x40126332       # the double-buffer diff; swaps FRONT/BACK on the way out
@@ -69,10 +74,17 @@ def _uc(m):
 def read(m, ptr_addr=FRONT):
     """-> the 1024 raw bytes behind `ptr_addr`, or None if it is not a buffer.
 
+    `ptr_addr` is fb_front (or fb_back) from a resolved emu.symbols Profile;
+    it defaults to the Digitakt address for back-compat. None (an unresolved
+    OPTIONAL symbol -- see emu/symbols.py) is a valid input and reads as "no
+    buffer", same as any other address that turns out not to hold one.
+
     Installs no hook. Called after a run has stopped this is the frame in
     memory; called at an arbitrary moment it may be torn on a page boundary,
     because the flush walks pages 0..7. Use `Capture` if that matters.
     """
+    if ptr_addr is None:
+        return None
     uc = _uc(m)
     try:
         ptr = struct.unpack('>I', bytes(uc.mem_read(ptr_addr, 4)))[0]
@@ -137,19 +149,27 @@ class Capture:
         ...spin...
         cap.frames                 # every frame, in order
         cap.distinct()             # consecutive duplicates collapsed
+
+    `diff_addr`/`front_addr` default to the Digitakt reference addresses;
+    pass the resolved profile's `panel_diff`/`fb_front` for any other image.
+    `diff_addr=None` (panel_diff unresolved -- an OPTIONAL symbol, see
+    emu/symbols.py) degrades gracefully: no hook is installed and `frames`
+    just stays empty, rather than crashing.
     """
 
-    def __init__(self, at, limit=4096):
+    def __init__(self, at, limit=4096, diff_addr=DIFF, front_addr=FRONT):
         self.frames = []
         self.limit = limit
+        if diff_addr is None:
+            return
 
         def grab(uc, addr, size, data):
             if len(self.frames) < self.limit:
-                buf = read(uc)
+                buf = read(uc, front_addr)
                 if buf is not None:
                     self.frames.append(buf)
 
-        at(DIFF, grab)
+        at(diff_addr, grab)
 
     def distinct(self):
         out = []
@@ -164,26 +184,46 @@ class Capture:
 
 
 def main(snapshot, instrs, channels, out):
+    from emu import config, symbols
     from emu.dtim import Dtims, Timers
-    from emu.longrun import build, spin, INTRO_DONE
+    from emu.longrun import build, spin
     from emu.pit import Pits, intro_running
+
+    # Resolve fb_front/panel_diff for whichever image is actually loaded --
+    # build() below resolves the identical profile itself (cached by image
+    # SHA-256, see emu/symbols.py), so this costs nothing extra. Both are
+    # OPTIONAL symbols: unresolved, Capture and read() just produce nothing
+    # rather than crash or silently read the wrong build's addresses.
+    main_img = open(config.main_image(), 'rb').read()
+    profile = symbols.resolve(main_img)
+    if profile.panel_diff is None or profile.fb_front is None:
+        print('warning: panel_diff/fb_front unresolved for this image -- '
+              'no frames will be captured\n%s' % profile.report())
 
     m, ev, st, pc, inq, at = build(snapshot, unblock=True, softfloat=True,
                                    bitmap=True, dsp=True)
-    cap = Capture(at)
-    src = [Pits(m, hold=intro_running(m))]
+    cap = Capture(at, diff_addr=profile.panel_diff, front_addr=profile.fb_front)
+    # One call, one answer: both timer sources must agree on whether the
+    # intro still owns PIT3, and the handler to compare against is this
+    # build's own -- see emu/symbols.py:intro_pit3_isr.
+    intro = intro_running(m, profile.intro_pit3_isr)
+    src = [Pits(m, hold=intro)]
     if channels:
-        src.append(Dtims(m, channels=channels, hold=intro_running(m)))
+        src.append(Dtims(m, channels=channels, hold=intro))
     timers = Timers(*src)
     if timers.held:
-        at(INTRO_DONE, lambda u, a, s, d: timers.release())
+        if profile.intro_done is None:
+            print('warning: intro_done unresolved for this image -- the '
+                  'timers will stay held for the whole run')
+        else:
+            at(profile.intro_done, lambda u, a, s, d: timers.release())
 
     pc, done, stop = spin(m, pc, instrs, pits=timers)
     frames = cap.distinct()
     print('%s  channels=%s  %s instrs  stop=%s'
           % (snapshot, channels, format(done, ','), stop))
     print('frames flushed=%d distinct=%d' % (len(cap.frames), len(frames)))
-    buf = cap.last if cap.last is not None else read(m)
+    buf = cap.last if cap.last is not None else read(m, profile.fb_front)
     if buf is None:
         print('no panel buffer'); return
     print('lit=%d of %d' % (len(lit(buf)), W * H))

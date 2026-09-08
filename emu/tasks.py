@@ -16,13 +16,17 @@ The context switcher at 0x40000410 gives the layout:
 so a parked task's PC is on its own stack: ColdFire pushes a two-longword
 exception frame, [a7] = format/vector/SR and [a7+4] = PC.
 
+The two literal operands above, $47d9adb4 and $4094c914, are exactly what
+`symbols.current_tcb` / `symbols.ready_cursor` read out of the switcher, so
+they are resolved per build in emu/symbols.py rather than hardcoded here.
+
 Usage: python -m emu.tasks <snapshot>
 """
 import struct, sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from emu.snapshot import restore
+from emu import config, symbols
 
-CURRENT_TCB, READY_CURSOR = 0x47d9adb4, 0x4094c914
 REG_BASE = 0x0C                 # d0-d7 then a0-a7
 A7_OFF   = REG_BASE + 15 * 4    # 0x48
 NEXT_OFF = 0x00
@@ -40,9 +44,9 @@ def parked_pc(m, tcb):
     return sp, u32(m, sp), u32(m, sp + 4)
 
 
-def ready_list(m, limit=32):
+def ready_list(m, ready_cursor, limit=32):
     """Walk the ready list from the cursor. -> list of TCB addresses."""
-    cur = u32(m, READY_CURSOR)
+    cur = u32(m, ready_cursor)
     if not cur: return []
     out, node, seen = [], u32(m, cur), set()
     while node and node not in seen and len(out) < limit:
@@ -55,12 +59,18 @@ def ready_list(m, limit=32):
 def main(snap):
     m, extra, regs = restore(snap)
     tasks = extra.get('tasks', {})
-    cur = u32(m, CURRENT_TCB)
+    main_img = open(config.main_image(), 'rb').read()
+    profile = symbols.resolve(main_img)
     print('snapshot %s   n=%s' % (snap, extra.get('n')))
-    print('current TCB 0x%08x   live pc=0x%08x sr=0x%04x' % (cur, regs['pc'], regs['sr']))
-
-    rl = ready_list(m)
-    print('ready list (%d nodes): %s' % (len(rl), ['0x%08x' % t for t in rl]))
+    cur, rl = None, []
+    if profile.current_tcb is None or profile.ready_cursor is None:
+        print('scheduler variables (current_tcb/ready_cursor) did not '
+              'resolve for this image; skipping current-task and ready-list output')
+    else:
+        cur = u32(m, profile.current_tcb)
+        print('current TCB 0x%08x   live pc=0x%08x sr=0x%04x' % (cur, regs['pc'], regs['sr']))
+        rl = ready_list(m, profile.ready_cursor)
+        print('ready list (%d nodes): %s' % (len(rl), ['0x%08x' % t for t in rl]))
 
     print('\n%-11s %-5s %-11s %-11s %-11s %s'
           % ('tcb', 'prio', 'entry', 'saved a7', 'parked pc', 'state'))

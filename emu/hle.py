@@ -33,6 +33,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from unicorn.m68k_const import UC_M68K_REG_A7, UC_M68K_REG_D0, UC_M68K_REG_PC
 from emu import config
 
+# Digitakt reference values, used only by the selftest below. Callers pass
+# the resolved per-build addresses into install_bitmap instead.
 SET_PIXEL = 0x40104eb4
 GET_PIXEL = 0x40104f80
 
@@ -41,11 +43,13 @@ def _s32(v):
     return v - (1 << 32) if v & 0x80000000 else v
 
 
-def install_bitmap(at, stats=None, on_pixel=None):
+def install_bitmap(at, stats=None, on_pixel=None, set_pixel=None, get_pixel=None):
     """HLE both routines. `on_pixel(x, y, val, bmp)` is called for each
     setPixel -- that is how emu/frame.py and emu/gui.py observe drawing
     without paying for a second hook. `bmp` is the Bitmap instance, which is
     worth keeping: it is how the panel framebuffer at 0x4313b298 was found."""
+    sp_addr = set_pixel if set_pixel is not None else SET_PIXEL
+    gp_addr = get_pixel if get_pixel is not None else GET_PIXEL
 
     # NOTE: do NOT cache the Bitmap header. It was tried, on the assumption
     # that geometry is fixed per Bitmap pointer, and it is not -- the firmware
@@ -96,8 +100,8 @@ def install_bitmap(at, stats=None, on_pixel=None):
         if stats is not None:
             stats['getPixel'] += 1
 
-    at(SET_PIXEL, do_set)
-    at(GET_PIXEL, do_get)
+    at(sp_addr, do_set)
+    at(gp_addr, do_get)
 
 
 def selftest(verbose=True):

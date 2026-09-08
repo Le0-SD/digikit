@@ -92,7 +92,12 @@ def _cmp(a, b):
     return ((a > b) - (a < b)) & 0xFFFFFFFF
 
 
-# addr -> (name, arity, fn, returns_float)
+# addr -> (name, arity, fn, returns_float). These are the DIGITAKT addresses:
+# they are the reference values the selftest below calls into, and the default
+# for a caller that supplies nothing. They are NOT build-portable -- the whole
+# libgcc block moves (on Digitone II 1.10E it sits at 0x401685fc-0x40169f5c) --
+# so longrun.build passes `entries` resolved from the image itself. See the
+# sf_* symbols in emu/symbols.py.
 ROUTINES = {
     0x40175204: ('mulsf3',  2, lambda a, b: a * b, True),
     0x40174f1c: ('subsf3',  2, lambda a, b: a - b, True),
@@ -113,12 +118,23 @@ _PACK_F = struct.Struct('>f')
 _TO_BITS = struct.Struct('>I')
 
 
-def install(at, stats=None):
+def install(at, stats=None, entries=None):
     """Register HLE hooks. `at(addr, fn)` is longrun.build's hook registrar.
 
     Each handler pops only the return address, leaving the arguments for the
     caller to clean -- the same convention the real routines use, and the same
     one dspboot's flash-read HLE follows.
+
+    `entries` maps routine NAME -> address for the image actually loaded, and
+    is how a build other than Digitakt gets hooked at all; a name missing from
+    it (or mapped to None) is simply not intercepted, and the firmware's own
+    routine runs -- correct, just slow. Passing nothing keeps the Digitakt
+    addresses in ROUTINES, which is what the selftest wants.
+
+    Hooking the wrong address would be worse than not hooking: the handler
+    writes d0 and pops a return address, so pointing it at unrelated code
+    silently corrupts the guest. That is why an unresolved name is dropped
+    rather than defaulted back to the Digitakt literal.
     """
     def make(arity, fn, is_float, name):
         codec = _ARGS[arity]
@@ -155,9 +171,15 @@ def install(at, stats=None):
                 stats[name] += 1
         return h
 
+    installed = 0
     for addr, (name, arity, fn, is_float) in ROUTINES.items():
+        if entries is not None:
+            addr = entries.get(name)
+            if addr is None:
+                continue
         at(addr, make(arity, fn, is_float, name))
-    return len(ROUTINES)
+        installed += 1
+    return installed
 
 
 def selftest(verbose=True):

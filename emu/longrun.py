@@ -14,67 +14,14 @@ from unicorn.m68k_const import (UC_M68K_REG_A7, UC_M68K_REG_PC, UC_M68K_REG_SR,
 import emu.dspboot as db
 from emu.harness import Machine
 from emu.snapshot import restore_into
-from emu import config
+from emu import config, symbols
 
-TASK_CREATE, PRINT = 0x400012c8, 0x400054b4
-SETPIXEL, PXCOPY   = 0x40104eb4, 0x400d315e
+PRINT              = 0x400054b4
 SWITCH_TO          = 0x4000044a
 USR8, UDR8         = 0xEC070004, 0xEC07000C
 
 
 PEND_A, PEND_B = 0x4000141a, 0x400013a6   # sem object is the arg at 4(a7)
-
-# Sites that decide how far `unblock` may go. Each of these is a pend whose
-# caller re-checks a condition afterwards and loops, so force-satisfying the
-# semaphore turns a sleep into an infinite spin. Blocking is the correct
-# behaviour at all of them: nothing has arrived.
-#
-#   QUEUE_RECV  the pend inside queue_receive (0x40001928). It waits on the
-#               queue's own semaphore at queue+8, then re-reads queue->count.
-#               Measured at 8.9M iterations, ~92% of all post-intro cycles.
-#   INTRO_PARK  the intro task's park loop (0x400d4060). It pends the SAME
-#               semaphore the intro loop pends at 0x400d4038, which must be
-#               satisfied -- so this has to be told apart by caller, not by
-#               semaphore. Blocking here is what frees the CPU once the intro
-#               is over, and unlike the INTRO_DONE hook below it also works on
-#               a snapshot taken after the intro had already finished.
-#   DISPLAY_WAIT  the prio-6 progress-screen task (0x4012606a) waiting on
-#               0x44e2d148 and re-checking a flag at 0x44e2d5cc. Note this is
-#               the loading screen, not the user interface -- see HANDOVER.
-#   PUMP_WAIT   the job worker pool's "is there work" pend, at the top of the
-#               pump 0x400f1b80 (`jsr (a5)` at 0x400f1bae, a5 = PEND_B). The
-#               semaphore is a plain count of queued jobs, so satisfying it
-#               hands the worker a ring slot nobody wrote. It then runs a job
-#               that is not there and destroys the record, whose std::string
-#               has a null data pointer -- and `_M_dispose` frees
-#               `_M_data() - sizeof(_Rep)`, which for a null is 0xfffffff4.
-#               That trips the allocator's own bounds check and takes vector 4
-#               at the `illegal` opcode at 0x40111458. It is very likely the
-#               whole "C++ throw nothing can unwind" story of section 9: the
-#               recorded message is `basic_string::_S_construct null not
-#               valid`, which is the same null string seen from the other end.
-#               Measured from postintro.snap with dsp=True: blocking here takes
-#               a run that faulted at 70.2M to a clean 100M, and takes the pump
-#               from one job to two.
-#   SLEEP_PEND  the microsecond sleep in `0x40128c7c`. It arms DMA timer 1
-#               and pends `0x44e4d69c` at `0x40128d08`, and the timer's own
-#               ISR `0x40128c4c` posts it. Satisfying it makes every sleep
-#               in the firmware a no-op, which is only harmless while
-#               DTIM1 is not delivered -- see emu/dtim.py. Blocking here is
-#               correct once it is, and is what stops the priority-3 job
-#               worker monopolising the CPU.
-QUEUE_RECV   = 0x40001946
-INTRO_PARK   = 0x400d4068
-DISPLAY_WAIT = 0x401260c2
-PUMP_WAIT    = 0x400f1bb0
-SLEEP_PEND   = 0x40128d0e
-RECHECK_PENDS = (QUEUE_RECV, INTRO_PARK, DISPLAY_WAIT, PUMP_WAIT)
-
-# Only correct when DTIM1 is actually delivered; see build(real_sleep=...).
-REAL_SLEEP_PENDS = (SLEEP_PEND,)
-
-INTRO_DONE = 0x400d403c                   # intro loop's exit branch target
-FRAME_SEM  = 0x43131200                   # intro frame-pacing semaphore
 
 
 def build(snapshot, send=b'', syx=None, isa='scoped',
@@ -106,11 +53,11 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     frame semaphore 0x43131200 is the case that matters, since satisfying it
     is what makes the animation run unpaced.
 
-    `unblock` never satisfies a pend from any of RECHECK_PENDS -- call sites
+    `unblock` never satisfies a pend from any of `recheck` -- call sites
     that re-check a condition after the wait and loop, so satisfying them
     spins instead of sleeping. It also stops satisfying the intro frame
     semaphore by itself once the intro's exit path is reached, which covers a
-    run that executes the intro; RECHECK_PENDS covers a run resumed from a
+    run that executes the intro; `recheck` covers a run resumed from a
     snapshot taken after it.
 
     softfloat=True runs the firmware's float routines natively instead of
@@ -136,7 +83,7 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     not a shortcut, so there is no faithful configuration with it off.
 
     real_sleep=True makes `0x40128c7c` a real sleep instead of a no-op, by
-    letting `unblock` block at SLEEP_PEND instead of force-satisfying it.
+    letting `unblock` block at sleep_pend instead of force-satisfying it.
     It requires that DTIM1 is being delivered (see emu/dtim.py) or the
     priority-3 job worker will block forever.
 
@@ -229,6 +176,67 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
           'uart_out': bytearray(), 'satisfied': 0, 'depack_clamps': 0}
     inq = collections.deque(send)
     main_img = open(config.main_image(), 'rb').read()
+    # Resolve addresses from the image itself rather than dspboot's
+    # Digitakt-specific module constants -- see emu/symbols.py. Cached per
+    # image SHA-256, so this costs nothing extra when dspboot.run has already
+    # resolved the same image (e.g. checkpoint.py builds a snapshot with
+    # dspboot.run and then resumes it here).
+    profile = symbols.resolve(main_img, load_addr=db.MAIN_LOAD)
+
+    # Sites that decide how far `unblock` may go. Each of these is a pend
+    # whose caller re-checks a condition afterwards and loops, so
+    # force-satisfying the semaphore turns a sleep into an infinite spin.
+    # Blocking is the correct behaviour at all of them: nothing has arrived.
+    #
+    #   queue_recv    the pend inside queue_receive. It waits on the queue's
+    #               own semaphore at queue+8, then re-reads queue->count.
+    #               Measured at 8.9M iterations, ~92% of all post-intro
+    #               cycles. Digitakt 0x40001946; resolved per build as
+    #               profile.queue_recv.
+    #   intro_park    the intro task's park loop. It pends the SAME semaphore
+    #               the intro loop pends, which must be satisfied -- so this
+    #               has to be told apart by caller, not by semaphore.
+    #               Blocking here is what frees the CPU once the intro is
+    #               over, and unlike the intro_done hook below it also works
+    #               on a snapshot taken after the intro had already
+    #               finished. Digitakt 0x400d4068; resolved per build as
+    #               profile.intro_park.
+    #   display_wait  the prio-6 progress-screen task waiting on the frame
+    #               semaphore and re-checking a flag. Note this is the
+    #               loading screen, not the user interface -- see HANDOVER.
+    #               Digitakt 0x401260c2; resolved per build as
+    #               profile.display_wait.
+    #   pump_wait     the job worker pool's "is there work" pend, at the top
+    #               of the pump (`jsr (a5)`, a5 = PEND_B). The semaphore is a
+    #               plain count of queued jobs, so satisfying it hands the
+    #               worker a ring slot nobody wrote. It then runs a job that
+    #               is not there and destroys the record, whose std::string
+    #               has a null data pointer -- and `_M_dispose` frees
+    #               `_M_data() - sizeof(_Rep)`, which for a null is
+    #               0xfffffff4. That trips the allocator's own bounds check
+    #               and takes vector 4 at the `illegal` opcode at
+    #               0x40111458. It is very likely the whole "C++ throw
+    #               nothing can unwind" story of section 9: the recorded
+    #               message is `basic_string::_S_construct null not valid`,
+    #               which is the same null string seen from the other end.
+    #               Measured from postintro.snap with dsp=True: blocking
+    #               here takes a run that faulted at 70.2M to a clean 100M,
+    #               and takes the pump from one job to two. Digitakt
+    #               0x400f1bb0; resolved per build as profile.pump_wait.
+    #   sleep_pend    the microsecond sleep. It arms DMA timer 1 and pends a
+    #               semaphore, and the timer's own ISR posts it. Satisfying
+    #               it makes every sleep in the firmware a no-op, which is
+    #               only harmless while DTIM1 is not delivered -- see
+    #               emu/dtim.py. Blocking here is correct once it is, and is
+    #               what stops the priority-3 job worker monopolising the
+    #               CPU. Digitakt 0x40128d0e; resolved per build as
+    #               profile.sleep_pend.
+    recheck = tuple(a for a in (profile.queue_recv, profile.intro_park,
+                                profile.display_wait, profile.pump_wait)
+                    if a is not None)
+    # Only correct when DTIM1 is actually delivered; see build(real_sleep=...).
+    real_sleep_pends = tuple(a for a in (profile.sleep_pend,) if a is not None)
+
     if isa == 'scoped':
         m.install_isa_patches_scoped(main_img, db.MAIN_LOAD)
     else:
@@ -236,6 +244,12 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
 
     def at(addr, fn):
         m.uc.hook_add(UC_HOOK_CODE, fn, begin=addr, end=addr)
+
+    def maybe_at(addr, fn):
+        # OPTIONAL symbols degrade gracefully: unresolved just means the
+        # hook is not installed, never a crash -- see emu/symbols.py.
+        if addr is not None:
+            at(addr, fn)
 
     def flash_read(uc, a, s, d):
         sp = uc.reg_read(UC_M68K_REG_A7)
@@ -266,12 +280,12 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
         if not ev['switch_seq'] or ev['switch_seq'][-1] != tcb:
             ev['switch_seq'].append(tcb)
 
-    at(db.FLASH_READ, flash_read)
-    at(db.PEND_CALL, lambda uc,a,s,d: uc.mem_write(db.COMPLETION_SEM, struct.pack('>I',1)))
-    at(TASK_CREATE, task_create)
+    at(profile.flash_read, flash_read)
+    at(profile.pend_call, lambda uc,a,s,d: uc.mem_write(profile.completion_sem, struct.pack('>I',1)))
+    maybe_at(profile.task_create, task_create)
     at(PRINT, do_print)
-    at(SETPIXEL, lambda uc,a,s,d: ev.__setitem__('setpixel', ev['setpixel']+1))
-    at(PXCOPY,   lambda uc,a,s,d: ev.__setitem__('pxcopy',  ev['pxcopy']+1))
+    maybe_at(profile.set_pixel, lambda uc,a,s,d: ev.__setitem__('setpixel', ev['setpixel']+1))
+    maybe_at(profile.px_copy,   lambda uc,a,s,d: ev.__setitem__('pxcopy',  ev['pxcopy']+1))
     at(SWITCH_TO, switch_to)
 
     # dspboot.run installs two more behaviour hooks, and the snapshots were
@@ -283,7 +297,7 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
         if uc.reg_read(UC_M68K_REG_D2) > db.DEPACK_LEN_CAP:
             uc.reg_write(UC_M68K_REG_D2, 1)
             ev['depack_clamps'] += 1
-    at(db.DEPACK_COPY, depack_clamp)
+    at(profile.depack_copy, depack_clamp)
 
     tx = None
     if edma:                           # see emu/edma.py
@@ -308,12 +322,20 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     if softfloat:                      # see emu/softfloat.py
         from emu.softfloat import install as install_softfloat
         ev['softfloat'] = collections.Counter()
-        install_softfloat(at, ev['softfloat'])
+        # Per-build entry points. The soft-float block relocates like any
+        # other application code, and an HLE hook on the wrong address
+        # corrupts the guest rather than merely missing -- so unresolved
+        # names are dropped, not defaulted. See emu/softfloat.py.
+        sf = {name: profile.get('sf_' + name)
+              for name in ('mulsf3', 'subsf3', 'addsf3', 'divsf3',
+                           'abssf2', 'fixsfsi', 'cmpsf2')}
+        ev['softfloat_hooked'] = install_softfloat(at, ev['softfloat'], sf)
 
     if bitmap:
         from emu.hle import install_bitmap
         ev['bitmap'] = collections.Counter()
-        install_bitmap(at, ev['bitmap'], on_pixel)
+        install_bitmap(at, ev['bitmap'], on_pixel,
+                       set_pixel=profile.set_pixel, get_pixel=profile.get_pixel)
 
     if unblock:
         # Both sets are kept mutable and exposed on `ev` so a run can change
@@ -324,9 +346,9 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
         # each caller -- getting it wrong is silent, it just looks like a hang.
         skip = set(unblock_except)
         ev['unblock_skip'] = skip
-        skip_callers = set(RECHECK_PENDS)
+        skip_callers = set(recheck)
         if real_sleep:
-            skip_callers |= set(REAL_SLEEP_PENDS)
+            skip_callers |= set(real_sleep_pends)
         ev['unblock_skip_callers'] = skip_callers
 
         def satisfy(uc, a, s, d):
@@ -340,8 +362,10 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
                     ev['satisfied'] += 1
             except Exception:
                 pass
-        at(PEND_A, satisfy); at(PEND_B, satisfy)
-        at(INTRO_DONE, lambda uc, a, s, d: skip.add(FRAME_SEM))
+        at(profile.sem_pend, satisfy); maybe_at(profile.pend_b, satisfy)
+        if profile.intro_done is not None and profile.frame_sem is not None:
+            frame_sem = profile.frame_sem
+            at(profile.intro_done, lambda uc, a, s, d: skip.add(frame_sem))
 
     def onr(uc, typ, addr, size, val, data):
         if addr == USR8: uc.mem_write(USR8, bytes([0x04 | (0x01 if inq else 0)]))

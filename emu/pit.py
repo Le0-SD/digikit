@@ -92,26 +92,34 @@ ICR_BASE, IMR_BASE = 0x40, 0x08
 # deadline to aim at. Only the pacing of a dead clock depends on it.
 IDLE_STEP = 1_000_000
 
-INTRO_PIT3_ISR = 0x400d2d70       # the intro's own vector-208 handler
-PIT3_VECTOR_SLOT = 0x40000340     # VBR + 208*4
+PIT3_VECTOR_SLOT = 0x40000340     # VBR + 208*4, not build-specific
 
 
-def intro_running(m):
+def intro_running(m, intro_isr):
     """-> True while the intro still owns PIT3.
 
-    The intro paces its own frames off PIT3 (vector 208 -> 0x400d2d70) and
-    switches the timer off on its way out; the display module then claims the
-    same vector for itself. So "vector 208 still points at the intro's
-    handler and PIT3 is enabled" is exactly the window in which the intro is
-    live, and it distinguishes `boot400M.snap` (enabled) from
-    `postintro.snap` (switched off) without either being told apart by name.
+    The intro paces its own frames off PIT3 (vector 208) and switches the
+    timer off on its way out; the display module then claims the same vector
+    for itself. So "vector 208 still points at the intro's handler and PIT3
+    is enabled" is exactly the window in which the intro is live, and it
+    distinguishes `boot400M.snap` (enabled) from `postintro.snap` (switched
+    off) without either being told apart by name.
+
+    `intro_isr` is the build's own intro PIT3 handler, resolved as
+    `profile.intro_pit3_isr` in emu/symbols.py -- it is NOT hardcoded here.
+    Hardcoding Digitakt's address was a real bug: on Digitone it made this
+    return False for the whole intro, so the GUI released the timers into
+    the middle of a running intro. If `intro_isr` did not resolve, this
+    returns False, since there is then no way to tell.
     """
+    if intro_isr is None:
+        return False
     try:
         slot = struct.unpack('>I', m.uc.mem_read(PIT3_VECTOR_SLOT, 4))[0]
         pcsr = struct.unpack('>H', m.uc.mem_read(BASES[3], 2))[0]
     except Exception:
         return False
-    return slot == INTRO_PIT3_ISR and bool(pcsr & EN)
+    return slot == intro_isr and bool(pcsr & EN)
 
 
 class Pits:
@@ -154,8 +162,8 @@ class Pits:
     way -- the intro exits, but the six OS tasks that should spawn afterwards
     never do. Measured from `boot400M.snap` over 90M instructions: channels
     `()` and `(0,)` both reach six tasks, and `(2,)`, `(3,)`, `(0, 2)` and
-    `(0, 2, 3)` all reach zero. Construct with `hold=intro_running(m)` and
-    call `release()` from a hook on `longrun.INTRO_DONE`.
+    `(0, 2, 3)` all reach zero. Construct with `hold=intro_running(m, isr)` and
+    call `release()` from a hook on the intro's exit point, `profile.intro_done`.
     """
 
     def __init__(self, m, channels=(3, 2, 0), instr_per_sec=INSTR_PER_SEC,

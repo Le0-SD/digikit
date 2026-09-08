@@ -3,25 +3,16 @@
     uv run python -m emu.run [firmware.syx] [--weakptr] [--slc] [--scale N]
 
 Everything between a `.syx` and a live panel, with each prerequisite checked
-and built if it can be. There are three, and only the middle one still needs a
-tool this repo does not ship:
+and built if it can be. There are three, and only the first is yours to find:
 
   1. the `.syx` itself -- yours, never redistributed here;
-  2. `sections/section_3_MAIN_OS.bin`, the decompressed ColdFire image;
+  2. `sections/section_3_MAIN_OS.bin`, the decompressed ColdFire image, which
+     `emu.extract` produces on first run (about a minute);
   3. a boot snapshot, which this builds for you on first run (a few minutes).
-
-**Step 2 is the manual one.** The container's sections are compressed, and the
-only implementation of the decompressor known to be correct is the device's
-own, at `0x80000432` -- which lives in section 2, which is itself compressed.
-It cannot bootstrap itself, so extraction needs an outside tool. The stream is
-*not* stock aPLib: a stock depacker emits the first data byte as a literal,
-whereas here that byte (`0xfd` in 1.15C section 2) is a tag byte with 1 meaning
-literal, and the six bytes after it are the output's first six verbatim. Anyone
-wanting to close this should write the depacker against that observation and
-check it byte-for-byte with `emu.oracle.depack`, which runs the real thing.
 """
 import hashlib
 import os
+import struct
 import subprocess
 import sys
 
@@ -35,21 +26,6 @@ MARKER = '.source-sha256'
 
 def marker_path():
     return os.path.join(config.sections_dir(), MARKER)
-
-EXTRACT_HELP = """\
-Missing: %s
-
-The firmware sections are compressed inside the .syx and this repo cannot
-decompress them yet (see emu/run.py's docstring for why, and what it would
-take). Extract them once with elektron-firmware-tool, which supports device
-0x14 = Digitakt II:
-
-    elektron-firmware-tool -i %s -o sections/
-
-    https://github.com/mischa85/elektron-firmware-tool
-
-That writes sections/section_3_MAIN_OS.bin and its siblings, and you will not
-need to do it again."""
 
 
 def sha256(path):
@@ -103,7 +79,7 @@ def need_matching_sections(syx, accept=False):
             'The section filenames are fixed, so that directory holds only one\n'
             'firmware at a time. Re-extract to switch:\n\n'
             '    rm -rf %s/\n'
-            '    elektron-firmware-tool -i %s -o %s/'
+            '    uv run python -m emu.extract %s -o %s/'
             % (config.sections_dir(), os.path.basename(syx), was[:16],
                digest[:16], config.sections_dir(), syx, config.sections_dir()))
     if not (config.is_tested(syx) or accept):
@@ -114,13 +90,64 @@ def need_matching_sections(syx, accept=False):
             'them would emulate that one under this one\'s name. Either\n'
             're-extract:\n\n'
             '    rm -rf %s/\n'
-            '    elektron-firmware-tool -i %s -o %s/\n\n'
+            '    uv run python -m emu.extract %s -o %s/\n\n'
             'or pass --accept-sections if you are certain they match.'
             % (config.sections_dir(), os.path.basename(syx),
                config.sections_dir(), syx, config.sections_dir()))
     open(path, 'w').write(digest + '\n')
     print('Recorded %s/ as belonging to %s (%s).\n'
           % (config.sections_dir(), os.path.basename(syx), digest[:16]))
+
+
+def usable_rung(prefix, default):
+    """-> the ladder snapshot the GUI can actually resume the intro from.
+
+    The rungs are fixed instruction counts, and two firmwares do not reach the
+    same phase at the same count. At 400M Digitakt's intro is mid-draw; the
+    same count on Digitone is already past it, with the intro task parked
+    inside `sem_pend` on the frame semaphore. That state cannot be resumed:
+    `unblock` only ever sees a pend on the way IN, so it can never satisfy a
+    wait that is already blocked, and the GUI holds PIT3 for as long as the
+    intro owns vector 208 -- so the one thing that could post the semaphore is
+    switched off. The run sits there and the panel stays black.
+
+    So choose by state rather than by number: newest rung first, take the
+    first one whose intro is both live and not already parked. Digitakt
+    qualifies at every rung and therefore still gets 400M, unchanged. On
+    Digitone only 400M is disqualified, and it gets 280M.
+
+    Falls back to `default` when nothing qualifies -- a firmware whose intro
+    this cannot recognise is no worse off than before.
+    """
+    from emu import symbols
+    from emu.pit import intro_running
+    from emu.snapshot import restore
+
+    try:
+        profile = symbols.resolve(open(config.main_image(), 'rb').read())
+    except Exception:                                   # noqa: BLE001
+        return default
+    if profile.intro_pit3_isr is None or profile.frame_sem is None:
+        return default
+
+    for at in sorted((int(n) for n in LADDER.split(',')), reverse=True):
+        path = '%s%dM.snap' % (prefix, at // 1_000_000)
+        if not os.path.exists(path):
+            continue
+        try:
+            m, _extra, _regs = restore(path)
+            live = intro_running(m, profile.intro_pit3_isr)
+            waiter = struct.unpack(
+                '>I', m.uc.mem_read(profile.frame_sem + 4, 4))[0]
+        except Exception:                               # noqa: BLE001
+            continue
+        if live and not waiter:
+            if path != default:
+                print('Resuming from %s rather than %s: at the later rung this\n'
+                      "firmware's intro has already parked on the frame "
+                      'semaphore,\nwhich cannot be resumed.\n' % (path, default))
+            return path
+    return default
 
 
 def need_syx(path):
@@ -135,7 +162,19 @@ def need_syx(path):
 
 
 def need_sections(syx):
-    config.main_image()          # raises config.NotFound with the how-to
+    """Decompress the sections if they are not there yet."""
+    try:
+        config.main_image()
+        return
+    except config.NotFound:
+        pass
+    from emu import extract          # imported late: it pulls in Unicorn
+    print('No extracted sections yet. Decompressing %s -- about a minute,\n'
+          'and only once.\n' % os.path.basename(syx), flush=True)
+    for sid, kind, path, n, dest in extract.extract(syx, config.sections_dir()):
+        print('  %-26s %9d bytes' % (os.path.basename(path), n), flush=True)
+    print()
+    config.main_image()          # confirm; raises config.NotFound if not
 
 
 def need_snapshot(snapshot, prefix, syx):
@@ -193,6 +232,10 @@ def main(argv):
               % (syx, config.sections_dir(), snapshot))
         return 0
     need_snapshot(snapshot, prefix, syx)
+    # Only when the user did not name one: an explicit snapshot is an
+    # instruction, not a suggestion.
+    if len(rest) <= 1:
+        snapshot = usable_rung(prefix, snapshot)
 
     gui_flags = [f for f in flags
                  if f not in ('--accept-sections', '--check')]

@@ -45,7 +45,7 @@ from unicorn import UC_HOOK_CODE, UcError
 from unicorn.m68k_const import UC_M68K_REG_A7, UC_M68K_REG_D0
 
 from emu.dtim import Dtims, Timers
-from emu.longrun import build, spin, INTRO_DONE
+from emu.longrun import build, spin
 from emu import panel
 from emu.pit import Pits, intro_running
 
@@ -154,12 +154,21 @@ def measure(snapshot, instrs, channels=(3,), on_pixel=None, trace=True):
         # Take the backtrace once, on the way in, while the stack is intact.
         at(TERMINAL, lambda u, a, s, d: bt or bt.extend(backtrace(u)))
 
-    src = [Pits(m, hold=intro_running(m))]
+    # Same per-build resolution as emu/panel.py and emu/gui.py: the intro's
+    # PIT3 handler and its exit point both move between builds.
+    from emu import config as _config, symbols as _symbols
+    profile = _symbols.resolve(open(_config.main_image(), 'rb').read())
+    intro = intro_running(m, profile.intro_pit3_isr)
+    src = [Pits(m, hold=intro)]
     if channels:
-        src.append(Dtims(m, channels=channels, hold=intro_running(m)))
+        src.append(Dtims(m, channels=channels, hold=intro))
     timers = Timers(*src)
     if timers.held:
-        at(INTRO_DONE, lambda u, a, s, d: timers.release())
+        if profile.intro_done is None:
+            print('warning: intro_done unresolved for this image -- the '
+                  'timers will stay held for the whole run')
+        else:
+            at(profile.intro_done, lambda u, a, s, d: timers.release())
 
     pc, done, stop = spin(m, pc, instrs, pits=timers)
     # The firmware's own framebuffer, not the setPixel HLE. `fb`/`lit` below

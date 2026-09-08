@@ -37,24 +37,24 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unicorn import UcError
 from unicorn.m68k_const import UC_M68K_REG_PC, UC_M68K_REG_SR
-from emu.longrun import build, spin, INTRO_DONE
+from emu.longrun import build, spin
 from emu.dtim import Dtims, Timers
-from emu import panel
+from emu import config, panel, symbols
 from emu.pit import Pits, intro_running
 from emu.screen import png
 
 # The intro's frame rate is not a guess. PIT3 is configured at 0x400d3a7a with
 # PCSR=0x0936 (prescaler 2^10) and PMR=0x2191, so one frame is (8593+1)*1024 =
-# 8,800,256 bus cycles; its ISR (vector 208, 0x400d2d70) posts the semaphore
-# the draw loop waits on at 0x400d4036. The bus clock is 132 MHz, taken from
-# the UART baud divider at 0x400024a4 (132000000 / (32*baud)) -- which checks
-# out because it also makes the RTOS tick exactly 50.000 Hz and PIT2 60.0 Hz.
-FRAME_SEM = 0x43131200
+# 8,800,256 bus cycles; its ISR (vector 208, 0x400d2d70 on Digitakt -- resolved
+# per build as profile.intro_pit3_isr) posts the semaphore the draw loop waits
+# on at 0x400d4036 (also Digitakt-specific). The bus clock is 132 MHz, taken
+# from the UART baud divider at 0x400024a4 (132000000 / (32*baud)) -- which
+# checks out because it also makes the RTOS tick exactly 50.000 Hz and PIT2
+# 60.0 Hz.
 FRAME_VECTOR = 208
 FRAME_HZ = 132_000_000 / ((0x2191 + 1) * 1024)     # 14.9996
 
 W, H = 128, 64
-CURRENT_TCB = 0x47d9adb4
 
 # Panel palette: an OLED is emissive, so the lit pixel is the bright thing and
 # the ground is genuinely black rather than dark grey.
@@ -105,6 +105,8 @@ class Emulator(threading.Thread):
                                     # firmware's own framebuffer (main OS).
         self._last_panel = None     # last panel buffer drawn, to skip repeats
         self._panel_live = False    # seen the OS draw into it at least once
+        self.fb_front = None        # resolved once the image is known -- see run()
+        self.profile = None         # the whole symbol profile, same point
 
     def run(self):
         def on_pixel(x, y, val, bmp):
@@ -150,9 +152,20 @@ class Emulator(threading.Thread):
                                            dsp=True, on_pixel=on_pixel,
                                            weakptr=self.weakptr, slc=self.slc,
                                            **extra)
+            # build() already resolved (and required) this same profile
+            # internally -- see emu/symbols.py -- so re-resolving here is a
+            # cache hit, not a rescan. fb_front is OPTIONAL: if it did not
+            # resolve for this image, _publish_panel below just never has
+            # anything to read, which is the documented degrade-gracefully
+            # behaviour rather than a crash.
+            main_img = open(config.main_image(), 'rb').read()
+            profile = symbols.resolve(main_img)
+            self.fb_front = profile.fb_front
+            self.profile = profile
         except Exception as exc:                       # noqa: BLE001
             self.error = '%s: %s' % (type(exc).__name__, exc)
             self.stats['status'] = 'failed to load'
+            print('[gui] FAILED TO LOAD: %s' % self.error, flush=True)
             self.ready.set()
             return
 
@@ -169,8 +182,9 @@ class Emulator(threading.Thread):
         # it that task makes exactly one pass through its message loop and
         # waits forever, which is what this window used to show. See
         # emu/dtim.py.
-        pits = Timers(Pits(m, hold=intro_running(m)),
-                      Dtims(m, channels=(3,), hold=intro_running(m)))
+        intro = intro_running(m, profile.intro_pit3_isr)
+        pits = Timers(Pits(m, hold=intro),
+                      Dtims(m, channels=(3,), hold=intro))
         # `pits.held` is exactly "the intro is still running", so a snapshot
         # taken after it already belongs to the OS and the panel buffer is the
         # screen from the first frame.
@@ -179,15 +193,26 @@ class Emulator(threading.Thread):
             def handover(uc, a, s_, d):
                 pits.release()
                 self.use_panel = True
-            at(INTRO_DONE, handover)
+            if profile.intro_done is not None:
+                at(profile.intro_done, handover)
+            else:
+                print('[gui] WARNING: intro_done did not resolve for this '
+                      'image; timers will stay held and the intro will '
+                      'never hand over', flush=True)
 
         # Progress markers, so the status line can say what the firmware is
-        # actually doing rather than only how many pixels it drew.
+        # actually doing rather than only how many pixels it drew. Resolved
+        # per build now (profile.mainloop / profile.job_pump); they say
+        # whether the OS actually took over after the intro: mainloop is the
+        # main application task's message-loop head, jobs is the job-worker
+        # pump.
         mark = self.stats
-        at(0x40033492, lambda uc, a, s, d: mark.__setitem__(
-            'mainloop', mark['mainloop'] + 1))
-        at(0x400f1b80, lambda uc, a, s, d: mark.__setitem__(
-            'jobs', mark['jobs'] + 1))
+        if profile.mainloop is not None:
+            at(profile.mainloop, lambda uc, a, s, d: mark.__setitem__(
+                'mainloop', mark['mainloop'] + 1))
+        if profile.job_pump is not None:
+            at(profile.job_pump, lambda uc, a, s, d: mark.__setitem__(
+                'jobs', mark['jobs'] + 1))
         # 0x4012d2fa is `bra.b` to itself -- the loop the abort path lands in.
         at(0x4012d2fa, lambda uc, a, s, d: mark.__setitem__('terminal', True))
         self.ready.set()
@@ -215,6 +240,12 @@ class Emulator(threading.Thread):
             pc, executed, stop = spin(m, pc, BUDGET, pits=pits)
             if stop != 'limit':
                 self.stats['status'] = 'halted: %s' % stop
+                # Also to stdout: the status label is invisible to anyone
+                # watching the terminal, which is where emu.run prints
+                # everything else, so a halt there reads as a freeze.
+                total = self.stats['instrs'] + executed
+                print('[gui] HALTED: %s  at pc=0x%08x after %dM instr'
+                      % (stop, pc, total // 1_000_000), flush=True)
                 break
             self.stats['instrs'] += executed
             self._publish_panel(m)
@@ -229,11 +260,12 @@ class Emulator(threading.Thread):
             self.stats['pc'] = pc
             self.stats['tasks'] = len(ev['tasks'])
             self.stats['prints'] = len(ev['prints'])
-            try:
-                self.stats['tcb'] = struct.unpack(
-                    '>I', m.uc.mem_read(CURRENT_TCB, 4))[0]
-            except UcError:
-                pass
+            if self.profile.current_tcb is not None:
+                try:
+                    self.stats['tcb'] = struct.unpack(
+                        '>I', m.uc.mem_read(self.profile.current_tcb, 4))[0]
+                except UcError:
+                    pass
         else:
             self.stats['status'] = 'stopped'
 
@@ -248,7 +280,7 @@ class Emulator(threading.Thread):
         """
         if not self.use_panel:
             return
-        buf = panel.read(m)
+        buf = panel.read(m, self.fb_front)
         if buf is None or buf == self._last_panel:
             return
         px = panel.lit(buf)
