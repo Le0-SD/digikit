@@ -46,6 +46,8 @@ written, and `0x4012001e` spins forever -- measured at 36,988,467 reads.
 """
 import struct
 
+from emu.edma import SERQ, TCD_BASE, SADDR, NBYTES, DADDR, CITER, DOFF, BITER
+
 BASE = 0xFC0CC000
 SIZE = 0x1000
 
@@ -101,6 +103,43 @@ RESET = {
 # 0x4011fe10 sets it to 1 before issuing and returns it after the wait.
 DRV_STATUS = 0x44E26F1C
 
+# EXT_CSD is 512 bytes, DMA'd to this buffer by eDMA channel 59; the driver
+# programs DADDR at 0x40120302 and arms the channel at 0x4012037e.
+EXTCSD_BUF = 0x4FE49100
+
+# Offsets INTO EXT_CSD that this firmware reads. `SLC_OK` is the one that
+# matters: 0x4fe49198 is EXTCSD_BUF + 0x98, so the "MMC NOT IN SLC MODE" flag
+# of section 1 is simply EXT_CSD byte 152, and build(slc=True) has been poking
+# into this buffer all along.
+#
+# Byte 152 is inside GP_SIZE_MULT in the JEDEC map, which is not an obvious
+# home for an SLC flag, so treat the JEDEC identity as UNCONFIRMED and the
+# offset as the fact. What is certain is 0x401204a4 reads it and wants 1.
+SLC_OK = 0x98
+PARTITIONS_ATTRIBUTE = 0x9C          # 156; also read at 0x4fe4919c-9e
+SEC_COUNT = 0xD4                     # 212..215, little-endian, in 512B sectors
+ERASE_GROUP_DEF = 0xAF               # 175
+BUS_WIDTH = 0xB7                     # 183
+HS_TIMING = 0xB9                     # 185
+
+
+def ext_csd(sectors=0x00760000, slc=True):
+    """-> 512 bytes of EXT_CSD.
+
+    Deliberately sparse: only the fields this firmware has been observed to
+    read are set, so anything else showing up as a dependency will announce
+    itself as a spin or a rejected card rather than hiding behind a plausible
+    value.
+    """
+    b = bytearray(512)
+    b[SLC_OK] = 1 if slc else 0
+    b[SEC_COUNT:SEC_COUNT + 4] = struct.pack('<I', sectors)
+    b[ERASE_GROUP_DEF] = 1
+    b[BUS_WIDTH] = 1
+    b[HS_TIMING] = 1
+    b[PARTITIONS_ATTRIBUTE] = 1
+    return bytes(b)
+
 
 class Card:
     """A minimal eMMC. Only what the identification sequence asks for.
@@ -110,9 +149,10 @@ class Card:
     know this is an eMMC and not a card).
     """
 
-    def __init__(self, image=None, capacity_blocks=0x00760000):
+    def __init__(self, image=None, capacity_blocks=0x00760000, slc=True):
         self.image = image
         self.blocks = capacity_blocks
+        self.ext_csd = ext_csd(capacity_blocks, slc)
         self.rca = 0
         self.selected = False
         # OCR: bit31 power-up done, bit30 sector addressing, voltage window.
@@ -151,6 +191,12 @@ class Card:
             return (~pattern) & 0xFFFFFFFF
         return 0
 
+    def data_for(self, idx):
+        """-> the block of data a data-read command hands back, or None."""
+        if idx == 8:                 # SEND_EXT_CSD
+            return self.ext_csd
+        return None
+
 
 class Esdhc:
     """The controller. `log` collects (command index, argument) in order."""
@@ -163,6 +209,8 @@ class Esdhc:
         self.trace = trace
         self.log = []
         self.pattern = 0           # last word the host wrote to DATPORT
+        self.armed = None          # eDMA channel armed via SERQ for this cmd
+        self.dma_bytes = 0
         for off, val in RESET.items():
             self._put(off, val)
         from unicorn import UC_HOOK_MEM_READ
@@ -174,6 +222,12 @@ class Esdhc:
                          begin=BASE + XFERTYP, end=BASE + XFERTYP + 3)
         self.uc.hook_add(UC_HOOK_MEM_WRITE, self._on_datport_write,
                          begin=BASE + DATPORT, end=BASE + DATPORT + 3)
+        # The driver arms an eDMA channel BEFORE issuing the command, so the
+        # transfer has to run when the command is issued, not when SERQ is
+        # written. emu/edma.py hooks the same byte for channel 35; Unicorn is
+        # happy with more than one hook on an address.
+        self.uc.hook_add(UC_HOOK_MEM_WRITE, self._on_serq,
+                         begin=SERQ, end=SERQ)
 
     # -- register access -------------------------------------------------
     def _put(self, off, val):
@@ -228,6 +282,12 @@ class Esdhc:
                 self._set_bits(PRSSTAT, BREN)
                 self._set_bits(IRQSTAT, BRR)
                 self._put(DATPORT, self.card.read_word(idx, self.pattern))
+                payload = self.card.data_for(idx)
+                if payload is not None and self.armed is not None:
+                    n = self._dma_out(payload)
+                    self.armed = None
+                    if self.trace:
+                        print('[esdhc]   CMD%d -> %d bytes by eDMA' % (idx, n))
             else:                                   # host -> card
                 self._set_bits(PRSSTAT, BWEN)
                 self._set_bits(IRQSTAT, BWR)
@@ -238,6 +298,35 @@ class Esdhc:
         if self.trace:
             print('[esdhc] CMD%-2d arg=%#010x xfertyp=%#010x -> %#010x'
                   % (idx, arg, xfer, r0))
+
+    def _on_serq(self, uc, typ, addr, size, val, data):
+        """Remember which channel is waiting on us. Bit 6 = all channels."""
+        if not (val & 0x40):
+            self.armed = val & 0x3F
+
+    def _dma_out(self, payload):
+        """Push `payload` through the armed channel's TCD, as the eDMA would.
+
+        SOFF is zero for these transfers -- the source is the DATPORT register
+        read over and over -- and DOFF equals NBYTES, so the destination is
+        contiguous and this is a straight copy plus TCD bookkeeping.
+        """
+        tcd = TCD_BASE + self.armed * 0x20
+        def u32(o):
+            return struct.unpack('>I', bytes(self.uc.mem_read(tcd + o, 4)))[0]
+        def u16(o):
+            return struct.unpack('>H', bytes(self.uc.mem_read(tcd + o, 2)))[0]
+        citer, nbytes = u16(CITER) & 0x7FFF, u32(NBYTES)
+        total = citer * nbytes
+        if not total:
+            return 0
+        dst = u32(DADDR)
+        chunk = payload[:total].ljust(total, b'\x00')
+        self.uc.mem_write(dst, chunk)
+        self.uc.mem_write(tcd + DADDR, struct.pack('>I', dst + total))
+        self.uc.mem_write(tcd + CITER, struct.pack('>H', u16(BITER) & 0x7FFF))
+        self.dma_bytes += total
+        return total
 
     def _on_datport_write(self, uc, typ, addr, size, val, data):
         """Capture what the host puts in the buffer, for the bus test."""

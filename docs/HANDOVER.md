@@ -630,13 +630,23 @@ are met; what satisfied them:
 
 ### What is still missing
 
-1. **EXT_CSD content.** `CMD8` (SEND_EXT_CSD) is issued and the model returns
-   zeros. This is almost certainly where `0x4fe49198` comes from — section 1
-   showed the SLC flag has no static writer, and `0x40120712` provisions the
-   enhanced (pseudo-SLC) area through `ENH_SIZE_MULT`/`ENH_START_ADDR`. Serve
-   a real EXT_CSD and `slc=True` should stop being a guess and become a
-   consequence. **Do this next**; it retires an open question rather than
-   adding a feature.
+1. ~~**EXT_CSD content.**~~ **Done — and it settles where the SLC flag came
+   from.** `0x40120302` programs eDMA channel 59's DADDR to **`0x4fe49100`**
+   and `0x4012037e` arms it before issuing CMD8, so EXT_CSD lands there. The
+   SLC flag `0x4fe49198` is therefore **EXT_CSD byte 0x98 (152)** — the same
+   buffer. `build(slc=True)` had been poking a byte of EXT_CSD all along,
+   which is why nothing appeared to write it: nothing does, the card supplies
+   it.
+
+   `emu/esdhc.py` now serves a 512-byte EXT_CSD through the channel's TCD
+   (SOFF 0, NBYTES 16, CITER 32) and **the flag reads 1 without `slc=True`**.
+   The guess is now a consequence.
+
+   One caveat kept deliberately: byte 152 sits inside `GP_SIZE_MULT` in the
+   JEDEC map, which is not a plausible home for an SLC flag. The **offset** is
+   established; the JEDEC field identity is not. `ext_csd()` is deliberately
+   sparse — only observed-read fields are set — so any further dependency
+   shows up as a spin rather than hiding behind a plausible value.
 2. **Bulk block data.** `read_blocks` (`0x401208fe`, CMD18) is called and
    returns zeros. Data does not come through DATPORT reads by the CPU — it
    moves through the SoC's eDMA programmed with `SADDR = DATPORT`, TCD
