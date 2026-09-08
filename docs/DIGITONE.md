@@ -270,25 +270,43 @@ code is byte-identical apart from the relocated `CURRENT_TCB` literal (checked
 byte by byte over `0x400015a0`–`0x40001710`). Digitakt locks the same mutex
 17,150 times and never has a boundary land in that two-instruction window.
 
-**The fix** is to stop reading SR at a boundary: shadow the IPL, updated from
-scoped hooks on the SR-writing instructions — 620 sites on Digitakt, 389 on
-Digitone (`move.w <ea>,sr`, `0x46xx`) — which is the pattern
-`Machine.install_isa_patches_scoped` already uses. Do NOT "fix" it by writing
-SR back: that installs a stale condition-code byte and makes things worse
-(measured: the firmware reaches its own panic handler and HALTs).
+### Fixed: `Machine.install_ipl_shadow`
 
-Note this is *a* blocker, not proven to be the only one: with the boundary
-phase shifted so the mutex never deadlocks, the OS still spawns no tasks
-within 120M instructions.
+The timer gate no longer reads SR. `Machine` shadows the interrupt mask,
+updated from scoped hooks on the instruction *after* each SR write — ColdFire
+encodes only two forms, `move.w #imm,SR` (`0x46FC`) and `move.w Dn,SR`
+(`0x46C0|n`) — plus the emulated `rte`, and seeded from the restored SR at
+snapshot load. Hooking the *successor* rather than the write itself matters: a
+code hook fires before its instruction, so hooking the write samples the mask
+one instruction early; neither form branches, so the successor is always next.
+Reading SR from inside a hook is the safe case.
+
+249 sites on Digitakt, 254 on Digitone. Verified by sampling the real SR from
+inside a hook every 503 instructions over 20M: **0 mismatches on both builds**
+(3,893 and 2,136 tracked writes). `emu/pit.py` and `emu/dtim.py` now gate on
+`m.ipl`, as does `spin(tick=...)`.
+
+Result: the Digitone mutex enqueue and block are gone (1 → 0), and Digitakt is
+unchanged on every regression check including the timer-sensitive panel one
+(135 flushed / 74 distinct / 411 lit, identical).
+
+Do NOT "fix" the underlying Unicorn defect by writing SR back at the boundary:
+that installs a stale condition-code byte and is measurably worse (the firmware
+reaches its own panic handler and HALTs).
+
+**Still not booting.** This was *a* blocker, not the only one: with the mutex
+deadlock gone the OS still spawns no tasks within 120M instructions, and an
+800M run reaches `tasks=0, mainloop=0, jobs=0`. It is stuck, not slow.
+
+One instance of the same hazard remains, and is pre-existing: `raise_vector`
+reads SR to build the exception frame. That is on the path where a tick IS
+delivered, where the CCR is then saved and restored by `rte` — which is what
+`Machine.install_srtrap` exists to get right, and it is still off by default.
 
 ## 5. Next steps, most promising first
 
-1. **Fix the SR-read-at-boundary defect** (section 4b). Shadow the IPL from
-   scoped hooks instead of reading SR in `Pits.service`. This is a correctness
-   fix for both firmwares, and it is the only one of these steps that is
-   fully specified and ready to implement.
-2. **Then re-measure.** With the mutex deadlock gone the OS still spawned no
-   tasks in 120M, so expect at least one more blocker behind it. Hook
+1. **Find the next blocker.** The mutex deadlock is fixed (section 4b) and the
+   OS still spawns no tasks in 120M, or in 800M. Hook
    `sem_post`/`mutex_unlock` and find what the prio-6 task is waiting on;
    `main_queue` (`0x4094ef3c` / `0x40583220`) is resolved and is the queue its
    message loop pends on.
@@ -381,7 +399,8 @@ DT2_SECTIONS=/tmp/sec-dt uv run python -m emu.frame snapshots/boot400M.snap 2000
   -> setPixel 616823, 75 frames, 344 lit
 
 DT2_SECTIONS=/tmp/sec-dt uv run python -m emu.panel snapshots/boot400M.snap 40000000 3
-  -> flushed 135, distinct 74, lit 411        (new baseline this session)
+  -> flushed 135, distinct 74, lit 411        (new baseline this session;
+     timer-sensitive, so it is the one that catches an IPL-gate regression)
 ```
 
 All verified after every change in this session.

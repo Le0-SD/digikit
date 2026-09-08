@@ -74,7 +74,6 @@ import collections
 import math
 import struct
 
-from unicorn.m68k_const import UC_M68K_REG_SR
 
 BASES   = (0xFC080000, 0xFC084000, 0xFC088000, 0xFC08C000)
 VECTORS = (205, 206, 207, 208)
@@ -296,8 +295,12 @@ class Pits:
                 self.next[ch] = done + p   # drop the backlog, do not chase it
             vec = VECTORS[ch]
             lvl = self.level(vec)
-            sr = self.m.uc.reg_read(UC_M68K_REG_SR)
-            if lvl is None or ((sr >> 8) & 0x07) >= lvl:
+            # The mask comes from the shadow, NOT from reg_read(SR): reading
+            # SR here would destroy the condition codes of the instruction
+            # that just executed, even on the path where the tick is then
+            # refused. See Machine.install_ipl_shadow.
+            ipl = self.m.ipl
+            if lvl is None or ipl is None or ipl >= lvl:
                 self.missed[ch] += 1       # the hardware could not take it either
             elif self.m.raise_vector(vec, level=lvl):
                 # Taking an interrupt raises the mask to its own level, so the

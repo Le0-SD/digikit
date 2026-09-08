@@ -54,6 +54,12 @@ class Machine:
         self.ctlregs = {}       # MOVEC control registers
         self.ff1_count = 0
         self.movec_count = 0
+        # Shadow of the interrupt priority mask, SR bits 10-8. Read this
+        # instead of SR when deciding whether an interrupt can be taken --
+        # see install_ipl_shadow for why reading SR there is not allowed.
+        # None means "not tracked yet"; sync_ipl seeds it.
+        self.ipl = None
+        self.ipl_writes = 0
         # Set by install_exceptions when a vector has no handler and the run
         # is stopped from inside the hook. emu_start then returns *without
         # raising*, so a caller that assumes it executed its full budget will
@@ -210,6 +216,7 @@ class Machine:
                 sp = uc.reg_read(UC_M68K_REG_A7)
                 _fmt, sr, pc = struct.unpack('>HHI', uc.mem_read(sp, 8))
                 uc.reg_write(UC_M68K_REG_SR, sr)
+                self.ipl = (sr >> 8) & 0x07     # rte restores the mask too
                 uc.reg_write(UC_M68K_REG_PC, pc)
                 uc.reg_write(UC_M68K_REG_A7, sp + 8)
                 return
@@ -298,6 +305,82 @@ class Machine:
         self._srtrap_target = handler
         self.uc.reg_write(UC_M68K_REG_PC, self.srtrap + slot * SRTRAP_STRIDE)
         return True
+
+    def sync_ipl(self):
+        """Seed the IPL shadow from the real SR. -> the level.
+
+        Only safe when no emulation is in flight -- straight after a snapshot
+        restore, or before the first emu_start. See install_ipl_shadow.
+        """
+        self.ipl = (self.uc.reg_read(UC_M68K_REG_SR) >> 8) & 0x07
+        return self.ipl
+
+    def install_ipl_shadow(self, image, load_addr):
+        """Track the interrupt mask without ever reading SR at a chunk
+        boundary. -> number of sites hooked.
+
+        **Reading SR between two emu_start calls destroys the condition codes
+        of the instruction that just executed.** Unicorn's m68k keeps the
+        flags lazily and materialises them wrongly across the boundary. It is
+        not subtle and it is not rare:
+
+            move.l (a2),d0      ; loads 0, so Z should be set
+            beq     claim       ; taken -- unless someone read SR in between
+
+        Reproduced standalone, no firmware: one emu_start -> branch taken;
+        split into two with `reg_read(SR)` in between -> branch NOT taken.
+        Reading PC or a data register in between is harmless, and reading SR
+        from inside a UC_HOOK_CODE *during* execution is harmless too.
+
+        This bit the timer gate. emu/pit.py and emu/dtim.py read SR at every
+        chunk boundary where a timer was due, to check whether the CPU's mask
+        allowed the interrupt -- and did it even when the answer was "no, the
+        hardware could not have taken this either". So a tick that was
+        correctly refused still corrupted the interrupted instruction's flags.
+        It landed inside the RTOS mutex fast path at 0x400015a0, where the
+        guest read a free mutex and then failed the `beq` that claims it, and
+        enqueued itself forever on a mutex owned by nobody. On Digitone II
+        1.10E that killed the timer-wheel task and stalled the OS after the
+        boot intro; Digitakt II 1.15C takes the same lock 17,150 times and
+        never once had a boundary land in that two-instruction window.
+
+        So: hook the instructions that write SR and compute the new mask from
+        the operand, the same scoped-hook trick install_isa_patches_scoped
+        uses. ColdFire only encodes two forms -- `move.w #imm,SR` (0x46FC)
+        and `move.w Dn,SR` (0x46C0|n) -- and the other movers of the mask are
+        ours already: the emulated `rte` in install_exceptions, and an
+        exception entry, whose trampoline is guest code and so writes SR
+        through one of those two forms anyway.
+
+        A scanned offset that is really data, not an instruction boundary,
+        simply never fires: PC only ever equals real instruction boundaries.
+        Do NOT "fix" the underlying defect by writing SR back at the boundary
+        -- that installs a stale condition-code byte over the resumed code's
+        flags and is measurably worse (the firmware reaches its own panic
+        handler and halts).
+        """
+        seen = set()
+        for off in range(0, len(image) - 3, 2):
+            w = (image[off] << 8) | image[off + 1]
+            if w == 0x46FC:                       # move.w #imm,SR  (4 bytes)
+                seen.add(load_addr + off + 4)
+            elif 0x46C0 <= w <= 0x46C7:           # move.w Dn,SR    (2 bytes)
+                seen.add(load_addr + off + 2)
+        # Hook the instruction AFTER the write, not the write itself, and
+        # read SR there. A code hook fires before its instruction executes,
+        # so hooking the write would sample the mask one instruction early;
+        # hooking its successor samples what was actually installed. Neither
+        # form branches, so the successor is always the next thing executed.
+        # Reading SR from inside a hook is the safe case -- it is only the
+        # read *between* two emu_start calls that loses the flags.
+        for addr in sorted(seen):
+            self.uc.hook_add(UC_HOOK_CODE, self._ipl_sample,
+                             begin=addr, end=addr)
+        return len(seen)
+
+    def _ipl_sample(self, uc, addr, size, data):
+        self.ipl = (uc.reg_read(UC_M68K_REG_SR) >> 8) & 0x07
+        self.ipl_writes += 1
 
     def install_srtrap(self, addr=SRTRAP_ADDR):
         """Route exception entry through guest code that saves the true SR.
