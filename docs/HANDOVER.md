@@ -4,12 +4,12 @@ Cold-start document, written for someone with no memory of the sessions that
 produced it. `docs/NEXT.md` is the project overview, `docs/FINDINGS.md` is the
 older evidence, this file is the current state and what to do next.
 
-**One-line status:** the Digitakt II main OS boots, runs its message loop and
-**renders its user interface** — the sample-source page, with `Loading...` on
-the status line. It then deadlocks: the job worker is waiting on a 100 µs sleep
-that runs on DMA timer 1, which the default channel set does not deliver.
-Delivering it (`channels=(3, 1)`) gets further and then hits the firmware's own
-HALT, which puts the exception model of section 10 back in the way.
+**One-line status:** with `build(weakptr=True, slc=True)` the Digitakt II main
+OS boots to its **idle main screen** — pattern `A01`, project `WAXSAFETY`,
+tempo `102.0`, encoder labels, no dialog — and both job workers settle into a
+proper RTOS wait. On that path `channels=(3, 1)` no longer faults. What is not
+yet established is whether the boot truly completed: the coprocessor does zero
+transfers there, against 27,624 on the old path. See section 1.
 
 **The previous edition of this file said "the panel still shows the last intro
 frame". That was wrong, and it was wrong for the whole of two sessions.** It
@@ -238,42 +238,62 @@ behind it.
 
 This is why `Loading...` is on the screen and stays there.
 
-### And the firmware says what it is unhappy about
+### The MMC dialog is advisory, and the flag behind it is never written
 
-The dialog on the panel reads **`MMC NOT IN SLC MODE`** (`0x2245bd` in the
-image; `MMC NOT RECONFIGURED` lives next to it at `0x22b0a6`). So the OS is not
-merely waiting — it has diagnosed a storage problem and put it on screen. Job 2
-is `saveProjectToMmc(tempProject)` and job 4 is `Update MMC Caches`, and there
-is no MMC model at all.
+The dialog reads **`MMC NOT IN SLC MODE`** (`0x402249bd`, file offset
+`0x2245bd`). **It is not a blocker.** Traced and verified twice:
 
-That reorders the risk. MMC was expected to be the wall *after* the exception
-model; the firmware is saying it is already a wall now. Whether clearing it is
-required before `Loading...` can finish, or the dialog is advisory and the
-pipeline is only blocked on DTIM1, is not yet known — and it is cheap to find
-out, because the firmware will tell you: put a hook on the throw helper
-`0x401d0e24` and on the logger `0x40000e82` and read what it says next.
+    40033358  jsr $401204a4        ; -> 1 = SLC ok, 0 = unset, -1 = error
+    40033360  cmp.l d0,d1          ; d1 = 1
+    40033362  beq.b $4003336e      ; ok -> check the capacity instead
+    40033366  pea.l $402249bd      ; "MMC NOT IN SLC MODE"
+    40033382  jsr $4010902c        ; both paths join here: show the dialog
+    40033390  ...                  ; and both fall through into the rest of init
 
-Deliver it — `channels=(3, 1)` with `weakptr=True` — and the run gets further
-and then hits the firmware's own HALT:
+The `bne` at `0x40033378` skips the dialog outright, and nothing returns early:
+execution continues into the message loop whichever way it goes. The factory
+self-test at `0x400cd50c` logs `MMC NOT RECONFIGURED` (`0x4022b4a6`) off the
+same primitive and is the same advisory shape.
 
-    stop = unhandled vector 257 at 0x4010fd52      (0x4010fd50 is HALT)
-    40033592 -> 4012a8a8 -> 4012a852 -> 40030af0 -> 4010e686
-             -> 40065b14 -> 40001274
+`0x401204a4` is nothing but a tri-state read of the byte at **`0x4fe49198`**.
+And **nothing in any firmware section ever writes it** — a byte search over all
+of `sections/` finds exactly two references and both are reads (`0x401204a6`
+and `0x40120714`); Ghidra's `Callers.java` agrees. So an earlier boot stage sets
+it on hardware, our snapshots start past that, and it reads **0**.
 
-The first five frames are the same call chain as the weak-pointer hang; it
-diverges at `0x4010e686`. `weakptr=True` makes **no difference** under
-`(3, 1)` — instruction count, fault and panel are identical with and without it
-(55,615,618 / vector 257 / 2050 lit), because the HALT comes first. So the two
-problems are independent, and this one is not downstream of the weak pointer. So the chain of blockers is now fully ordered, and
-every link is named: **UI renders -> weak-pointer freeze (solved) -> the job
-pipeline needs DTIM1 -> DTIM1 lands on the exception model.** Section 10 is
-still the wall, but it is now the *only* wall, and there is a sharp success
-criterion for it: `(3, 1)` with `weakptr=True` running without faulting.
+`build(slc=True)` writes 1 there. That is a model of the missing boot stage
+rather than an override of a firmware decision — though since the writer has
+not been found, it stays opt-in.
 
-**One number in this file does not reproduce.** The section below says job one
-is 1,024 coprocessor page writes and "it completes (exactly 1,024, verified)".
-Under `(3,)` it stops at 27. It was presumably measured under a different
-channel set; do not trust either figure until you know which.
+### What `slc=True` does, and it is a lot
+
+From `postintro.snap` over 60M with `weakptr=True`:
+
+| | `slc=False` | `slc=True` |
+|---|---|---|
+| panel | `Loading...` + error dialog, 2371 lit | **the real main screen**, 1895 lit |
+| coprocessor bursts | 27,624 | 0 |
+| job pump entries | 1 | 2 — both workers start |
+| prio-3 worker parked at | `0x400cf532`, wedged in the coprocessor | `0x4000165c` |
+| `channels=(3, 1)` | **faults at 55.6M, vector 257** | **runs to the limit** |
+
+`0x4000165c` is the instruction after the `trap #0` at `0x4000165a`, which is
+the RTOS block-and-yield — so both workers are *properly asleep in a wait*,
+not spinning. And the DTIM1 fault, which section 6 called the whole game, does
+not happen at all on this path.
+
+The panel shows a complete, idle Digitakt II main screen: `A01`, the project
+name **`WAXSAFETY`**, tempo `102.0`, `SMP 1`, three knob widgets labelled
+`TUNE` / `PLAY` / `SAMP`, and `LEV STRT LEN LOOP LEV` along the encoders. No
+`Loading...`, no dialog, no terminal loop.
+
+**The open question, and do not skip it.** With `slc=True` the coprocessor does
+**zero** transfers where it previously did 27,624. The five enqueued jobs are
+byte-identical under both flags, so nothing is skipped at enqueue time, but
+something downstream decides there is no DSP work to do. Either the boot
+genuinely completed and there was nothing to mirror, or this path quietly
+bypasses sample loading. Settle that before calling the boot finished — the
+screen looking right is not proof, as warning 6 should have taught by now.
 
 ### The jobs
 
@@ -443,12 +463,17 @@ resolution, and `emu_stop` under `spin` is forbidden.
    `emu/checkpoint.py` has no awareness of timer objects at all today — neither
    `resume()` nor `extend()` even passes `pits=` to `spin`.
 
-2. **Make `(3, 1)` + `weakptr=True` survive.** This is now the whole game. It
-   is the one configuration that can finish `Loading...`, and it dies in the
-   firmware's HALT at `0x4010fd52`. Everything in items 3 and 4 is in service
-   of this, and it is the test for whether they worked.
+2. **Find out whether the `slc=True` boot is real.** It reaches the idle main
+   screen and stops faulting, but the coprocessor does zero transfers. Work out
+   what consumes the five jobs on that path and why `KitActive::updateSingleMirror`
+   pushes nothing. If the answer is "there was genuinely nothing to do", the
+   boot is done; if it is a bypass, the old path is the honest one and item 3
+   is still the whole game.
 
-3. **Unit-test the exception path in isolation.** Section 10 is the cause and
+3. **Make `(3, 1)` + `weakptr=True` survive with `slc=False`.** On the old path
+   it dies in the firmware's HALT at `0x4010fd52`. Items 4 and 5 serve this.
+
+4. **Unit-test the exception path in isolation.** Section 10 is the cause and
    the reason correcting the condition codes makes the boot worse. Build a toy
    program where an interrupt lands between a flag-setting instruction and its
    branch, and check the frame push and `rte` against documented m68k semantics
@@ -464,28 +489,27 @@ resolution, and `emu_stop` under `spin` is forbidden.
    *and* a corrected entry SR in the default path — has never been tested.
    Patch-alone and srtrap-alone each hit a wall; that may be why.
 
-4. **Read the RTOS context switcher at `0x40000410` in Ghidra.** It is PIT0's
+5. **Read the RTOS context switcher at `0x40000410` in Ghidra.** It is PIT0's
    handler and it saves and restores exception frames itself, so it is exactly
    where our synthesised frame meets the firmware's expectations. If the layout
    or semantics differ, correct flags would break it — which is what was
    observed. This is the one static question worth asking, and it is
    independent of everything above, so it costs no wall-clock.
 
-5. **Diff stock against patched by first divergence, not by totals.** The
+6. **Diff stock against patched by first divergence, not by totals.** The
    harness is deterministic byte for byte, so the question "why does correcting
    the flags take six tasks to two" has an exact answer: the first instruction
    at which the two runs differ. That is immune to warning 2 in a way that
    comparing totals never is.
 
-6. **The MMC.** The panel already shows `MMC NOT IN SLC MODE`, so this is not
-   a future problem. Jobs 2 and 4 are `saveProjectToMmc(tempProject)` and
-   `Update MMC Caches`, and nothing models the card. Find the check that
-   produces that string and see what it reads; it may be a single register.
+7. **Find what writes `0x4fe49198`.** No firmware section does. Until it is
+   found, `slc=True` is a guess that happens to work, not a model that is
+   known right.
 
-7. **Fix `INSTR_PER_SEC`.** Warning 1. Needs the run to be affordable first;
+8. **Fix `INSTR_PER_SEC`.** Warning 1. Needs the run to be affordable first;
    see section 11 for why that is not the Python layer.
 
-8. **Decode the front-panel protocol.** Section 8, RX direction. It is how the
+9. **Decode the front-panel protocol.** Section 8, RX direction. It is how the
    UI would get driven by something other than a timer — and now that the UI
    demonstrably renders, this is what turns the project into something you can
    press buttons on.
@@ -803,7 +827,9 @@ hook-free. The gap is hook-induced translation-block fragmentation plus
 | **panel flush (double-buffer diff)** | `0x40126332` -> `0x40126264` |
 | **panel buffers: rendered / displayed** | `0x4029f650` / `0x4029f654`, 1024 B, swapped at `0x401263b0` |
 | **panel layout** | `index = page + 8*column`, bit n = row `8*(7-page)+n`, LSB first |
-| **on-screen error strings** | `MMC NOT IN SLC MODE` `0x2245bd`, `MMC NOT RECONFIGURED` `0x22b0a6` |
+| **on-screen error strings** | `MMC NOT IN SLC MODE` `0x402249bd`, `MMC NOT RECONFIGURED` `0x4022b4a6` |
+| **SLC flag / its reader / the test** | `0x4fe49198` / `0x401204a4` / `0x40033360`, dialog `0x4010902c` |
+| **RTOS block-and-yield** | `trap #0` at `0x4000165a`, resumes `0x4000165c` |
 | **printf-style logger** | `0x40000e82` — `f(stream, fmt, ...)`, fmt at `A7+8` |
 | **weak_ptr::lock wrong branches** | `0x40188b40` (`beq`), `0x40188b50` (`bne`) |
 | **coprocessor word write / burst** | `0x400cf4a8` / `0x400cf534`, rts at `0x400cf532` |
@@ -826,7 +852,7 @@ hook-free. The gap is hook-induced translation-block fragmentation plus
 ## 14. Tools
 
     uv sync
-    uv run python -m emu.gui [snap] [--weakptr] [--scale N]   # live panel
+    uv run python -m emu.gui [snap] [--weakptr] [--slc] [--scale N]  # live panel
     uv run python -m emu.uiprobe sweep             # the section 1 table
     uv run python -m emu.uiprobe run <snap> <n> 3  # one run + panel + backtrace
     uv run python -m emu.panel <snap> <n> 3,1 out/panel.png   # the REAL screen

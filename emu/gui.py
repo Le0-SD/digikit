@@ -79,10 +79,11 @@ class Emulator(threading.Thread):
 
     daemon = True
 
-    def __init__(self, snapshot, weakptr=False):
+    def __init__(self, snapshot, weakptr=False, slc=False):
         super().__init__()
         self.snapshot = snapshot
         self.weakptr = weakptr
+        self.slc = slc
         self.fb = bytearray(W * H)
         self.pause = threading.Event()
         self.stop_flag = threading.Event()
@@ -145,7 +146,7 @@ class Emulator(threading.Thread):
             m, ev, st, pc, inq, at = build(self.snapshot, unblock=True,
                                            softfloat=True, bitmap=True,
                                            dsp=True, on_pixel=on_pixel,
-                                           weakptr=self.weakptr)
+                                           weakptr=self.weakptr, slc=self.slc)
         except Exception as exc:                       # noqa: BLE001
             self.error = '%s: %s' % (type(exc).__name__, exc)
             self.stats['status'] = 'failed to load'
@@ -320,7 +321,7 @@ class Panel(tk.Frame):
 
 
 class App(tk.Tk):
-    def __init__(self, snapshot, weakptr=False, scale=None):
+    def __init__(self, snapshot, weakptr=False, slc=False, scale=None):
         super().__init__()
         self.title('Digitakt II - panel')
         self.configure(bg='#15181d')
@@ -359,6 +360,7 @@ class App(tk.Tk):
 
         self.emu = None
         self.weakptr = weakptr
+        self.slc = slc
         self.shown = -1
         self.replay = None          # (frames, index, next_due) while replaying
         self.start()
@@ -366,7 +368,7 @@ class App(tk.Tk):
         self.after(60, self.tick)
 
     def start(self):
-        self.emu = Emulator(self.snapshot, weakptr=self.weakptr)
+        self.emu = Emulator(self.snapshot, weakptr=self.weakptr, slc=self.slc)
         self.emu.start()
 
     def restart(self):
@@ -492,6 +494,7 @@ if __name__ == '__main__':
     # not a fix -- see longrun.build.  --scale N forces the integer panel zoom.
     argv = sys.argv[1:]
     weakptr = '--weakptr' in argv
+    slc = '--slc' in argv
     scale = None
     if '--scale' in argv:
         i = argv.index('--scale')
@@ -503,4 +506,4 @@ if __name__ == '__main__':
         raise SystemExit('no such snapshot: %s\n'
                          'build one with:  uv run python -m emu.checkpoint make '
                          '60000000,120000000,200000000,280000000,400000000' % snap)
-    App(snap, weakptr=weakptr, scale=scale).mainloop()
+    App(snap, weakptr=weakptr, slc=slc, scale=scale).mainloop()

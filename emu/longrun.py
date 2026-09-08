@@ -82,7 +82,7 @@ FRAME_SEM  = 0x43131200                   # intro frame-pacing semaphore
 def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
           unblock=False, softfloat=False, bitmap=False, on_pixel=None,
           unblock_except=(), edma=True, real_sleep=False, dsp=False,
-          srtrap=False, weakptr=False):
+          srtrap=False, weakptr=False, slc=False):
     """Stand up a hooked Machine and restore `snapshot` onto it.
 
     -> (m, ev, st, pc, inq, at) where `at(addr, fn)` registers a further
@@ -172,6 +172,28 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
     stale. Without it the main task burns the CPU forever -- 252,977,319 of
     300M instructions in a `bra.b` to itself -- and the message loop stops at
     153. With it there is no terminal loop and the loop reaches 168.
+
+    slc=True sets the byte at 0x4fe49198 to 1, which is the firmware's cached
+    "the eMMC is in SLC mode" flag. `0x401204a4` reads it and returns 1 for ok,
+    0 for unset and -1 for error; the main task's init tests that at
+    0x40033360 and puts `MMC NOT IN SLC MODE` on the panel when it is not 1,
+    and the factory self-test at 0x400cd50c logs `MMC NOT RECONFIGURED` off the
+    same primitive. Both are advisory -- execution falls through to 0x40033390
+    either way -- so this changes no control flow that matters on its own.
+
+    Nothing in any firmware section ever WRITES it: a byte search over all of
+    sections/ finds exactly two references, both the reads at 0x401204a6 and
+    0x40120714. So on hardware an earlier boot stage sets it, and our snapshots
+    start past that, leaving it 0. Setting it to 1 is therefore a model of that
+    missing stage rather than an override of a firmware decision -- but since
+    the writer has not actually been found, it is opt-in and off by default.
+
+    Measured from postintro.snap over 60M with weakptr=True: the modal dialog
+    goes away and the panel settles on the real main screen (project name,
+    tempo, encoder labels) instead of `Loading...`; both job workers start and
+    then block properly in the RTOS wait at 0x4000165c instead of one wedging
+    in the coprocessor spin; and channels=(3, 1) stops faulting -- it runs to
+    the limit where it used to die at 55.6M with `unhandled vector 257`.
     """
     flash = db.build_flash(syx)
     m = Machine(); st = {'seen': set(), 'n': 0, 'task_create_hits': {}}
@@ -327,6 +349,10 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
                 raise RuntimeError('weakptr: %#010x holds %s, expected %s'
                                    % (addr, cur.hex(), want.hex()))
             m.uc.mem_write(addr, new)
+    if slc:
+        # Read-only in the firmware; see the docstring. After restore_into for
+        # the same reason weakptr is.
+        m.uc.mem_write(0x4fe49198, b'\x01')
     m.install_mmio()
     if tx is not None:
         from emu.edma import kick
