@@ -514,6 +514,104 @@ resolution, and `emu_stop` under `spin` is forbidden.
    demonstrably renders, this is what turns the project into something you can
    press buttons on.
 
+## 6b. Storage: the eSDHC, and why there is none
+
+The goal is an emulated MMC backed by a host folder. This is the reconnaissance
+for it. **Nothing here is implemented yet.**
+
+### It is eSDHC, not NAND
+
+The controller is the **eSDHC** at **`0xFC0CC000`**, 16 KB, PBC0 slot 51
+(RM Table 1-3). The image references that window **128 times**; the NAND flash
+controller at `0xFC0FC000` is referenced **zero** times. Worth stating because
+the manual's only mention of "SLC" is in the *NFC* chapter, and this part has no
+SD/MMC boot mode — both facts point the wrong way. The card is an **eMMC**
+(CMD3 carries a host-assigned RCA, which is illegal for SD), and "SLC mode" is
+the eMMC *enhanced user-data area*, an `EXT_CSD` concept invisible to the
+controller.
+
+### The interrupt is vector 222, and the census had it mislabelled
+
+Read out of the firmware's own configuration, not the manual:
+
+    vec 221 -> 0x400019bc      INTC2 src 29  ICR 0x06
+    vec 222 -> 0x400019e6      INTC2 src 30  ICR 0x05   <- SDHC
+    vec 223 -> 0x40001252      INTC2 src 31  ICR 0x00   <- unconfigured, shared stub
+
+`0x40001252` is the shared default handler (vectors 219, 220, 224 all point at
+it too). Source 31 has ICR 0, so it is not armed at all. **Section 7 lists
+vector 222 as "SIM"; it is the SD/MMC controller.** A `pdftotext` extraction of
+RM Table 17-17 scrambles the source-number column and reads 31 — do not trust
+it over the ICRs.
+
+### The driver
+
+| | |
+|---|---|
+| command primitive | `0x4011fe10` — writes CMDARG, then XFERTYP from a 64-entry flag table at `0x40209754`, then **blocks** |
+| how it waits | `sem_pend 0x4000141a` on **`0x44e26f38`**. Not a poll. |
+| read / write blocks | `0x401208fe` (CMD18), `0x40120ae4` (CMD25), ~35 callers each |
+| erase | `0x40120816` (CMD35/36/38) |
+| card init | `0x4011fed6`, called from `0x400cf218` inside OS root init `0x400cef6c` |
+| pre-init gate | `0x4011fe60` — GPIO handshake, 10 retries |
+| data path | the SoC's **eDMA**, `SADDR = DATPORT`. `XFERTYP[DMAEN]` is never set; `DSADDR` and `ADMASAR` are never referenced. The eSDHC's own DMA engine is unused. |
+
+**`0x44e26f38` is never posted anywhere in the image.** Nor are its three
+siblings `0x44e26f30`, `0x44e26f28`, `0x44e26f20`. On hardware vector 222 drives
+that. So *any* real storage access hangs until we deliver it — which is very
+likely the whole reason the job pipeline stalls while boot itself does not.
+
+### But none of it runs today
+
+From `boot40M.snap` over 400M instructions, and from `boot400M.snap` over 140M:
+
+    eSDHC register accesses          NONE
+    0x4011fed6  card init            0 hits
+    0x4011fe10  send command         0 hits
+    0x400cef6c  OS root init         0 hits
+    0x4011fe60  pre-init GPIO gate   1 hit
+
+So the driver has never executed. `PRSSTAT` reads `0x00000000` where silicon
+resets to `0xFF8800F8`, so the moment it did run it would spin forever at
+`0x4012019a` waiting for `SDSTB`. **Work out why the driver is never reached
+before modelling anything** — a perfect eSDHC model is worth nothing to code
+that does not execute. Start at `0x4011fe60`'s caller and at `0x400cf218`.
+
+The gate itself (`0xEC094000` is the GPIO port module: `PODR` +0x00, `PDDR`
++0x0C, `PPDSDR` +0x18, `PCLRR` +0x24, ports A..K):
+
+    drive PPDSDR_D (0xec09401b) bit 4 high
+    read  PPDSDR_C (0xec09401a) bit 3   -> clear: return 1
+    drive PCLRR_D  (0xec094027)
+    read  PPDSDR_C bit 3                -> set: return 1, clear: retry (10x)
+
+With GPIO reading zero it returns 1 on the first pass, so the gate is probably
+*not* what blocks init — confirm rather than assume.
+
+### What a model must satisfy
+
+1. Deliver **vector 222** such that `0x44e26f38` gets posted, or every block
+   read hangs in `0x4011fe10`.
+2. `PRSSTAT` bit 3 `SDSTB` = 1 after a `SYSCTL` divisor write, or `0x4012019a`
+   spins. Bit 24 `DLSL` = 1 or `0x40120168` spins. Bit 11 `BREN` or
+   `0x401202b2` spins.
+3. During init a `DATPORT` word must have **low byte `0xA5`** or init aborts −3
+   (`0x401202c4`).
+4. `CMD1` (arg `0x40FF8000`) must eventually return OCR bit 31 set — the retry
+   loop at `0x40120074` has **no timeout**.
+5. The card identity must match one of the 7 entries at **`0x4029e01c`**
+   (0x20 bytes each, tag bytes `0x11`, `0x15`, `0x70`, each with a name string
+   at `0x40243e4f`+ compared by memcmp), or `0x40120450` reports "unknown card".
+6. `IRQSTAT` bit 0 `CC` for the reflash-only path, which busy-polls it.
+
+### Then, and only then, the folder
+
+Serving `CMD18`/`CMD25` from a flat host image is ordinary work once 1-6 hold.
+Turning a `samples/` directory into an image the firmware understands needs
+Elektron's on-disk format, which nobody has reverse-engineered. Get the block
+device working against a sparse image first and learn the format from what the
+firmware reads out of it.
+
 ## 7. The interrupt census
 
 For every vector: is a real handler installed, is its INTC source enabled and
@@ -545,7 +643,7 @@ and delivered:
 | 191 | 1 | 63 | 5 | `0x4002d652` | |
 | 209 | 2 | 17 | 6 | `0x40005e10` | USB OTG |
 | 221 | 2 | 29 | 6 | `0x400019bc` | SIM |
-| 222 | 2 | 30 | 5 | `0x400019e6` | SIM |
+| **222** | 2 | 30 | 5 | `0x400019e6` | **SD/MMC (eSDHC) — see section 6b** |
 
 An armed source is not proof the device would assert. But it is the complete
 list of places the firmware waits for something we never send, and naming them
