@@ -561,35 +561,47 @@ siblings `0x44e26f30`, `0x44e26f28`, `0x44e26f20`. On hardware vector 222 drives
 that. So *any* real storage access hangs until we deliver it — which is very
 likely the whole reason the job pipeline stalls while boot itself does not.
 
-### But none of it runs today
+### Why none of it ran: the loopback gate — SOLVED
 
-From `boot40M.snap` over 400M instructions, and from `boot400M.snap` over 140M:
+From `boot40M.snap` over 400M instructions and `boot400M.snap` over 140M, the
+driver had never executed at all: zero eSDHC register accesses, `0x4011fed6`
+never entered, `0x4011fe10` never called. The cause:
 
-    eSDHC register accesses          NONE
-    0x4011fed6  card init            0 hits
-    0x4011fe10  send command         0 hits
-    0x400cef6c  OS root init         0 hits
-    0x4011fe60  pre-init GPIO gate   1 hit
+    400cf20a  jsr $4011fe60      ; the gate
+    400cf214  tst.l d0
+    400cf216  bne.b $400cf258    ; NON-ZERO -> skip card init entirely
+    400cf218  jsr $4011fed6      ; card init, only when d0 == 0
 
-So the driver has never executed. `PRSSTAT` reads `0x00000000` where silicon
-resets to `0xFF8800F8`, so the moment it did run it would spin forever at
-`0x4012019a` waiting for `SDSTB`. **Work out why the driver is never reached
-before modelling anything** — a perfect eSDHC model is worth nothing to code
-that does not execute. Start at `0x4011fe60`'s caller and at `0x400cf218`.
+The gate returns zero only by falling out of its ten-iteration loop, and it
+completes an iteration only when **`PPDSDR_C` bit 3 follows `PPDSDR_D` bit 4** —
+drive high, sense high; drive low, sense low. A board continuity check. Note
+the success case is the loop *running out*, which reads backwards.
 
-The gate itself (`0xEC094000` is the GPIO port module: `PODR` +0x00, `PDDR`
-+0x0C, `PPDSDR` +0x18, `PCLRR` +0x24, ports A..K):
+`0xEC094000` is the GPIO port module (PODR +0x00, PDDR +0x0C, PPDSDR +0x18,
+PCLRR +0x24, one byte per port A..K); `PPDSDR` writes-1-to-set and `PCLRR`
+writes-0-to-clear. Unmodelled GPIO reads zero, so bit 3 is low on the first
+read and the gate early-returns 1 on its first pass.
 
-    drive PPDSDR_D (0xec09401b) bit 4 high
-    read  PPDSDR_C (0xec09401a) bit 3   -> clear: return 1
-    drive PCLRR_D  (0xec094027)
-    read  PPDSDR_C bit 3                -> set: return 1, clear: retry (10x)
+**`emu/gpio.py` models it; `build(sdgate=True)` turns it on.** Measured from
+`boot40M.snap` over 120M:
 
-With GPIO reading zero it returns 1 on the first pass, so the gate is probably
-*not* what blocks init — confirm rather than assume.
+| | `sdgate=False` | `sdgate=True` |
+|---|---|---|
+| card init | skipped at `0x400cf216` | **called** |
+| eSDHC registers | none, ever | `SYSCTL` 36,988,467, `WML` 1, `PRSSTAT` 1 |
+| gate | early-out on pass 1 | 10 sets, 10 clears, 20 senses, loop exhausts |
+
+**It is off by default because on its own it makes the boot worse**, which is
+the model being honest rather than broken: past the gate the driver spins
+forever at `0x4012001e` waiting for `SYSCTL` bit 27 `INITA` to self-clear. Our
+registers are plain RAM and hand back whatever was written, so it never does.
+That spin is the next thing to fix, and it is item 1 in the list below.
 
 ### What a model must satisfy
 
+0. **`SYSCTL` bit 27 `INITA` must self-clear** after the firmware sets it, or
+   `0x4012001e` spins — 37M reads and counting. This is the first thing the
+   driver does after `sdgate=True` lets it start, so it is where to begin.
 1. Deliver **vector 222** such that `0x44e26f38` gets posted, or every block
    read hangs in `0x4011fe10`.
 2. `PRSSTAT` bit 3 `SDSTB` = 1 after a `SYSCTL` divisor write, or `0x4012019a`
@@ -663,6 +675,10 @@ plain memory read and installs no hook, so it is free and cannot perturb a run;
 `Capture` hooks the diff entry to collect untorn frame *sequences* and
 therefore does change the run it watches. `emu.uiprobe.measure` uses `read`, so
 the sweep gained a `panel` column without any of its other numbers moving.
+
+**The SD gate — `emu/gpio.py`.** The board loopback on GPIO ports C and D that
+`0x4011fe60` checks before storage init. Section 6b. Off by default: it is
+needed to reach the eSDHC driver and insufficient to get through it.
 
 **The coprocessor port — `emu/dsp.py`.** `0x8C000000` is a FlexBus device
 addressed in 4 KB pages. `0x400cf4a8(word)` writes four bytes most-significant

@@ -82,7 +82,7 @@ FRAME_SEM  = 0x43131200                   # intro frame-pacing semaphore
 def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
           unblock=False, softfloat=False, bitmap=False, on_pixel=None,
           unblock_except=(), edma=True, real_sleep=False, dsp=False,
-          srtrap=False, weakptr=False, slc=False):
+          srtrap=False, weakptr=False, slc=False, sdgate=False):
     """Stand up a hooked Machine and restore `snapshot` onto it.
 
     -> (m, ev, st, pc, inq, at) where `at(addr, fn)` registers a further
@@ -194,6 +194,20 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
     then block properly in the RTOS wait at 0x4000165c instead of one wedging
     in the coprocessor spin; and channels=(3, 1) stops faulting -- it runs to
     the limit where it used to die at 55.6M with `unhandled vector 257`.
+
+    sdgate=True models the board loopback that gates storage: port C bit 3
+    follows port D bit 4, which is what `0x4011fe60` spends ten iterations
+    checking. Without it that gate returns 1 on its first pass and
+    `0x400cf216` skips the eSDHC card init entirely -- measured from
+    boot40M.snap over 120M instructions, the driver is never entered and not
+    one eSDHC register is ever touched. See emu/gpio.py.
+
+    It is a hardware model, not a shortcut, but it is OFF by default because
+    on its own it makes things worse: with the gate satisfied the driver
+    proceeds and then spins forever at 0x4012001e waiting for SYSCTL's INITA
+    bit to self-clear, since nothing yet models the controller. 36,988,467
+    SYSCTL reads and no progress. Turn it on when there is an eSDHC model
+    behind it.
     """
     flash = db.build_flash(syx)
     m = Machine(); st = {'seen': set(), 'n': 0, 'task_create_hits': {}}
@@ -353,6 +367,9 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
         # Read-only in the firmware; see the docstring. After restore_into for
         # the same reason weakptr is.
         m.uc.mem_write(0x4fe49198, b'\x01')
+    if sdgate:
+        from emu.gpio import SdGate
+        ev['sdgate'] = SdGate(m)
     m.install_mmio()
     if tx is not None:
         from emu.edma import kick
