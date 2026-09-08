@@ -6,6 +6,20 @@ shared framebuffer whenever the firmware calls Bitmap::setPixel; the UI thread
 just samples that framebuffer on a timer. Nothing here reimplements the raster
 -- every lit pixel is one setPixel call the firmware actually made.
 
+There are TWO screens and this window has to switch between them, because the
+intro and the main OS draw by different routes. Measured, over the same build:
+
+    boot400M.snap, intro running    setPixel 616,823   panel buffer     17 lit
+    postintro.snap, OS running      setPixel       0   panel buffer  2,373 lit
+
+The intro draws through `Bitmap::setPixel`, so `on_pixel` is the right source
+for it. The main OS composes straight into the firmware's own framebuffer and
+never calls the intercepted primitive, so after the handover the source has to
+become `emu.panel.read`. Showing setPixel throughout is what made this window
+sit on the intro's last frame forever while a complete user interface was
+rendering in RAM -- see HANDOVER warning 6. The switch happens at INTRO_DONE,
+the same point the timers are released.
+
     uv run python -m emu.gui [snapshot]
 
 tkinter only, no third-party GUI dependency. Note Homebrew's python@3.14 does
@@ -24,6 +38,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from unicorn import UcError
 from unicorn.m68k_const import UC_M68K_REG_PC, UC_M68K_REG_SR
 from emu.longrun import build, spin, INTRO_DONE
+from emu.dtim import Dtims, Timers
+from emu import panel
 from emu.pit import Pits, intro_running
 from emu.screen import png
 
@@ -63,9 +79,10 @@ class Emulator(threading.Thread):
 
     daemon = True
 
-    def __init__(self, snapshot):
+    def __init__(self, snapshot, weakptr=False):
         super().__init__()
         self.snapshot = snapshot
+        self.weakptr = weakptr
         self.fb = bytearray(W * H)
         self.pause = threading.Event()
         self.stop_flag = threading.Event()
@@ -73,13 +90,19 @@ class Emulator(threading.Thread):
         self.stats = {'frames': 0, 'px': 0,
                       'pc': 0, 'tcb': 0, 'tasks': 0, 'prints': 0, 'fps': 0.0,
                       'bmp': 0, 'instrs': 0, 'pit': (0, 0, 0),
-                      'status': 'loading snapshot'}
+                      'status': 'loading snapshot', 'mainloop': 0, 'jobs': 0,
+                      'dtim3': 0, 'terminal': False, 'panel_lit': 0,
+                      'source': 'setPixel'}
         self._uc = None             # set once the machine is built
         self.error = None
         self._seen = set()
         self.version = 0            # bumped on every pixel, so the UI can
         self._frame_t = time.time()  # skip redrawing an unchanged panel
         self.captured = []          # completed frames, for correct-speed replay
+        self.use_panel = False      # False: setPixel (intro). True: the
+                                    # firmware's own framebuffer (main OS).
+        self._last_panel = None     # last panel buffer drawn, to skip repeats
+        self._panel_live = False    # seen the OS draw into it at least once
 
     def run(self):
         def on_pixel(x, y, val, bmp):
@@ -115,9 +138,14 @@ class Emulator(threading.Thread):
             # the RTOS tick can preempt too. Until then the status line
             # reports the shortfall against the real 15 fps rather than
             # pretending.
+            # dsp=True backs the 0x8C000000 coprocessor port's ready line.
+            # Without it the priority-3 job worker wedges in the ready-bit
+            # spin at 0x400cf4ec on its very first transfer and none of the
+            # five jobs queued at boot ever runs. See emu/dsp.py.
             m, ev, st, pc, inq, at = build(self.snapshot, unblock=True,
                                            softfloat=True, bitmap=True,
-                                           on_pixel=on_pixel)
+                                           dsp=True, on_pixel=on_pixel,
+                                           weakptr=self.weakptr)
         except Exception as exc:                       # noqa: BLE001
             self.error = '%s: %s' % (type(exc).__name__, exc)
             self.stats['status'] = 'failed to load'
@@ -125,14 +153,39 @@ class Emulator(threading.Thread):
             return
 
         self._uc = m.uc
+        self._reported = 0
         # PIT0 time slice, PIT2 wheel, PIT3 display -- but not until the intro
         # has handed over. Delivering into a running intro stops it ever
         # ending (PIT3 double-posts the frame semaphore that unblock is
         # already satisfying) and stops the OS tasks spawning (PIT2). See
         # emu.pit.Pits.
-        pits = Pits(m, hold=intro_running(m))
+        # ...and DMA timer 3, which is the 30.05 Hz tick whose ISR
+        # (0x400c30e4) is the only thing at boot that sends a message to
+        # 0x4094ef3c, the queue the main application task blocks on. Without
+        # it that task makes exactly one pass through its message loop and
+        # waits forever, which is what this window used to show. See
+        # emu/dtim.py.
+        pits = Timers(Pits(m, hold=intro_running(m)),
+                      Dtims(m, channels=(3,), hold=intro_running(m)))
+        # `pits.held` is exactly "the intro is still running", so a snapshot
+        # taken after it already belongs to the OS and the panel buffer is the
+        # screen from the first frame.
+        self.use_panel = not pits.held
         if pits.held:
-            at(INTRO_DONE, lambda uc, a, s, d: pits.release())
+            def handover(uc, a, s_, d):
+                pits.release()
+                self.use_panel = True
+            at(INTRO_DONE, handover)
+
+        # Progress markers, so the status line can say what the firmware is
+        # actually doing rather than only how many pixels it drew.
+        mark = self.stats
+        at(0x40033492, lambda uc, a, s, d: mark.__setitem__(
+            'mainloop', mark['mainloop'] + 1))
+        at(0x400f1b80, lambda uc, a, s, d: mark.__setitem__(
+            'jobs', mark['jobs'] + 1))
+        # 0x4012d2fa is `bra.b` to itself -- the loop the abort path lands in.
+        at(0x4012d2fa, lambda uc, a, s, d: mark.__setitem__('terminal', True))
         self.ready.set()
         self.stats['status'] = 'running'
         while not self.stop_flag.is_set():
@@ -160,7 +213,15 @@ class Emulator(threading.Thread):
                 self.stats['status'] = 'halted: %s' % stop
                 break
             self.stats['instrs'] += executed
-            self.stats['pit'] = (pits.fired[0], pits.fired[2], pits.fired[3])
+            self._publish_panel(m)
+            fired = pits.fired
+            self.stats['pit'] = (fired.get('PIT0', 0), fired.get('PIT2', 0),
+                                 fired.get('PIT3', 0))
+            self.stats['dtim3'] = fired.get('DTIM3', 0)
+            # Also say it on stdout: the window shows the panel, but the
+            # interesting part of a post-intro run is what the OS is doing,
+            # and that was previously visible only from emu.uiprobe.
+            self._report()
             self.stats['pc'] = pc
             self.stats['tasks'] = len(ev['tasks'])
             self.stats['prints'] = len(ev['prints'])
@@ -171,6 +232,69 @@ class Emulator(threading.Thread):
                 pass
         else:
             self.stats['status'] = 'stopped'
+
+    def _publish_panel(self, m):
+        """Once the OS owns the panel, draw the firmware's framebuffer.
+
+        `panel.read` is a plain memory read and installs no hook, so polling it
+        once per BUDGET costs nothing and cannot perturb the run. A frame is
+        counted when the bytes change, which is the firmware's own notion of a
+        new frame -- unlike the setPixel path, which has to infer one from a
+        repeated coordinate.
+        """
+        if not self.use_panel:
+            return
+        buf = panel.read(m)
+        if buf is None or buf == self._last_panel:
+            return
+        px = panel.lit(buf)
+        if not px and not self._panel_live:
+            # INTRO_DONE fires tens of millions of instructions before the OS
+            # first composes a frame, and the buffer is empty until it does.
+            # Blanking the window for that whole stretch would look like a
+            # regression, so hold the intro's last frame until there is
+            # something real to replace it with. Once the OS has drawn, later
+            # blanks are genuine and do get shown.
+            return
+        self._panel_live = True
+        self._last_panel = buf
+        fb = self.fb
+        for i in range(W * H):
+            fb[i] = 0
+        for x, y in px:
+            fb[y * W + x] = 1
+        now = time.time()
+        self.captured.append(bytes(fb))
+        self.stats['frames'] += 1
+        self.stats['fps'] = 1.0 / max(1e-6, now - self._frame_t)
+        self.stats['panel_lit'] = len(px)
+        self.stats['source'] = 'panel'
+        self._frame_t = now
+        self.version += 1
+
+    def _report(self):
+        """One stdout line per ~20M instructions of OS progress.
+
+        The window shows the panel, which after the intro is mostly blank; the
+        part worth watching is what the OS is doing behind it. Printing it here
+        means `uv run python -m emu.gui` says the same thing
+        `python -m emu.uiprobe run` would, without needing a second run.
+        """
+        s = self.stats
+        step = s['instrs'] // 20_000_000
+        if step == self._reported:
+            return
+        self._reported = step
+        note = ''
+        if s['terminal']:
+            note = ('   TERMINAL LOOP at 0x4012d2fa -- the main task is hung '
+                    'on a weak pointer; re-run with --weakptr to step over it')
+        print('[gui] %5.0fM instr  PIT0/2/3 %d/%d/%d  DTIM3 %d  '
+              'mainloop %d  jobs %d  tasks %d  %s %d%s'
+              % (s['instrs'] / 1e6, s['pit'][0], s['pit'][1], s['pit'][2],
+                 s['dtim3'], s['mainloop'], s['jobs'], s['tasks'],
+                 s['source'], s['panel_lit'] if s['source'] == 'panel'
+                 else s['px'], note), flush=True)
 
 
 class Panel(tk.Frame):
@@ -196,13 +320,22 @@ class Panel(tk.Frame):
 
 
 class App(tk.Tk):
-    def __init__(self, snapshot):
+    def __init__(self, snapshot, weakptr=False, scale=None):
         super().__init__()
         self.title('Digitakt II - panel')
         self.configure(bg='#15181d')
         self.snapshot = snapshot
+        # 128x64 is unreadable at 1:1. Default to the largest integer zoom that
+        # leaves room for the controls on this screen, capped so it does not
+        # fill a large display edge to edge. Integer only -- a fractional zoom
+        # would resample and invent pixels that the firmware never drew.
+        if scale is None:
+            avail_w = max(1, self.winfo_screenwidth() - 120)
+            avail_h = max(1, self.winfo_screenheight() - 320)
+            scale = max(1, min(12, avail_w // W, avail_h // H))
+        self.scale = scale
 
-        self.panel = Panel(self)
+        self.panel = Panel(self, scale=scale)
         self.panel.pack(padx=14, pady=(14, 6))
 
         bar = tk.Frame(self, bg='#15181d')
@@ -225,6 +358,7 @@ class App(tk.Tk):
         self.status.pack(fill='x', padx=20, pady=(0, 14))
 
         self.emu = None
+        self.weakptr = weakptr
         self.shown = -1
         self.replay = None          # (frames, index, next_due) while replaying
         self.start()
@@ -232,7 +366,7 @@ class App(tk.Tk):
         self.after(60, self.tick)
 
     def start(self):
-        self.emu = Emulator(self.snapshot)
+        self.emu = Emulator(self.snapshot, weakptr=self.weakptr)
         self.emu.start()
 
     def restart(self):
@@ -322,13 +456,21 @@ class App(tk.Tk):
                     text='frame %d   %.1f / %.1f fps  (%.0f%% of real time)'
                          % (s['frames'], s['fps'], FRAME_HZ,
                             100.0 * s['fps'] / FRAME_HZ))
+                extra = ('  HUNG: terminal loop 0x4012d2fa (try --weakptr)'
+                         if s['terminal'] else '')
                 self.status.configure(
-                    text='%s   %.1f fps   %d frames   %d tasks\n'
-                         'pc 0x%08x   task 0x%08x   bitmap 0x%08x   setPixel %d\n'
-                         'PIT0 %d   PIT2 %d   PIT3 %d   %.1fM instructions'
+                    text='%s   %.1f fps   %d frames   %d tasks%s\n'
+                         'pc 0x%08x   task 0x%08x   source %s   %s %d\n'
+                         'PIT0 %d   PIT2 %d   PIT3 %d   DTIM3 %d   '
+                         'mainloop %d   jobs %d   %.1fM instructions'
                          % (s['status'], s['fps'], s['frames'], s['tasks'],
-                            s['pc'], s['tcb'], s['bmp'], s['px'],
+                            extra,
+                            s['pc'], s['tcb'], s['source'],
+                            'lit' if s['source'] == 'panel' else 'setPixel',
+                            s['panel_lit'] if s['source'] == 'panel'
+                            else s['px'],
                             s['pit'][0], s['pit'][1], s['pit'][2],
+                            s['dtim3'], s['mainloop'], s['jobs'],
                             s['instrs'] / 1e6),
                     fg='#9aa7b8')
         self.after(60, self.tick)
@@ -345,9 +487,20 @@ class App(tk.Tk):
 
 
 if __name__ == '__main__':
-    snap = sys.argv[1] if len(sys.argv) > 1 else 'snapshots/boot400M.snap'
+    # --weakptr steps over the weak-pointer branches that otherwise freeze the
+    # main task in the terminal loop after 153 messages. It is a diagnostic,
+    # not a fix -- see longrun.build.  --scale N forces the integer panel zoom.
+    argv = sys.argv[1:]
+    weakptr = '--weakptr' in argv
+    scale = None
+    if '--scale' in argv:
+        i = argv.index('--scale')
+        scale = max(1, int(argv[i + 1]))
+        del argv[i:i + 2]
+    args = [a for a in argv if not a.startswith('--')]
+    snap = args[0] if args else 'snapshots/boot400M.snap'
     if not os.path.exists(snap):
         raise SystemExit('no such snapshot: %s\n'
                          'build one with:  uv run python -m emu.checkpoint make '
                          '60000000,120000000,200000000,280000000,400000000' % snap)
-    App(snap).mainloop()
+    App(snap, weakptr=weakptr, scale=scale).mainloop()

@@ -40,12 +40,40 @@ PEND_A, PEND_B = 0x4000141a, 0x400013a6   # sem object is the arg at 4(a7)
 #               semaphore. Blocking here is what frees the CPU once the intro
 #               is over, and unlike the INTRO_DONE hook below it also works on
 #               a snapshot taken after the intro had already finished.
-#   DISPLAY_WAIT  the prio-6 display task (0x4012606a) waiting on 0x44e2d148
-#               and re-checking a flag at 0x44e2d5cc.
+#   DISPLAY_WAIT  the prio-6 progress-screen task (0x4012606a) waiting on
+#               0x44e2d148 and re-checking a flag at 0x44e2d5cc. Note this is
+#               the loading screen, not the user interface -- see HANDOVER.
+#   PUMP_WAIT   the job worker pool's "is there work" pend, at the top of the
+#               pump 0x400f1b80 (`jsr (a5)` at 0x400f1bae, a5 = PEND_B). The
+#               semaphore is a plain count of queued jobs, so satisfying it
+#               hands the worker a ring slot nobody wrote. It then runs a job
+#               that is not there and destroys the record, whose std::string
+#               has a null data pointer -- and `_M_dispose` frees
+#               `_M_data() - sizeof(_Rep)`, which for a null is 0xfffffff4.
+#               That trips the allocator's own bounds check and takes vector 4
+#               at the `illegal` opcode at 0x40111458. It is very likely the
+#               whole "C++ throw nothing can unwind" story of section 9: the
+#               recorded message is `basic_string::_S_construct null not
+#               valid`, which is the same null string seen from the other end.
+#               Measured from postintro.snap with dsp=True: blocking here takes
+#               a run that faulted at 70.2M to a clean 100M, and takes the pump
+#               from one job to two.
+#   SLEEP_PEND  the microsecond sleep in `0x40128c7c`. It arms DMA timer 1
+#               and pends `0x44e4d69c` at `0x40128d08`, and the timer's own
+#               ISR `0x40128c4c` posts it. Satisfying it makes every sleep
+#               in the firmware a no-op, which is only harmless while
+#               DTIM1 is not delivered -- see emu/dtim.py. Blocking here is
+#               correct once it is, and is what stops the priority-3 job
+#               worker monopolising the CPU.
 QUEUE_RECV   = 0x40001946
 INTRO_PARK   = 0x400d4068
 DISPLAY_WAIT = 0x401260c2
-RECHECK_PENDS = (QUEUE_RECV, INTRO_PARK, DISPLAY_WAIT)
+PUMP_WAIT    = 0x400f1bb0
+SLEEP_PEND   = 0x40128d0e
+RECHECK_PENDS = (QUEUE_RECV, INTRO_PARK, DISPLAY_WAIT, PUMP_WAIT)
+
+# Only correct when DTIM1 is actually delivered; see build(real_sleep=...).
+REAL_SLEEP_PENDS = (SLEEP_PEND,)
 
 INTRO_DONE = 0x400d403c                   # intro loop's exit branch target
 FRAME_SEM  = 0x43131200                   # intro frame-pacing semaphore
@@ -53,7 +81,8 @@ FRAME_SEM  = 0x43131200                   # intro frame-pacing semaphore
 
 def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
           unblock=False, softfloat=False, bitmap=False, on_pixel=None,
-          unblock_except=(), edma=True):
+          unblock_except=(), edma=True, real_sleep=False, dsp=False,
+          srtrap=False, weakptr=False):
     """Stand up a hooked Machine and restore `snapshot` onto it.
 
     -> (m, ev, st, pc, inq, at) where `at(addr, fn)` registers a further
@@ -107,6 +136,42 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
     waiting for ring space and boot cannot get past the intro -- see
     emu/edma.py. Unlike the softfloat/bitmap HLEs this is a hardware model,
     not a shortcut, so there is no faithful configuration with it off.
+
+    real_sleep=True makes `0x40128c7c` a real sleep instead of a no-op, by
+    letting `unblock` block at SLEEP_PEND instead of force-satisfying it.
+    It requires that DTIM1 is being delivered (see emu/dtim.py) or the
+    priority-3 job worker will block forever.
+
+    srtrap=True routes exception entry through guest code so the frame
+    carries the CPU's real condition codes. Unicorn's m68k never reports
+    computed flags through `reg_read(UC_M68K_REG_SR)`, so the frame we used to
+    build carried a stale CCR that `rte` then installed over the flags of the
+    code being resumed -- see Machine.install_srtrap. Default off because the
+    fix is not finished: it delivers interrupts and runs the ISRs correctly
+    but the boot stops progressing.
+
+    dsp=True backs the `0x8C000000` coprocessor port's ready line, without
+    which the priority-3 job worker wedges on its first transfer -- see
+    emu/dsp.py. Default off because it is new, in the same spirit as
+    softfloat and bitmap defaulting off.
+
+    weakptr=True neutralises the two branches in `weak_ptr::lock` that send
+    the main task into the terminal loop at `0x4012d2fa`:
+
+        40188b40  6714 beq.b $40188b56  ->  4e71 nop     (a0 is NOT null)
+        40188b50  660a bne.b $40188b5c  ->  600a bra.b   (d0 is NOT zero)
+
+    Both branches contradict the memory they were taken on -- measured at the
+    hang the control block reads 0x4509e3f0 and the use count reads 2 -- so
+    this is the condition-code corruption of HANDOVER section 10 showing
+    through, not a firmware decision. It is a DIAGNOSTIC, not a fix: it papers
+    over one symptom of the exception model and leaves the cause alone.
+
+    It is a two-byte memory write applied before `emu_start` is ever called,
+    so it adds no hook (HANDOVER warning 2) and no translation block can be
+    stale. Without it the main task burns the CPU forever -- 252,977,319 of
+    300M instructions in a `bra.b` to itself -- and the message loop stops at
+    153. With it there is no terminal loop and the loop reaches 168.
     """
     flash = db.build_flash(syx)
     m = Machine(); st = {'seen': set(), 'n': 0, 'task_create_hits': {}}
@@ -176,6 +241,10 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
         from emu.edma import install as install_edma
         tx = install_edma(m, at, ev)
 
+    if dsp:                            # see emu/dsp.py
+        from emu.dsp import install as install_dsp
+        install_dsp(m, ev)
+
     spins = {'n': 0}
 
     def do_halt(uc, a, s, d):
@@ -207,6 +276,8 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
         skip = set(unblock_except)
         ev['unblock_skip'] = skip
         skip_callers = set(RECHECK_PENDS)
+        if real_sleep:
+            skip_callers |= set(REAL_SLEEP_PENDS)
         ev['unblock_skip_callers'] = skip_callers
 
         def satisfy(uc, a, s, d):
@@ -231,11 +302,31 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
     m.uc.hook_add(UC_HOOK_MEM_READ, onr, begin=USR8, end=UDR8+3)
     m.uc.hook_add(UC_HOOK_MEM_WRITE, onw, begin=USR8, end=UDR8+3)
     m.mmio[0xFC05C02C] = 0x100000F0; m.mmio[0xEC03802C] = 0x80000000
+    # Route exception entry through guest code that writes the TRUE SR into
+    # the frame. Off by default: it is a correct fix for a proven defect (see
+    # Machine.install_srtrap) but it is not yet a working one -- with it on,
+    # the main task is still scheduled and the ISRs still run, yet it never
+    # reaches task_create and the boot makes no progress. Finish that before
+    # turning it on. HANDOVER section 10 has the standing warning about how
+    # sensitive this run is to anything that touches the exception path.
+    if srtrap:
+        m.install_srtrap()
     m.install_exceptions()
+    weak_sites = ((0x40188b40, b'\x67\x14', b'\x4e\x71'),
+                  (0x40188b50, b'\x66\x0a', b'\x60\x0a'))
     # restore_into merges the snapshot's own mmio entries, and install_mmio
     # registers a hook per address, so it has to come after the merge or a
     # snapshot-carried address would go unhooked.
     pc = restore_into(m, snapshot, st)
+    if weakptr:
+        # After restore_into, or the snapshot's own copy of MAIN OS would
+        # overwrite the patch.
+        for addr, want, new in weak_sites:
+            cur = bytes(m.uc.mem_read(addr, 2))
+            if cur != want:
+                raise RuntimeError('weakptr: %#010x holds %s, expected %s'
+                                   % (addr, cur.hex(), want.hex()))
+            m.uc.mem_write(addr, new)
     m.install_mmio()
     if tx is not None:
         from emu.edma import kick
