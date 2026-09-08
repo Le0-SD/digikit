@@ -17,14 +17,13 @@ tries to detect that for you.
 
 It boots. The main OS runs, spawns its RTOS tasks, reaches its message loop and
 **renders its user interface** — pattern and project name, tempo, the encoder
-parameter row, the sample page with its knob widgets.
-
-![the main screen](docs/img/mainscreen.png)
+parameter row, the sample page with its knob widgets — into a 128x64 panel you
+can watch live, or dump to a PNG with `emu.panel`.
 
 It is a research instrument, not a Digitakt you can play. It runs at roughly
 2M instructions/second against the real part's ~264M, so a nominal 30 Hz UI
-draws at well under one frame per second. See **Limitations** below for what
-that rules out.
+draws at well under one frame per second. See **What works, and what does
+not** below for what that rules out.
 
 ## Quick start
 
