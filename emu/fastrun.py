@@ -17,13 +17,14 @@ from unicorn.m68k_const import UC_M68K_REG_PC, UC_M68K_REG_SR, UC_M68K_REG_A7, U
 import emu.dspboot as db
 from emu.harness import Machine
 from emu.snapshot import restore_into
+from emu import config
 
 CHUNK = 200_000
 
 
 def run(snapshot, instrs, watch=None, chunk=CHUNK):
     """watch: {addr: fn(uc)} -- per-address hooks, free between hits."""
-    flash = db.build_flash('Digitakt_II_OS1.15C.syx')
+    flash = db.build_flash(config.firmware())
     m = Machine()
     st = {'seen': set(), 'n': 0, 'task_create_hits': {}, 'stall_pcs': collections.Counter(),
           'reads': [], 'curve': [], 'spin': 0, 'transport_calls': [], 'sem_kicks': 0,
@@ -47,7 +48,7 @@ def run(snapshot, instrs, watch=None, chunk=CHUNK):
     hooks = {db.FLASH_READ: flash_read, db.PEND_CALL: pend_patch}
     hooks.update(watch or {})
 
-    m.install_isa_patches_scoped(open('sections/section_3_MAIN_OS.bin', 'rb').read(),
+    m.install_isa_patches_scoped(open(config.main_image(), 'rb').read(),
                                  db.MAIN_LOAD) \
         if hasattr(m, 'install_isa_patches_scoped') else m.install_isa_patches()
     for addr, fn in hooks.items():

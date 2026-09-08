@@ -16,6 +16,7 @@ from unicorn.m68k_const import (UC_M68K_REG_A7, UC_M68K_REG_PC, UC_M68K_REG_SR,
                                 UC_M68K_REG_D0)
 from emu.harness import Machine, VBR
 from dt2.container import container
+from emu import config
 
 MAIN_LOAD, ENTRY = 0x40000400, 0x400004e8
 FLASH_READ = 0x401296fe
@@ -77,8 +78,8 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000):
 
 
 if __name__ == '__main__':
-    syx = sys.argv[1] if len(sys.argv) > 1 else 'Digitakt_II_OS1.15C.syx'
-    img = open('sections/section_3_MAIN_OS.bin', 'rb').read()
+    syx = config.firmware(sys.argv[1] if len(sys.argv) > 1 else None)
+    img = open(config.main_image(), 'rb').read()
     m, st, stop = run(syx, img)
     print('instructions      : %d' % st['n'])
     print('distinct addrs    : %d' % len(st['seen']))

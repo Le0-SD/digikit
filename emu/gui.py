@@ -79,11 +79,12 @@ class Emulator(threading.Thread):
 
     daemon = True
 
-    def __init__(self, snapshot, weakptr=False, slc=False):
+    def __init__(self, snapshot, weakptr=False, slc=False, syx=None):
         super().__init__()
         self.snapshot = snapshot
         self.weakptr = weakptr
         self.slc = slc
+        self.syx = syx
         self.fb = bytearray(W * H)
         self.pause = threading.Event()
         self.stop_flag = threading.Event()
@@ -143,10 +144,12 @@ class Emulator(threading.Thread):
             # Without it the priority-3 job worker wedges in the ready-bit
             # spin at 0x400cf4ec on its very first transfer and none of the
             # five jobs queued at boot ever runs. See emu/dsp.py.
+            extra = {'syx': self.syx} if self.syx else {}
             m, ev, st, pc, inq, at = build(self.snapshot, unblock=True,
                                            softfloat=True, bitmap=True,
                                            dsp=True, on_pixel=on_pixel,
-                                           weakptr=self.weakptr, slc=self.slc)
+                                           weakptr=self.weakptr, slc=self.slc,
+                                           **extra)
         except Exception as exc:                       # noqa: BLE001
             self.error = '%s: %s' % (type(exc).__name__, exc)
             self.stats['status'] = 'failed to load'
@@ -321,7 +324,7 @@ class Panel(tk.Frame):
 
 
 class App(tk.Tk):
-    def __init__(self, snapshot, weakptr=False, slc=False, scale=None):
+    def __init__(self, snapshot, weakptr=False, slc=False, scale=None, syx=None):
         super().__init__()
         self.title('Digitakt II - panel')
         self.configure(bg='#15181d')
@@ -361,6 +364,7 @@ class App(tk.Tk):
         self.emu = None
         self.weakptr = weakptr
         self.slc = slc
+        self.syx = syx
         self.shown = -1
         self.replay = None          # (frames, index, next_due) while replaying
         self.start()
@@ -368,7 +372,7 @@ class App(tk.Tk):
         self.after(60, self.tick)
 
     def start(self):
-        self.emu = Emulator(self.snapshot, weakptr=self.weakptr, slc=self.slc)
+        self.emu = Emulator(self.snapshot, weakptr=self.weakptr, slc=self.slc, syx=self.syx)
         self.emu.start()
 
     def restart(self):
@@ -500,10 +504,15 @@ if __name__ == '__main__':
         i = argv.index('--scale')
         scale = max(1, int(argv[i + 1]))
         del argv[i:i + 2]
+    syx = None
+    if '--syx' in argv:
+        i = argv.index('--syx')
+        syx = argv[i + 1]
+        del argv[i:i + 2]
     args = [a for a in argv if not a.startswith('--')]
     snap = args[0] if args else 'snapshots/boot400M.snap'
     if not os.path.exists(snap):
         raise SystemExit('no such snapshot: %s\n'
                          'build one with:  uv run python -m emu.checkpoint make '
                          '60000000,120000000,200000000,280000000,400000000' % snap)
-    App(snap, weakptr=weakptr, slc=slc, scale=scale).mainloop()
+    App(snap, weakptr=weakptr, slc=slc, scale=scale, syx=syx).mainloop()

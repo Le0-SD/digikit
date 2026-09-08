@@ -1,7 +1,7 @@
 """Create a boot snapshot, and resume from one.
 
-  make:   ./venv/bin/python -m emu.checkpoint make 45000000 snapshots/boot.snap
-  resume: ./venv/bin/python -m emu.checkpoint resume snapshots/boot.snap 5000000
+  make:   uv run python -m emu.checkpoint make 60000000,400000000 [prefix] [syx]
+  resume: uv run python -m emu.checkpoint resume snapshots/boot400M.snap 5000000
 """
 import struct, sys, os, collections
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -10,19 +10,18 @@ from unicorn.m68k_const import UC_M68K_REG_PC
 import emu.dspboot as db
 from emu.snapshot import save, restore
 import emu.longrun as lr
-
-IMG = 'sections/section_3_MAIN_OS.bin'
-SYX = 'Digitakt_II_OS1.15C.syx'
+from emu import config
 
 
-def make(points, prefix='snapshots/boot'):
+def make(points, prefix='snapshots/boot', syx=None, img_path=None):
     """Save a LADDER of checkpoints in one pass.
 
     `points` is a list of instruction counts. Saving mid-run is safe because
     save() only reads state; emulation continues afterwards. One slow pass
     yields several resume points, so later blocker work can start deep.
     """
-    img = open(IMG, 'rb').read()
+    syx = config.firmware(syx)
+    img = open(config.main_image(img_path), 'rb').read()
     points = sorted(points)
     todo = list(points)
     box = {'m': None, 'saved': []}
@@ -42,7 +41,7 @@ def make(points, prefix='snapshots/boot'):
                      len(st['task_create_hits']), uc.reg_read(UC_M68K_REG_PC),
                      info['bytes_on_disk']), flush=True)
 
-    m, st, stop = db.run(SYX, img, limit=points[-1] + 1_000_000,
+    m, st, stop = db.run(syx, img, limit=points[-1] + 1_000_000,
                          extra_hook=hook, fast=True, verbose=False,
                          machine_out=box)
     return box['saved']
@@ -102,7 +101,10 @@ if __name__ == '__main__':
     import time
     cmd = sys.argv[1]
     if cmd == 'make':
-        make([int(x) for x in sys.argv[2].split(',')])
+        pts = [int(x) for x in sys.argv[2].split(',')]
+        prefix = sys.argv[3] if len(sys.argv) > 3 else 'snapshots/boot'
+        syx = sys.argv[4] if len(sys.argv) > 4 else None
+        make(pts, prefix, syx)
     elif cmd == 'extend':
         snap = sys.argv[2]
         pts = [int(x) for x in sys.argv[3].split(',')]

@@ -31,6 +31,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unicorn.m68k_const import UC_M68K_REG_A7, UC_M68K_REG_D0, UC_M68K_REG_PC
+from emu import config
 
 SET_PIXEL = 0x40104eb4
 GET_PIXEL = 0x40104f80
@@ -106,7 +107,7 @@ def selftest(verbose=True):
     from emu.harness import Machine, call
     import emu.dspboot as db
 
-    img = open('sections/section_3_MAIN_OS.bin', 'rb').read()
+    img = open(config.main_image(), 'rb').read()
     W, H = 128, 64
     STRIDE = (H + 31) // 32
     BMP, DATA = 0x30000000, 0x30020000

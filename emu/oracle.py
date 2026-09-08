@@ -19,6 +19,7 @@ import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from emu.harness import Machine, call
+from emu import config
 
 BOOT_LOAD = 0x80000400      # bootstrap payload load address
 CRC32     = 0x80001bd0
@@ -80,8 +81,8 @@ def verify_container(bootstrap, syx_path, expected):
 
 if __name__ == '__main__':
     import zlib
-    boot = open(sys.argv[1], 'rb').read() if len(sys.argv) > 1 else \
-           open('sections/section_2_DSP.bin', 'rb').read()
+    boot = open(config.bootstrap(sys.argv[1] if len(sys.argv) > 1 else None),
+                'rb').read()
     for name, msg in [("'123456789'", b'123456789'), ('1KB 0xA5', b'\xa5' * 1024)]:
         got = crc32(boot, msg)
         exp = zlib.crc32(msg) ^ 0xFFFFFFFF

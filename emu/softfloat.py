@@ -38,6 +38,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unicorn.m68k_const import UC_M68K_REG_A7, UC_M68K_REG_D0, UC_M68K_REG_PC
+from emu import config
 
 INF, NINF = 0x7F800000, 0xFF800000
 QNAN = 0x7FC00000
@@ -163,7 +164,7 @@ def selftest(verbose=True):
     """Compare every HLE routine against the firmware's own implementation."""
     from emu.harness import Machine, call
     import emu.dspboot as db
-    img = open('sections/section_3_MAIN_OS.bin', 'rb').read()
+    img = open(config.main_image(), 'rb').read()
 
     def fresh():
         m = Machine()

@@ -67,6 +67,24 @@ uv run python -m emu.run [firmware.syx] [snapshot] [options]
 | `--weakptr` | Step over two branches in `weak_ptr::lock` that otherwise freeze the main task after 153 messages. They contradict the memory they branch on — an emulator defect, not a firmware decision. Recommended. |
 | `--slc` | Force the eMMC "SLC mode" flag. Unnecessary now that the eSDHC model supplies it. |
 | `--scale N` | Integer panel zoom. Defaults to whatever fits your screen. |
+| `--check` | Resolve and validate everything, then stop without running. |
+| `--accept-sections` | Confirm the extracted sections really are the firmware you named. |
+
+Nothing is hardcoded to a filename. Paths resolve from an explicit argument,
+then an environment variable, then discovery:
+
+| | |
+|---|---|
+| `DT2_SYX` | the firmware `.syx` |
+| `DT2_SECTIONS` | directory of extracted sections (default `sections`) |
+| `DT2_SNAPSHOTS` | directory of boot snapshots (default `snapshots`) |
+| `DT2_MAIN_IMG` | the decompressed MAIN OS image |
+
+The section filenames are fixed, so `sections/` holds exactly one firmware at a
+time. `emu.run` records which `.syx` it came from and refuses to pair it with a
+different one — otherwise a second firmware silently runs against the first
+one's code. Snapshots for anything other than the tested build go in their own
+subdirectory for the same reason.
 
 ## What works, and what does not
 

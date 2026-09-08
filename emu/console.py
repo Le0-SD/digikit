@@ -18,6 +18,7 @@ from unicorn.m68k_const import UC_M68K_REG_PC, UC_M68K_REG_SR, UC_M68K_REG_A7, U
 import emu.dspboot as db
 from emu.harness import Machine
 from emu.snapshot import restore_into
+from emu import config
 
 USR8 = 0xEC070004
 UDR8 = 0xEC07000C
@@ -28,7 +29,7 @@ class Console:
     def __init__(self, snapshot, send=b''):
         self.out = bytearray()
         self.inq = collections.deque(send)
-        self.flash = db.build_flash('Digitakt_II_OS1.15C.syx')
+        self.flash = db.build_flash(config.firmware())
         self.m = Machine()
         self.st = {'seen': set(), 'n': 0, 'task_create_hits': {}}
         m = self.m

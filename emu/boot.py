@@ -15,7 +15,7 @@ adding:
 import struct, collections, sys
 from unicorn import *
 from unicorn.m68k_const import *
-IMG=open('work/sections/section_3_MAIN_OS.bin','rb').read()
+from emu import config
 LOAD,ENTRY,VBR=0x40000400,0x400004e8,0x40000000
 PAGE=0x100000; HALT=0x400ceeb6; EXCP_RTE=0x100
 TASK_ENTRY=0x400cef6c
@@ -36,6 +36,7 @@ DSPI0_SR=0xFC05C02C   # DSPI0 status register (MCF54418RM Table 40-3 / Ch.40)
 def boot(tick_vec=32, tick_every=20000, limit=200_000_000, mock_uart8=False, mock_dspi0=False,
          verbose_illegal=False, stall_window=2_000_000, extra_probe=None):
     uc=Uc(UC_ARCH_M68K,UC_MODE_BIG_ENDIAN); uc.ctl_set_cpu_model(UC_CPU_M68K_CFV4E)
+    IMG=open(config.main_image(),'rb').read()
     mapped=set()
     def ensure(a):
         b=a&~(PAGE-1)

@@ -8,6 +8,7 @@ import struct, sys, os, collections
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from unicorn.m68k_const import UC_M68K_REG_A7
 import emu.dspboot as db
+from emu import config
 
 # Two counting-semaphore pend primitives, both with a fast path when count > 0:
 PENDS = {0x4000141a: 'pend_A', 0x400013a6: 'pend_B'}
@@ -29,8 +30,8 @@ def watch(uc, addr, size, st):
 
 def main():
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else 200_000_000
-    img = open('sections/section_3_MAIN_OS.bin', 'rb').read()
-    m, st, stop = db.run('Digitakt_II_OS1.15C.syx', img, limit=limit,
+    img = open(config.main_image(), 'rb').read()
+    m, st, stop = db.run(config.firmware(), img, limit=limit,
                          extra_hook=watch, fast=False)
     print('instructions %d   distinct %d   tasks %d/16'
           % (st['n'], len(st['seen']), len(st['task_create_hits'])))

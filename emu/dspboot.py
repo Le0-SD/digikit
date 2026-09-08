@@ -43,6 +43,7 @@ from unicorn.m68k_const import (UC_M68K_REG_A7, UC_M68K_REG_PC, UC_M68K_REG_SR,
                                  UC_M68K_REG_D0, UC_M68K_REG_D2, UC_M68K_REG_D3)
 from emu.harness import Machine, VBR
 from dt2.container import container
+from emu import config
 
 MAIN_LOAD, ENTRY = 0x40000400, 0x400004e8
 FLASH_READ = 0x401296fe
@@ -325,10 +326,10 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
 
 
 if __name__ == '__main__':
-    syx = 'Digitakt_II_OS1.15C.syx'
+    syx = config.firmware()
     limit = int(sys.argv[1]) if len(sys.argv) > 1 else 120_000_000
     patch = (sys.argv[2] != '0') if len(sys.argv) > 2 else True
-    img = open('sections/section_3_MAIN_OS.bin', 'rb').read()
+    img = open(config.main_image(), 'rb').read()
     m, st, stop = run(syx, img, limit=limit, patch_sem=patch, verbose=True)
     print('=' * 70)
     print('instructions      : %d' % st['n'])

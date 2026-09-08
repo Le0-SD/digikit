@@ -14,14 +14,12 @@ from unicorn.m68k_const import (UC_M68K_REG_A7, UC_M68K_REG_PC, UC_M68K_REG_SR,
 import emu.dspboot as db
 from emu.harness import Machine
 from emu.snapshot import restore_into
+from emu import config
 
 TASK_CREATE, PRINT = 0x400012c8, 0x400054b4
 SETPIXEL, PXCOPY   = 0x40104eb4, 0x400d315e
 SWITCH_TO          = 0x4000044a
 USR8, UDR8         = 0xEC070004, 0xEC07000C
-
-
-MAIN_IMG = 'sections/section_3_MAIN_OS.bin'
 
 
 PEND_A, PEND_B = 0x4000141a, 0x400013a6   # sem object is the arg at 4(a7)
@@ -79,7 +77,7 @@ INTRO_DONE = 0x400d403c                   # intro loop's exit branch target
 FRAME_SEM  = 0x43131200                   # intro frame-pacing semaphore
 
 
-def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
+def build(snapshot, send=b'', syx=None, isa='scoped',
           unblock=False, softfloat=False, bitmap=False, on_pixel=None,
           unblock_except=(), edma=True, real_sleep=False, dsp=False,
           srtrap=False, weakptr=False, slc=False, sdgate=False, esdhc=False):
@@ -223,13 +221,14 @@ def build(snapshot, send=b'', syx='Digitakt_II_OS1.15C.syx', isa='scoped',
     SYSCTL reads and no progress. Turn it on when there is an eSDHC model
     behind it.
     """
+    syx = config.firmware(syx)
     flash = db.build_flash(syx)
     m = Machine(); st = {'seen': set(), 'n': 0, 'task_create_hits': {}}
     ev = {'tasks': [], 'prints': [], 'setpixel': 0, 'pxcopy': 0,
           'switch': collections.Counter(), 'switch_seq': [],
           'uart_out': bytearray(), 'satisfied': 0, 'depack_clamps': 0}
     inq = collections.deque(send)
-    main_img = open(MAIN_IMG, 'rb').read()
+    main_img = open(config.main_image(), 'rb').read()
     if isa == 'scoped':
         m.install_isa_patches_scoped(main_img, db.MAIN_LOAD)
     else:

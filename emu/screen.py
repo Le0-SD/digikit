@@ -23,6 +23,7 @@ import struct, sys, os, zlib
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from unicorn.m68k_const import UC_M68K_REG_A7, UC_M68K_REG_PC, UC_M68K_REG_D0
 from emu.harness import Machine, call
+from emu import config
 
 MAIN_LOAD = 0x40000400
 PX_COPY_TO_BITMAP = 0x400d315e
@@ -152,9 +153,9 @@ def selftest(img):
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == 'selftest':
-        sys.exit(0 if selftest(open('sections/section_3_MAIN_OS.bin', 'rb').read()) else 1)
+        sys.exit(0 if selftest(open(config.main_image(), 'rb').read()) else 1)
 
-    img = open('sections/section_3_MAIN_OS.bin', 'rb').read()
+    img = open(config.main_image(), 'rb').read()
     base = MAIN_LOAD
     pd = int(sys.argv[1], 16)
     w, h = struct.unpack_from('>II', img, pd - base)
