@@ -412,7 +412,9 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
             m.uc.mem_write(addr, new)
     if slc:
         # Read-only in the firmware; see the docstring. After restore_into for
-        # the same reason weakptr is.
+        # the same reason weakptr is. Host writes do not enter Machine._fault,
+        # so map the otherwise guest-demand-mapped page first.
+        m.ensure(0x4fe49198)
         m.uc.mem_write(0x4fe49198, b'\x01')
     if sdgate:
         from emu.gpio import SdGate
