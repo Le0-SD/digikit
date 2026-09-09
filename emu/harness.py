@@ -24,6 +24,24 @@ try:
     from unicorn import UC_HOOK_MEM_READ_AFTER
 except ImportError:
     UC_HOOK_MEM_READ_AFTER = None
+# Memory-fault type constants, used to label what Machine._fault records.
+# Imported defensively: not every unicorn build exposes every one of these,
+# and a missing constant should shrink FAULT_KINDS rather than break import.
+_FAULT_KIND_NAMES = {
+    'UC_MEM_READ_UNMAPPED': 'read-unmapped',
+    'UC_MEM_WRITE_UNMAPPED': 'write-unmapped',
+    'UC_MEM_FETCH_UNMAPPED': 'fetch-unmapped',
+    'UC_MEM_READ_PROT': 'read-prot',
+    'UC_MEM_WRITE_PROT': 'write-prot',
+    'UC_MEM_FETCH_PROT': 'fetch-prot',
+}
+import unicorn as _unicorn_mod
+FAULT_KINDS = {}
+for _name, _label in _FAULT_KIND_NAMES.items():
+    _const = getattr(_unicorn_mod, _name, None)
+    if _const is not None:
+        FAULT_KINDS[_const] = _label
+del _name, _label, _const, _unicorn_mod
 from unicorn.m68k_const import (UC_CPU_M68K_CFV4E, UC_M68K_REG_A7,
                                 UC_M68K_REG_PC, UC_M68K_REG_SR, UC_M68K_REG_D0)
 
@@ -58,6 +76,14 @@ class Machine:
         self.uc = Uc(UC_ARCH_M68K, UC_MODE_BIG_ENDIAN)
         self.uc.ctl_set_cpu_model(cpu)
         self.mapped = set()
+        # An unmodeled peripheral page is invisible once auto-mapped: reads
+        # return 0 and writes vanish, so the firmware looking for hardware
+        # the emulator doesn't have looks identical to a firmware bug. These
+        # record every such fault so it can be reported instead of hidden.
+        self.faults = []            # ordered first-touch records, capped below
+        self.fault_pages = {}       # page base -> record dict, for aggregation
+        self.fault_sink = None      # optional callable(record) for live streaming
+        self.max_fault_records = 4096
         self.mmio = {}          # addr -> int, forced on read
         self.srtrap = None      # set by install_srtrap
         self._srtrap_target = 0
@@ -88,8 +114,52 @@ class Machine:
             pass
 
     def _fault(self, uc, typ, addr, size, val, data):
+        """Record the access, then map a zero page and continue.
+
+        An unmodeled peripheral is otherwise invisible -- reads return 0 and
+        writes vanish, so a firmware stall caused by missing hardware looks
+        identical to a firmware bug. Recording is effectively free: this hook
+        only fires on an unmapped access, and ensure() maps the page, so it
+        fires at most once per page.
+        """
+        try:
+            base = addr & ~(PAGE - 1)
+            rec = self.fault_pages.get(base)
+            if rec is None:
+                rec = {'page': base, 'first_addr': addr,
+                       'first_pc': uc.reg_read(UC_M68K_REG_PC),  # PC, not SR --
+                       # an SR read here would clobber lazy CCR state (see
+                       # docs on the unicorn m68k SR-read bug) and this is
+                       # just a diagnostic hook, not worth that risk.
+                       'kinds': {}, 'count': 0, 'addrs': set()}
+                self.fault_pages[base] = rec
+                if len(self.faults) < self.max_fault_records:
+                    self.faults.append(rec)
+            kind = FAULT_KINDS.get(typ, 'type-%d' % typ)
+            rec['kinds'][kind] = rec['kinds'].get(kind, 0) + 1
+            rec['count'] += 1
+            if len(rec['addrs']) < 64:
+                rec['addrs'].add(addr)
+            if self.fault_sink is not None:
+                self.fault_sink(rec)
+        except Exception:
+            pass
         self.ensure(addr)
         return True
+
+    def fault_report(self):
+        """Summarize which unmodeled hardware the firmware touched, as JSON-friendly data."""
+        return [
+            {
+                'page': '0x%08x' % rec['page'],
+                'first_addr': '0x%08x' % rec['first_addr'],
+                'first_pc': '0x%08x' % rec['first_pc'],
+                'count': rec['count'],
+                'kinds': rec['kinds'],
+                'addrs': sorted('0x%08x' % a for a in rec['addrs']),
+            }
+            for rec in sorted(self.faults, key=lambda r: r['page'])
+        ]
 
     def install_mmio(self, scoped=True):
         """Force `self.mmio` values on read. Use for status registers whose
