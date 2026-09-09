@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false, reportArgumentType=false
+# fmt: off
 """The four DMA timers, DTIM0..DTIM3.
 
 The MCF5441x has four DMA timers at base addresses `0xFC070000`,
@@ -61,7 +63,7 @@ import struct
 from unicorn import UC_HOOK_MEM_WRITE
 from unicorn.m68k_const import UC_M68K_REG_SR
 
-from emu.pit import F_BUS, INSTR_PER_SEC, IDLE_STEP, INTC, ICR_BASE, IMR_BASE
+from emu.pit import F_BUS, ICR_BASE, IDLE_STEP, IMR_BASE, INSTR_PER_SEC, INTC
 
 BASES   = (0xFC070000, 0xFC074000, 0xFC078000, 0xFC07C000)
 VECTORS = (96, 97, 98, 99)              # INTC0 sources 32..35
@@ -238,16 +240,17 @@ class Dtims:
                 best = self.next[ch]
         return best
 
-    def step(self, done, remaining=None, cap=None):
+    def step(self, done, remaining=None):
         """-> instructions to run before the next `service` call is due."""
         d = self.deadline(done)
-        n = IDLE_STEP if d is None else max(1, int(math.ceil(d - done)))
+        try:
+            n = IDLE_STEP if d is None else max(1, int(math.ceil(d - done)))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError('invalid DTIM deadline') from exc
         if d is None and remaining is not None:
             n = remaining
         if self.arm:
             n = min(n, ARM_STEP)
-        if cap:
-            n = min(n, cap)
         if remaining is not None:
             n = min(n, remaining)
         return max(1, n)
@@ -320,8 +323,8 @@ class Timers:
         for s in self.sources:
             s.release()
 
-    def step(self, done, remaining=None, cap=None):
-        return min(s.step(done, remaining, cap) for s in self.sources)
+    def step(self, done, remaining=None):
+        return min(s.step(done, remaining) for s in self.sources)
 
     def service(self, done):
         for s in self.sources:

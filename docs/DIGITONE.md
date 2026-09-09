@@ -1,9 +1,10 @@
 # Digitone II 1.10E — handover
 
-Status: **the intro renders, animates and hands over.** 109 distinct frames,
-`intro_done` fires, the timers release and the RTOS starts scheduling. It then
-goes idle: the prio-6 main application task never wakes, so nothing arms DTIM3
-or starts the display module, and the panel keeps the intro's last frame.
+Status: **Main OS executing and rendering.** The validated SR-only Unicorn
+2.1.4 patch is required; stock Unicorn's destructive SR read prevents this
+path. This is deliberately conservative, not a claim of full
+hardware-equivalent boot. See [UNICORN.md](UNICORN.md). Timer-stepped execution
+permits deadline boundaries only; arbitrary cap boundaries are unsupported.
 
 Digitakt II 1.15C is **unregressed** — see Regression below.
 
@@ -62,7 +63,7 @@ Digitakt value equals the literal it replaced. `python -m emu.symbols <image>`
 prints the table for either build.
 
 | symbol | Digitakt 1.15C | Digitone 1.10E | how resolved |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | entry, task_create, task_start, sem_pend, pend_b | fixed | same | RTOS, byte-identical |
 | `ctx_switch` | `0x40000410` | same | fixed, verified bytes |
 | `current_tcb` | `0x47d9adb4` | `0x46487fdc` | `ctx_switch+0x0a` operand |
@@ -203,7 +204,7 @@ On Digitone the equivalent task is prio 6, entry **`0x4002e688`**, tcb
 post-intro state differs in kind:
 
 | | Digitakt @150M | Digitone @150M |
-|---|---|---|
+| --- | --- | --- |
 | new tasks spawned | 6 | 0 |
 | vector 208 | `0x40125f3c` (display) | `0x400d4fb8` (still the intro's) |
 | PIT3 | `0x093f` EN\|PIE, PMR `0x4323` | off, PMR still `0x2191` |
@@ -250,7 +251,7 @@ uc.emu_start(pc, 0, count=2)            # beq is NOT taken
 ```
 
 | between the two emu_start calls | branch |
-|---|---|
+| --- | --- |
 | nothing | taken (correct) |
 | `reg_read(PC)` | taken (correct) |
 | `reg_read(D1)` | taken (correct) |
@@ -262,48 +263,46 @@ boundary materialises them wrongly. `emu/pit.py:Pits.service` reads SR at every
 chunk boundary to check the IPL before delivering a timer — so every timer
 service is a chance to corrupt the flags of the instruction that just ran.
 
-Confirmed by phase-shifting the boundaries: with `spin(..., cap=137777)` the
-mutex enqueue and block **disappear entirely** on the same snapshot.
+An earlier diagnostic confirmed the boundary sensitivity by forcing an
+unsupported boundary every 137,777 instructions: the mutex enqueue and block
+moved or disappeared on the same snapshot. The `cap` API used for that
+experiment has been removed; arbitrary subdivisions are not valid emulator
+operation.
 
-**This is general, and Digitakt is merely lucky.** The two firmwares' mutex
-code is byte-identical apart from the relocated `CURRENT_TCB` literal (checked
-byte by byte over `0x400015a0`–`0x40001710`). Digitakt locks the same mutex
-17,150 times and never has a boundary land in that two-instruction window.
+**This is general, and Digitakt was merely lucky under stock Unicorn.** The two
+firmwares' mutex code is byte-identical apart from the relocated `CURRENT_TCB`
+literal (checked byte by byte over `0x400015a0`–`0x40001710`).
 
-**The fix** is to stop reading SR at a boundary: shadow the IPL, updated from
-scoped hooks on the SR-writing instructions — 620 sites on Digitakt, 389 on
-Digitone (`move.w <ea>,sr`, `0x46xx`) — which is the pattern
-`Machine.install_isa_patches_scoped` already uses. Do NOT "fix" it by writing
-SR back: that installs a stale condition-code byte and makes things worse
-(measured: the firmware reaches its own panic handler and HALTs).
+**The validated fix** is the checked-in one-line patch to official Unicorn
+2.1.4. It makes SR reads materialise lazy condition codes without first
+claiming they are already materialised. The reverted guest-IPL shadow must not
+be restored: it broke both firmwares. See `docs/UNICORN.md` for installation
+and the semantic compatibility check.
 
-Note this is *a* blocker, not proven to be the only one: with the boundary
-phase shifted so the mutex never deadlocks, the OS still spawns no tasks
-within 120M instructions.
+With the patched runtime and deadline-only stepping, repeated 120M-instruction
+runs reach the Main OS deterministically: Digitakt creates six tasks and
+Digitone creates four; both enter their main loops, arm DTIM3, and produce
+stable panel images.
 
 ## 5. Next steps, most promising first
 
-1. **Fix the SR-read-at-boundary defect** (section 4b). Shadow the IPL from
-   scoped hooks instead of reading SR in `Pits.service`. This is a correctness
-   fix for both firmwares, and it is the only one of these steps that is
-   fully specified and ready to implement.
-2. **Then re-measure.** With the mutex deadlock gone the OS still spawned no
-   tasks in 120M, so expect at least one more blocker behind it. Hook
-   `sem_post`/`mutex_unlock` and find what the prio-6 task is waiting on;
-   `main_queue` (`0x4094ef3c` / `0x40583220`) is resolved and is the queue its
-   message loop pends on.
-2. **Read the pend argument properly.** The `sp+0x0c` offset used for the task
+1. **Keep the patched runtime enforced.** `Machine` and `emu.run --check`
+   reject stock Unicorn using the zero/nonzero SR-and-branch fixture.
+2. **Deepen hardware equivalence.** Main OS execution and deterministic panel
+   rendering are established, but storage, DSP completion, input, and other
+   peripherals remain incomplete; do not describe this as full boot parity.
+3. **Read the pend argument properly.** The `sp+0x0c` offset used for the task
    dumps in this session is not reliable for every task (it produced obvious
    nonsense like `sem 0x00000003`). Get it right before trusting any
    "blocked-on" column.
-3. **Storage.** `read_blocks` still returns zeros. If the main task's first
+4. **Storage.** `read_blocks` still returns zeros. If the main task's first
    post-intro act is a filesystem read, that is the wake it never gets. Check
    before doing anything larger.
-4. **`0xb5220070`** — the garbage callback pointer from the old 400M ladder. It
+5. **`0xb5220070`** — the garbage callback pointer from the old 400M ladder. It
    was *not* the mis-aimed soft-float hooks: those seven Digitakt addresses are
    never executed on Digitone (measured, 20M instructions). Still unexplained,
    but it is a 400M-path symptom and the 280M path does not reach it.
-5. `sqrtf` (`0x40167238` on Digitone, a 25-iteration restoring square root) is
+6. `sqrtf` (`0x40167238` on Digitone, a 25-iteration restoring square root) is
    ~19% of post-HLE intro instructions and is **not** HLE'd on either build.
    Worth adding for both — it is not a Digitone-specific problem.
 

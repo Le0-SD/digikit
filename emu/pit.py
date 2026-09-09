@@ -1,3 +1,5 @@
+# pyright: reportMissingImports=false
+# fmt: off
 """The four programmable interval timers, gated on their own enable bits.
 
 After the intro the system is correctly idle: every task blocks and nothing
@@ -233,13 +235,13 @@ class Pits:
                 best = self.next[ch]
         return best
 
-    def step(self, done, remaining=None, cap=None):
+    def step(self, done, remaining=None):
         """-> instructions to run before the next `service` call is due.
 
         Run this many and a timer lands on the instruction it was due at,
         instead of at whatever chunk boundary happens to follow it. That is
         the whole point: with a fixed chunk the same 60M instructions from
-        the same snapshot produce different fault counts, different display
+        the same snapshot produces different fault counts, different display
         callback counts and different surviving task counts depending only
         on the chunk size, which makes every post-intro measurement an
         artifact of the harness rather than a property of the firmware.
@@ -250,20 +252,17 @@ class Pits:
         budget in several calls: truncating the last step of each call puts
         an emu_start boundary somewhere no timer was due, and boundaries in
         the wrong place are exactly what deadline stepping exists to avoid.
-        The overshoot is under one timer period.
-
-        `cap` bounds a single step for a caller that needs to regain control
-        (a GUI honouring a stop flag). Capping only ever makes a step
-        shorter, and a `service` call before its deadline does nothing but
-        re-arm, so a cap changes pacing but not delivery -- as long as it is
-        not so small that arming a newly-enabled timer moves measurably.
+        The overshoot is under one timer period. Arbitrary subdivisions are
+        unsupported because Unicorn can change guest condition-code behavior
+        across `emu_start` boundaries.
         """
         d = self.deadline(done)
-        n = IDLE_STEP if d is None else max(1, int(math.ceil(d - done)))
+        try:
+            n = IDLE_STEP if d is None else max(1, int(math.ceil(d - done)))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError('invalid PIT deadline') from exc
         if d is None and remaining is not None:
             n = remaining
-        if cap:
-            n = min(n, cap)
         if remaining is not None:
             n = min(n, remaining)
         return max(1, n)

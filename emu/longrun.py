@@ -1,3 +1,6 @@
+# pyright: reportMissingImports=false
+# ruff: noqa: I001
+# fmt: off
 """Long fast run: no per-instruction hook, chunked preemption, watch everything
 that matters via begin==end hooks (free between hits).
 
@@ -6,7 +9,11 @@ hooks dspboot.run installs (flash HLE, completion-semaphore patch, ISA patches,
 MMIO, exceptions) and restores a snapshot onto it. Resuming onto a bare Machine
 instead silently drops those hooks and the run diverges -- see snapshot.py.
 """
-import struct, sys, os, time, collections
+import struct
+import sys
+import os
+import time
+import collections
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from unicorn import UcError, UC_HOOK_CODE, UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE
 from unicorn.m68k_const import (UC_M68K_REG_A7, UC_M68K_REG_PC, UC_M68K_REG_SR,
@@ -27,7 +34,8 @@ PEND_A, PEND_B = 0x4000141a, 0x400013a6   # sem object is the arg at 4(a7)
 def build(snapshot, send=b'', syx=None, isa='scoped',
           unblock=False, softfloat=False, bitmap=False, on_pixel=None,
           unblock_except=(), edma=True, real_sleep=False, dsp=False,
-          srtrap=False, weakptr=False, slc=False, sdgate=False, esdhc=False):
+          srtrap=False, weakptr=False, slc=False, sdgate=False, esdhc=False,
+          trace=None, trace_path=None, trace_ranges=(), trace_registers=None):
     """Stand up a hooked Machine and restore `snapshot` onto it.
 
     -> (m, ev, st, pc, inq, at) where `at(addr, fn)` registers a further
@@ -168,6 +176,8 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     SYSCTL reads and no progress. Turn it on when there is an eSDHC model
     behind it.
     """
+    if trace is not None and trace_path is not None:
+        raise ValueError('pass either trace or trace_path, not both')
     syx = config.firmware(syx)
     flash = db.build_flash(syx)
     m = Machine(); st = {'seen': set(), 'n': 0, 'task_create_hits': {}}
@@ -411,10 +421,19 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
         from emu.esdhc import Esdhc
         ev['esdhc'] = Esdhc(m)
     m.install_mmio()
-    if tx is not None:
-        from emu.edma import kick
-        kick(m, tx)
-    return m, ev, st, pc, inq, at
+    if trace_path is not None:
+        from emu.trace import JsonlMmioTrace
+        trace = JsonlMmioTrace(trace_path)
+    try:
+        m.install_mmio_trace(trace, ranges=trace_ranges,
+                             registers=trace_registers, owned=trace_path is not None)
+        if tx is not None:
+            from emu.edma import kick
+            kick(m, tx)
+        return m, ev, st, pc, inq, at
+    except Exception:
+        m.close()
+        raise
 
 
 def run_until(m, pc, timeout_ms=250):
@@ -458,8 +477,7 @@ def run_until(m, pc, timeout_ms=250):
     return m.uc.reg_read(UC_M68K_REG_PC), stop
 
 
-def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None,
-         cap=None):
+def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None):
     """Run in chunks. -> (pc, executed, stop_reason).
 
     Pass `pits` (an emu.pit.Pits) to run to each timer deadline exactly
@@ -467,9 +485,9 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None,
     whatever remains before the next PIT is due, so an interrupt lands on
     the instruction the timer was due at. Without this, the same run from
     the same snapshot gives different fault counts and different display
-    callback counts for nothing but a different chunk size. `cap` bounds a
-    single step for a caller that needs to regain control periodically.
-    Servicing the timers is part of this loop when `pits` is given, so do
+    callback counts for nothing but a different chunk size. Only timer
+    deadlines may subdivide timer-stepped execution; arbitrary subdivisions
+    are unsupported. Servicing the timers is part of this loop when `pits` is given, so do
     not also service them from `on_chunk`.
 
     A `Pits` holds its deadlines as absolute instruction counts, and `done`
@@ -510,7 +528,7 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None,
         # overshoot `instrs` rather than truncating, so every emu_start
         # boundary is a timer deadline no matter how the caller splits its
         # budget. See Pits.step.
-        step = (pits.step(base + done, None, cap) if pits is not None
+        step = (pits.step(base + done, None) if pits is not None
                 else min(chunk, instrs - done))
         m.halt_vec = None
         try: m.uc.emu_start(pc, 0, count=step)
@@ -567,3 +585,4 @@ if __name__ == '__main__':
     w,h,buf = struct.unpack('>III', m.uc.mem_read(0x4028ae98, 12))
     px = bytes(m.uc.mem_read(buf, w*h))
     print('intro framebuffer 0x%08x nonzero: %d/%d' % (buf, sum(1 for b in px if b), w*h))
+# fmt: on

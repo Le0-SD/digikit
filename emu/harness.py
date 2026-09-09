@@ -1,3 +1,6 @@
+# pyright: reportMissingImports=false
+# ruff: noqa: I001
+# fmt: off
 """Unicorn m68k harness for running real Digitakt II ColdFire code.
 
 Unicorn's m68k core has gaps that matter here. All are handled below:
@@ -15,7 +18,11 @@ See docs/FINDINGS.md for how each was found.
 import struct
 from unicorn import (Uc, UcError, UC_ARCH_M68K, UC_MODE_BIG_ENDIAN,
                      UC_HOOK_CODE, UC_HOOK_INTR, UC_HOOK_MEM_INVALID,
-                     UC_HOOK_MEM_READ)
+                     UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE)
+try:
+    from unicorn import UC_HOOK_MEM_READ_AFTER
+except ImportError:
+    UC_HOOK_MEM_READ_AFTER = None
 from unicorn.m68k_const import (UC_CPU_M68K_CFV4E, UC_M68K_REG_A7,
                                 UC_M68K_REG_PC, UC_M68K_REG_SR, UC_M68K_REG_D0)
 
@@ -45,6 +52,8 @@ class Machine:
     """A ColdFire machine with memory mapped on demand."""
 
     def __init__(self, cpu=UC_CPU_M68K_CFV4E):
+        from emu.unicorn_compat import require_compatible_unicorn
+        require_compatible_unicorn()
         self.uc = Uc(UC_ARCH_M68K, UC_MODE_BIG_ENDIAN)
         self.uc.ctl_set_cpu_model(cpu)
         self.mapped = set()
@@ -54,6 +63,8 @@ class Machine:
         self.ctlregs = {}       # MOVEC control registers
         self.ff1_count = 0
         self.movec_count = 0
+        self.mmio_trace_hooks = []
+        self._owned_trace = None
         # Set by install_exceptions when a vector has no handler and the run
         # is stopped from inside the hook. emu_start then returns *without
         # raising*, so a caller that assumes it executed its full budget will
@@ -114,6 +125,60 @@ class Machine:
                     except UcError:
                         pass
         self.uc.hook_add(UC_HOOK_MEM_READ, on_read)
+
+    def install_mmio_trace(self, sink=None, ranges=(), registers=None, owned=False):
+        """Install read-only observer hooks for explicit, narrow MMIO ranges."""
+        if sink is None:
+            return []
+        ranges = tuple(ranges)
+        if not ranges:
+            raise ValueError("MMIO tracing requires at least one narrow range")
+        if owned:
+            if self._owned_trace is not None:
+                raise ValueError("Machine already owns an MMIO trace sink")
+            self._owned_trace = sink
+        registers = registers or {}
+        read_hook = UC_HOOK_MEM_READ_AFTER or UC_HOOK_MEM_READ
+        read_value_available = bool(UC_HOOK_MEM_READ_AFTER)
+        read_phase = 'after' if read_value_available else 'before-value-unknown'
+
+        def on_read(uc, typ, addr, size, value, data):
+            sink.event(pc=uc.reg_read(UC_M68K_REG_PC), address=addr, width=size * 8,
+                       direction='read', value=value if read_value_available else None,
+                       register=registers.get(addr), read_phase=read_phase)
+
+        def on_write(uc, typ, addr, size, value, data):
+            sink.event(pc=uc.reg_read(UC_M68K_REG_PC), address=addr, width=size * 8,
+                       direction='write', value=value, register=registers.get(addr))
+
+        try:
+            for begin, end in ranges:
+                try:
+                    hook = self.uc.hook_add(read_hook, on_read, begin=begin, end=end)
+                except UcError:
+                    read_value_available = False
+                    read_phase = 'before-value-unknown'
+                    hook = self.uc.hook_add(UC_HOOK_MEM_READ, on_read, begin=begin, end=end)
+                self.mmio_trace_hooks.append(hook)
+                self.mmio_trace_hooks.append(self.uc.hook_add(
+                    UC_HOOK_MEM_WRITE, on_write, begin=begin, end=end))
+        except Exception:
+            if owned:
+                self.close()
+            raise
+        return list(self.mmio_trace_hooks)
+
+    def close(self):
+        """Close a trace sink this Machine explicitly owns; safe to repeat."""
+        if self._owned_trace is not None:
+            sink, self._owned_trace = self._owned_trace, None
+            sink.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.close()
 
     def load(self, image, addr):
         for off in range(0, len(image), PAGE):
@@ -390,3 +455,4 @@ def call(machine, func, args, ret_magic=0xDEADBEE0, stack_top=None, limit=800_00
     uc.reg_write(UC_M68K_REG_A7, stack_top)
     uc.emu_start(func, ret_magic, count=limit)
     return uc.reg_read(UC_M68K_REG_D0) & 0xFFFFFFFF
+# fmt: on

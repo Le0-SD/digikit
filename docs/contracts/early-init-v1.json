@@ -1,0 +1,28 @@
+{
+  "contract": "digitakt2.early-init",
+  "schema_version": 1,
+  "range": {"start": "0x400004e8", "end": "0x40000530", "load_address": "0x40000400"},
+  "registers": {
+    "PPMCR0": {"address": "0xfc04002d", "width": 8, "access": "supervisor-write-only", "read_value": 0, "semantics": "CAMCD bit 6 clears all hidden PPMR0 bits; CMCD bits 5:0 clear corresponding hidden PPMR0 bits; bit 7 is reserved and clear.", "provenance": ["DOCUMENTED"]},
+    "PPMCR1": {"address": "0xfc04002f", "width": 8, "access": "supervisor-write-only", "read_value": 0, "semantics": "CAMCD bit 6 clears all hidden PPMR1 bits; CMCD bits 5:0 clear corresponding hidden PPMR1 bits; bit 7 is reserved and clear.", "provenance": ["DOCUMENTED"]},
+    "UNKNOWN_0xec09000e": {"address": "0xec09000e", "width": 16, "access": "unknown", "semantics": "Unidentified early-init MMIO boundary; no peripheral identity is claimed.", "provenance": ["STATIC_ANALYSIS"]}
+  },
+  "firmware": {
+    "digitakt_main_sha256": "6a6a887b0573a557b71badf32cd9392777c60b4d1f33dfae12bb8346a014a37b",
+    "digitone_main_sha256": "d6b54227b770923d61074ba8afa76a4d87c2f8879371ecdb1fa1e32eb9a9718d"
+  },
+  "static_write_events": [
+    {"pc": "0x40000500", "address": "0xfc04002d", "width": 8, "direction": "write", "value": "0x11", "register": "PPMCR0"},
+    {"pc": "0x40000504", "address": "0xfc04002f", "width": 8, "direction": "write", "value": "0x25", "register": "PPMCR1"},
+    {"pc": "0x4000050a", "address": "0xfc04002d", "width": 8, "direction": "write", "value": "0x12", "register": "PPMCR0"},
+    {"pc": "0x4000050e", "address": "0xfc04002d", "width": 8, "direction": "write", "value": "0x13", "register": "PPMCR0"},
+    {"pc": "0x40000512", "address": "0xfc04002d", "width": 8, "direction": "write", "value": "0x14", "register": "PPMCR0"},
+    {"pc": "0x40000516", "address": "0xfc04002d", "width": 8, "direction": "write", "value": "0x20", "register": "PPMCR0"},
+    {"pc": "0x4000051a", "address": "0xfc04002d", "width": 8, "direction": "write", "value": "0x24", "register": "PPMCR0"}
+  ],
+  "static_read_boundary": {"pc": "0x40000524", "address": "0xec09000e", "width": 16, "direction": "read", "value": null, "register": "UNKNOWN_0xec09000e", "outcome": "fatal-unmodeled-boundary"},
+  "qemu_provenance": {"digitakt_main_sha256": "DYNAMIC_QEMU", "digitone_main_sha256": null},
+  "acceptance_records": [
+    {"kind": "esdhc-sysctl-inita-poll", "address": "0xfc0cc02c", "mask": "0x08000000", "site": "0x4012001e", "scope": "bounded model acceptance; not whole-eSDHC coverage", "provenance": ["STATIC_ANALYSIS"]}
+  ]
+}

@@ -12,10 +12,19 @@ adding:
   - stall detection: records addresses that keep recurring long after the last
     newly-discovered address, to locate the tail loop precisely.
 """
-import struct, collections, sys
+
+# pyright: reportMissingImports=false, reportUndefinedVariable=false
+# fmt: off
+import collections
+import struct
+import sys
+
 from unicorn import *
 from unicorn.m68k_const import *
+
 from emu import config
+from emu.unicorn_compat import require_compatible_unicorn
+
 LOAD,ENTRY,VBR=0x40000400,0x400004e8,0x40000000
 PAGE=0x100000; HALT=0x400ceeb6; EXCP_RTE=0x100
 TASK_ENTRY=0x400cef6c
@@ -35,8 +44,12 @@ DSPI0_SR=0xFC05C02C   # DSPI0 status register (MCF54418RM Table 40-3 / Ch.40)
 
 def boot(tick_vec=32, tick_every=20000, limit=200_000_000, mock_uart8=False, mock_dspi0=False,
          verbose_illegal=False, stall_window=2_000_000, extra_probe=None):
+    require_compatible_unicorn()
     uc=Uc(UC_ARCH_M68K,UC_MODE_BIG_ENDIAN); uc.ctl_set_cpu_model(UC_CPU_M68K_CFV4E)
-    IMG=open(config.main_image(),'rb').read()
+    try:
+        IMG=open(config.main_image(),'rb').read()
+    except OSError as exc:
+        raise RuntimeError('cannot read MAIN OS image') from exc
     mapped=set()
     def ensure(a):
         b=a&~(PAGE-1)
@@ -113,7 +126,10 @@ def boot(tick_vec=32, tick_every=20000, limit=200_000_000, mock_uart8=False, moc
     return st,stop,uc.reg_read(UC_M68K_REG_PC)
 
 if __name__=='__main__':
-    limit=int(sys.argv[1]) if len(sys.argv)>1 else 60_000_000
+    try:
+        limit=int(sys.argv[1]) if len(sys.argv)>1 else 60_000_000
+    except ValueError as exc:
+        raise SystemExit('instruction limit must be an integer') from exc
     mock=sys.argv[2]=='1' if len(sys.argv)>2 else False
     mock2=sys.argv[3]=='1' if len(sys.argv)>3 else False
     st,stop,pc=boot(32, limit=limit, mock_uart8=mock, mock_dspi0=mock2, verbose_illegal=True)

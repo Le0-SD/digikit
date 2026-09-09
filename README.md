@@ -32,11 +32,15 @@ firmware file in the working directory.
 
 ```sh
 uv sync
+tools/install-patched-unicorn.sh
 uv run python -m emu.run Digitakt_II_OS1.15C.syx --weakptr
 ```
 
 That checks each prerequisite, builds the boot snapshots on first run (one cold
 boot from reset, a few minutes — it happens once), and opens the live panel.
+Unicorn needs the required SR-read patch; see [docs/UNICORN.md](docs/UNICORN.md).
+`uv sync` can restore stock Unicorn, which the emulator deliberately rejects
+until the installer is rerun.
 
 That includes decompressing the sections out of the `.syx`, which no longer
 needs an outside tool. To do it on its own:
@@ -62,7 +66,7 @@ uv run python -m emu.run [firmware.syx] [snapshot] [options]
 ```
 
 | | |
-|---|---|
+| --- | --- |
 | `--weakptr` | Step over two branches in `weak_ptr::lock` that otherwise freeze the main task after 153 messages. They contradict the memory they branch on — an emulator defect, not a firmware decision. Recommended. |
 | `--slc` | Force the eMMC "SLC mode" flag. Unnecessary now that the eSDHC model supplies it. |
 | `--scale N` | Integer panel zoom. Defaults to whatever fits your screen. |
@@ -73,7 +77,7 @@ Nothing is hardcoded to a filename. Paths resolve from an explicit argument,
 then an environment variable, then discovery:
 
 | | |
-|---|---|
+| --- | --- |
 | `DT2_SYX` | the firmware `.syx` |
 | `DT2_SECTIONS` | directory of extracted sections (default `sections`) |
 | `DT2_SNAPSHOTS` | directory of boot snapshots (default `snapshots`) |
@@ -113,7 +117,7 @@ so the UI cannot be driven.
 Not ARM. Two processors:
 
 | | Part | Notes |
-|---|---|---|
+| --- | --- | --- |
 | Control | Freescale **ColdFire MCF54415** | 68k-family ISA, **big-endian**. UI, sequencer, files, MIDI. C++. |
 | Audio | Analog Devices **ADSP-21569** SHARC+ | FreeRTOS. Shipped as ADI loader records. |
 
