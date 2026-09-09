@@ -16,6 +16,7 @@ Unicorn's m68k core has gaps that matter here. All are handled below:
 See docs/FINDINGS.md for how each was found.
 """
 import struct
+from typing import Any
 from unicorn import (Uc, UcError, UC_ARCH_M68K, UC_MODE_BIG_ENDIAN,
                      UC_HOOK_CODE, UC_HOOK_INTR, UC_HOOK_MEM_INVALID,
                      UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE)
@@ -65,6 +66,9 @@ class Machine:
         self.movec_count = 0
         self.mmio_trace_hooks = []
         self._owned_trace = None
+        # Set by longrun.build when a saved host component must be claimed
+        # before execution (for example, timers constructed after restore).
+        self._checkpoint_deferred_restore: Any = None
         # Set by install_exceptions when a vector has no handler and the run
         # is stopped from inside the hook. emu_start then returns *without
         # raising*, so a caller that assumes it executed its full budget will
@@ -443,6 +447,9 @@ class Machine:
 
 def call(machine, func, args, ret_magic=0xDEADBEE0, stack_top=None, limit=800_000_000):
     """Call a firmware routine with C-style stacked args. -> D0."""
+    deferred = getattr(machine, '_checkpoint_deferred_restore', None)
+    if deferred is not None:
+        deferred.require_claimed()
     uc = machine.uc
     if stack_top is None:
         machine.ensure(0x10000000)

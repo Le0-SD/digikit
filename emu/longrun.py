@@ -14,13 +14,15 @@ import sys
 import os
 import time
 import collections
+import hashlib
+from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from unicorn import UcError, UC_HOOK_CODE, UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE
 from unicorn.m68k_const import (UC_M68K_REG_A7, UC_M68K_REG_PC, UC_M68K_REG_SR,
                                 UC_M68K_REG_D0, UC_M68K_REG_D2, UC_M68K_REG_A0)
 import emu.dspboot as db
 from emu.harness import Machine
-from emu.snapshot import restore_into
+from emu.snapshot import DeferredComponentRestore, restore_into
 from emu import config, symbols
 
 PRINT              = 0x400054b4
@@ -35,12 +37,21 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
           unblock=False, softfloat=False, bitmap=False, on_pixel=None,
           unblock_except=(), edma=True, real_sleep=False, dsp=False,
           srtrap=False, weakptr=False, slc=False, sdgate=False, esdhc=False,
-          trace=None, trace_path=None, trace_ranges=(), trace_registers=None):
+          trace=None, trace_path=None, trace_ranges=(), trace_registers=None,
+          deferred_components=()):
     """Stand up a hooked Machine and restore `snapshot` onto it.
 
     -> (m, ev, st, pc, inq, at) where `at(addr, fn)` registers a further
     begin==end code hook and `inq` is the UART8 receive queue (a deque of
     ints; append to it to feed the firmware input).
+
+    Pass ``deferred_components=('timers',)`` when the snapshot was saved with
+    a ``Timers`` component.  Build restores guest state, UART, and eDMA before
+    its legacy kick, then exposes ``ev['claim_checkpoint_component']``. Create
+    timers against ``m`` and call ``ev['claim_checkpoint_component']('timers',
+    timers)`` before ``spin`` or ``run_until``. The claim also registers it in
+    ``ev['checkpoint_components']`` for the next save. Unclaimed saved state
+    fails at execution rather than silently running with a fresh timer clock.
 
     isa='scoped' pre-scans MAIN OS for the FF1/MOVEC addresses and hooks only
     those, instead of running a Python callback on every instruction. This is
@@ -175,6 +186,16 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
         raise ValueError('pass either trace or trace_path, not both')
     syx = config.firmware(syx)
     flash = db.build_flash(syx)
+    # This is intentionally bounded data, not the hook closures themselves.
+    # A stateful checkpoint may only resume under the same hook topology.
+    checkpoint_manifest = {
+        'protocol': 1, 'isa': isa, 'unblock': bool(unblock),
+        'softfloat': bool(softfloat), 'bitmap': bool(bitmap), 'edma': bool(edma),
+        'dsp': bool(dsp), 'srtrap': bool(srtrap), 'weakptr': bool(weakptr),
+        'slc': bool(slc), 'sdgate': bool(sdgate), 'esdhc': bool(esdhc),
+        'real_sleep': bool(real_sleep), 'unblock_except': tuple(unblock_except),
+        'flash_sha256': hashlib.sha256(flash).hexdigest(),
+    }
     m = Machine(); st = {'seen': set(), 'n': 0, 'task_create_hits': {}}
     ev = {'tasks': [], 'prints': [], 'setpixel': 0, 'pxcopy': 0,
           'switch': collections.Counter(), 'switch_seq': [],
@@ -182,6 +203,7 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     inq = collections.deque(send)
     with open(config.main_image(), 'rb') as fh:
         main_img = fh.read()
+    checkpoint_manifest['main_sha256'] = hashlib.sha256(main_img).hexdigest()
     # Resolve addresses from the image itself rather than dspboot's
     # Digitakt-specific module constants -- see emu/symbols.py. Cached per
     # image SHA-256, so this costs nothing extra when dspboot.run has already
@@ -396,7 +418,37 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     # restore_into merges the snapshot's own mmio entries, and install_mmio
     # registers a hook per address, so it has to come after the merge or a
     # snapshot-carried address would go unhooked.
-    pc = restore_into(m, snapshot, st)
+    # Observations (tasks, prints, switches, UART output) deliberately are
+    # not checkpoint state: checkpoint comparisons use their post-save suffix.
+    checkpoint_components: dict[str, Any] = {'uart_in': inq}
+    if tx is not None:
+        checkpoint_components['edma_tx'] = tx
+    deferred_restore = DeferredComponentRestore(deferred_components)
+
+    def claim_checkpoint_component(name, component):
+        """Claim deferred state and include this component in subsequent saves."""
+        restored = deferred_restore.claim(name, component)
+        checkpoint_components[name] = component
+        return restored
+
+    def restore_checkpoint_timers():
+        """Safely construct, claim, and register saved timer cadence."""
+        from emu.dtim import restore_timers
+        timers = restore_timers(m, deferred_restore)
+        if timers is not None:
+            checkpoint_components['timers'] = timers
+        return timers
+
+    # Pass these unchanged to snapshot.save() when checkpointing a build().
+    ev['checkpoint_components'] = checkpoint_components
+    ev['checkpoint_manifest'] = checkpoint_manifest
+    ev['deferred_checkpoint_restore'] = deferred_restore
+    ev['claim_checkpoint_component'] = claim_checkpoint_component
+    ev['restore_checkpoint_timers'] = restore_checkpoint_timers
+    # spin/run_until enforce completion before entering Unicorn.
+    m._checkpoint_deferred_restore = deferred_restore
+    pc = restore_into(m, snapshot, st, components=checkpoint_components,
+                      manifest=checkpoint_manifest, deferred=deferred_restore)
     if weakptr:
         # After restore_into, or the snapshot's own copy of MAIN OS would
         # overwrite the patch.
@@ -429,8 +481,11 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
         m.install_mmio_trace(trace, ranges=trace_ranges,
                              registers=trace_registers, owned=trace_path is not None)
         if tx is not None:
-            from emu.edma import kick
-            kick(m, tx)
+            from emu import edma as edma_model
+            # A stateful checkpoint has the model's pending completions;
+            # rerunning its guest-derived transfer duplicates bytes.
+            if edma_model.needs_legacy_kick(tx):
+                edma_model.kick(m, tx)
         return m, ev, st, pc, inq, at
     except Exception:
         m.close()
@@ -470,6 +525,9 @@ def run_until(m, pc, timeout_ms=250):
     address, and resuming re-enters the same hook immediately: the run then
     spins making no progress while appearing to iterate.
     """
+    deferred = getattr(m, '_checkpoint_deferred_restore', None)
+    if deferred is not None:
+        deferred.require_claimed()
     try:
         m.uc.emu_start(pc, 0, timeout=timeout_ms * 1000)
         stop = 'stopped'
@@ -522,6 +580,9 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None):
     ~1.8x slower than running uncounted -- see run_until. Use spin only when
     something genuinely has to happen per fixed number of instructions.
     """
+    deferred = getattr(m, '_checkpoint_deferred_restore', None)
+    if deferred is not None:
+        deferred.require_claimed()
     done, stop = 0, 'limit'
     base = pits.now if pits is not None else 0      # resume, do not rewind
     while done < instrs:

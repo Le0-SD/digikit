@@ -187,6 +187,21 @@ class Pits:
         """Start delivering. Safe to call more than once."""
         self.held = False
 
+    def checkpoint_state(self):
+        return {'type': 'Pits', 'version': 1, 'channels': self.channels,
+                'ips': self.ips, 'next': list(self.next), 'now': self.now,
+                'held': self.held, 'fired': dict(self.fired),
+                'missed': dict(self.missed)}
+
+    def restore_checkpoint_state(self, state):
+        if state.get('type') != 'Pits' or state.get('version') != 1:
+            raise RuntimeError('unsupported Pits checkpoint state')
+        if tuple(state['channels']) != self.channels or state['ips'] != self.ips:
+            raise RuntimeError('Pits checkpoint configuration mismatch')
+        self.next = list(state['next']); self.now = state['now']
+        self.held = state['held']; self.fired = collections.Counter(state['fired'])
+        self.missed = collections.Counter(state['missed'])
+
     def period(self, ch):
         """-> instructions between interrupts, or None while the timer is off."""
         pcsr, pmr = struct.unpack('>HH', self.m.uc.mem_read(BASES[ch], 4))

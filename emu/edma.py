@@ -39,26 +39,28 @@ either, and changing PC from a Unicorn memory hook is not reliable in any
 case. `deliver()` hands the vector over from a point that runs with
 interrupts enabled, and only when the IPL actually allows it.
 """
+
+# pyright: reportMissingImports=false
 import struct
 
 from unicorn import UC_HOOK_MEM_WRITE
 from unicorn.m68k_const import UC_M68K_REG_SR
 
-EDMA_BASE   = 0xFC044000
-SERQ        = EDMA_BASE + 0x18        # set enable request, one byte, channel #
-TCD_BASE    = 0xFC045000              # TCD n at TCD_BASE + n * 0x20
+EDMA_BASE = 0xFC044000
+SERQ = EDMA_BASE + 0x18  # set enable request, one byte, channel #
+TCD_BASE = 0xFC045000  # TCD n at TCD_BASE + n * 0x20
 
-TX_CHAN     = 35
-TX_VECTOR   = 155                     # -> 0x40001e7c, verified in the vector table
-TX_STATE    = 0x4094cd74              # firmware's own "a transfer is armed" flag
-WAIT_LOOP   = 0x4000221c              # head of the free-space spin loop
+TX_CHAN = 35
+TX_VECTOR = 155  # -> 0x40001e7c, verified in the vector table
+TX_STATE = 0x4094CD74  # firmware's own "a transfer is armed" flag
+WAIT_LOOP = 0x4000221C  # head of the free-space spin loop
 
 # ColdFire eDMA TCD layout. Note this is NOT the Kinetis order: CITER/DOFF and
 # BITER/CSR are swapped relative to it, which is what makes CITER land at +0x14.
-SADDR, ATTR, SOFF   = 0x00, 0x04, 0x06
-NBYTES, SLAST       = 0x08, 0x0C
-DADDR, CITER, DOFF  = 0x10, 0x14, 0x16
-DLAST, BITER, CSR   = 0x18, 0x1C, 0x1E
+SADDR, ATTR, SOFF = 0x00, 0x04, 0x06
+NBYTES, SLAST = 0x08, 0x0C
+DADDR, CITER, DOFF = 0x10, 0x14, 0x16
+DLAST, BITER, CSR = 0x18, 0x1C, 0x1E
 
 
 class TxChannel:
@@ -68,24 +70,46 @@ class TxChannel:
         self.m, self.out = m, out
         self.chan, self.vector = chan, vector
         self.tcd = TCD_BASE + chan * 0x20
-        self.pending = 0        # queued major-loop completions
+        self.pending = 0  # queued major-loop completions
         self.bytes = 0
         self.transfers = 0
+        self._checkpoint_restored = False
+
+    def checkpoint_state(self):
+        return {
+            "type": "TxChannel",
+            "version": 1,
+            "chan": self.chan,
+            "vector": self.vector,
+            "pending": self.pending,
+            "bytes": self.bytes,
+            "transfers": self.transfers,
+        }
+
+    def restore_checkpoint_state(self, state):
+        if state.get("type") != "TxChannel" or state.get("version") != 1:
+            raise RuntimeError("unsupported TxChannel checkpoint state")
+        if (state["chan"], state["vector"]) != (self.chan, self.vector):
+            raise RuntimeError("TxChannel checkpoint configuration mismatch")
+        self.pending = state["pending"]
+        self.bytes = state["bytes"]
+        self.transfers = state["transfers"]
+        self._checkpoint_restored = True
 
     def _u32(self, off):
-        return struct.unpack('>I', self.m.uc.mem_read(self.tcd + off, 4))[0]
+        return struct.unpack(">I", self.m.uc.mem_read(self.tcd + off, 4))[0]
 
     def _u16(self, off):
-        return struct.unpack('>H', self.m.uc.mem_read(self.tcd + off, 2))[0]
+        return struct.unpack(">H", self.m.uc.mem_read(self.tcd + off, 2))[0]
 
     def _s16(self, off):
-        return struct.unpack('>h', self.m.uc.mem_read(self.tcd + off, 2))[0]
+        return struct.unpack(">h", self.m.uc.mem_read(self.tcd + off, 2))[0]
 
     def _w32(self, off, v):
-        self.m.uc.mem_write(self.tcd + off, struct.pack('>I', v & 0xFFFFFFFF))
+        self.m.uc.mem_write(self.tcd + off, struct.pack(">I", v & 0xFFFFFFFF))
 
     def _w16(self, off, v):
-        self.m.uc.mem_write(self.tcd + off, struct.pack('>H', v & 0xFFFF))
+        self.m.uc.mem_write(self.tcd + off, struct.pack(">H", v & 0xFFFF))
 
     def run(self):
         """Run the whole major loop now. -> bytes moved.
@@ -113,7 +137,7 @@ class TxChannel:
             src = base | (src & mask)
 
         self._w32(SADDR, src)
-        self._w16(CITER, biter)          # major-loop completion reloads CITER
+        self._w16(CITER, biter)  # major-loop completion reloads CITER
         self.out += data
         self.bytes += len(data)
         self.transfers += 1
@@ -132,19 +156,25 @@ class TxChannel:
 
 def install(m, at, ev, chan=TX_CHAN, vector=TX_VECTOR):
     """Model the UART8 TX channel. -> the TxChannel, also at ev['edma_tx']."""
-    ch = TxChannel(m, ev['uart_out'], chan, vector)
-    ev['edma_tx'] = ch
+    ch = TxChannel(m, ev["uart_out"], chan, vector)
+    ev["edma_tx"] = ch
 
     def on_serq(uc, typ, addr, size, val, data):
         # bit 6 = "set all channels"; the low 6 bits are the channel number.
         if val & 0x40 or (val & 0x3F) == chan:
             ch.run()
+
     m.uc.hook_add(UC_HOOK_MEM_WRITE, on_serq, begin=SERQ, end=SERQ)
 
     # The free-space spin loop runs with interrupts enabled and is exactly
     # where hardware would take the completion, so deliver it there.
     at(WAIT_LOOP, lambda uc, a, s, d: ch.deliver())
     return ch
+
+
+def needs_legacy_kick(ch):
+    """Whether a snapshot lacks model state that makes kicking unsafe."""
+    return not ch._checkpoint_restored
 
 
 def kick(m, ch):
@@ -156,7 +186,7 @@ def kick(m, ch):
     hands the chain back to the firmware's ISR, which takes it from there.
     """
     try:
-        armed = struct.unpack('>I', m.uc.mem_read(TX_STATE, 4))[0]
+        armed = struct.unpack(">I", m.uc.mem_read(TX_STATE, 4))[0]
     except Exception:
         return 0
     return ch.run() if armed else 0

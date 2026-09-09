@@ -178,6 +178,23 @@ class Dtims:
         """Start delivering. Safe to call more than once."""
         self.held = False
 
+    def checkpoint_state(self):
+        return {'type': 'Dtims', 'version': 1, 'channels': self.channels,
+                'ips': self.ips, 'next': list(self.next), 'now': self.now,
+                'held': self.held, 'fired': dict(self.fired),
+                'missed': dict(self.missed), 'arm': sorted(self.arm),
+                'stale': list(self.stale)}
+
+    def restore_checkpoint_state(self, state):
+        if state.get('type') != 'Dtims' or state.get('version') != 1:
+            raise RuntimeError('unsupported Dtims checkpoint state')
+        if tuple(state['channels']) != self.channels or state['ips'] != self.ips:
+            raise RuntimeError('Dtims checkpoint configuration mismatch')
+        self.next = list(state['next']); self.now = state['now']
+        self.held = state['held']; self.fired = collections.Counter(state['fired'])
+        self.missed = collections.Counter(state['missed'])
+        self.arm = set(state['arm']); self.stale = list(state['stale'])
+
     def period(self, ch):
         """-> instructions between interrupts, or None if it cannot fire."""
         dtmr = struct.unpack('>H', self.m.uc.mem_read(BASES[ch] + DTMR, 2))[0]
@@ -323,6 +340,22 @@ class Timers:
         for s in self.sources:
             s.release()
 
+    def checkpoint_state(self):
+        return {'type': 'Timers', 'version': 1,
+                # Type/order are load-bearing arbitration configuration.
+                'sources': [s.checkpoint_state() for s in self.sources]}
+
+    def restore_checkpoint_state(self, state):
+        if state.get('type') != 'Timers' or state.get('version') != 1:
+            raise RuntimeError('unsupported Timers checkpoint state')
+        saved = state.get('sources', [])
+        if len(saved) != len(self.sources):
+            raise RuntimeError('Timers checkpoint source count mismatch')
+        for source, source_state in zip(self.sources, saved):
+            if source_state.get('type') != type(source).__name__:
+                raise RuntimeError('Timers checkpoint source order mismatch')
+            source.restore_checkpoint_state(source_state)
+
     def step(self, done, remaining=None):
         return min(s.step(done, remaining) for s in self.sources)
 
@@ -349,6 +382,33 @@ class Timers:
             for ch, n in s.missed.items():
                 out['%s%d' % (prefix, ch)] = n
         return out
+
+
+def restore_timers(m, deferred):
+    """Claim saved ``Timers`` safely against restored ``m``.
+
+    DMA timer construction normally repairs stale guest DTMR registers.  A
+    stateful checkpoint instead needs those armed registers intact, so this
+    constructs DTIM sources with ``clear_stale=False`` before claiming state.
+    Source order and each source's saved configuration are preserved.
+    """
+    def construct(state):
+        if state.get('type') != 'Timers' or state.get('version') != 1:
+            raise RuntimeError('unsupported Timers checkpoint state')
+        sources = []
+        for saved in state['sources']:
+            if saved['type'] == 'Pits':
+                from emu.pit import Pits
+                sources.append(Pits(m, channels=tuple(saved['channels']),
+                                    instr_per_sec=saved['ips'], hold=saved['held']))
+            elif saved['type'] == 'Dtims':
+                sources.append(Dtims(m, channels=tuple(saved['channels']),
+                                     instr_per_sec=saved['ips'], hold=saved['held'],
+                                     clear_stale=False))
+            else:
+                raise RuntimeError('unsupported Timers checkpoint source')
+        return Timers(*sources)
+    return deferred.claim_constructed('timers', construct)
 
 
 def build_timers(m, pit_hold=False, dtim=True, channels=(3, 2, 0),
