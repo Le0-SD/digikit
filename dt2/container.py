@@ -1,3 +1,4 @@
+# fmt: off
 """Elektron OS .syx transport and ELE3 container.
 
 Layer cake, outermost first:
@@ -17,7 +18,11 @@ COUNT_OFF, TABLE_OFF, ENTRY_SZ = 0x1C, 0x20, 16
 
 def decode_syx(path):
     """.syx file -> decoded byte stream (preamble + container)."""
-    d = open(path, 'rb').read()
+    try:
+        with open(path, 'rb') as fh:
+            d = fh.read()
+    except OSError as exc:
+        raise ValueError('cannot read SysEx file: %s' % path) from exc
     out = bytearray()
     i = 0
     while i < len(d):

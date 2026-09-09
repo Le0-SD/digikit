@@ -1,3 +1,4 @@
+# fmt: off
 """Resolve firmware addresses from the image itself, instead of hardcoding
 them per build.
 
@@ -53,10 +54,10 @@ longrun.py and panel.py for the pattern.
     python -m emu.symbols [image]      # print the resolution report
 """
 import hashlib
+import os
 import re
 import struct
 import sys
-import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -439,6 +440,14 @@ SYMBOLS = [
     # dspboot.py: this is exactly the OPTIONAL-degrades-gracefully case.
     ('transport', Sig('2f032f02242f000c4ab944e4'), False),
     ('call_sites', Xrefs('transport'), False),
+
+    # Optional SLC-status predicate. Its masked signature identifies the
+    # helper; its absolute status-byte operand begins at instruction offset 2.
+    # The data-RAM operand moves between builds, so it is masked and extracted.
+    ('slc_status_predicate',
+     Sig('71b94fe491987201b28067084a8056c071004e75', lo=0x48000000, hi=0x50000000),
+     False),
+    ('slc_status_addr', Operand('slc_status_predicate', at=2), False),
 
     # ----------------------------------------------------------------
     # The scheduler's two variables. The context switcher is RTOS, so it

@@ -126,20 +126,15 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     300M instructions in a `bra.b` to itself -- and the message loop stops at
     153. With it there is no terminal loop and the loop reaches 168.
 
-    slc=True sets the byte at 0x4fe49198 to 1, which is the firmware's cached
-    "the eMMC is in SLC mode" flag. `0x401204a4` reads it and returns 1 for ok,
-    0 for unset and -1 for error; the main task's init tests that at
-    0x40033360 and puts `MMC NOT IN SLC MODE` on the panel when it is not 1,
-    and the factory self-test at 0x400cd50c logs `MMC NOT RECONFIGURED` off the
-    same primitive. Both are advisory -- execution falls through to 0x40033390
-    either way -- so this changes no control flow that matters on its own.
+    slc=True sets the image-resolved cached EXT_CSD SLC-status byte to 1.
+    `profile.slc_status_predicate` is the firmware's tri-state check: it
+    returns 1 for ok, 0 for unset and -1 for error. The main task displays
+    `MMC NOT IN SLC MODE` when its caller's `cmp.l #1,d0` fails. The address
+    differs between builds (0x4fe49198 on the reference Digitakt image and
+    0x4e531198 on Digitone), so it must never be a shared literal.
 
-    Nothing in any firmware section ever WRITES it: a byte search over all of
-    sections/ finds exactly two references, both the reads at 0x401204a6 and
-    0x40120714. So on hardware an earlier boot stage sets it, and our snapshots
-    start past that, leaving it 0. Setting it to 1 is therefore a model of that
-    missing stage rather than an override of a firmware decision -- but since
-    the writer has not actually been found, it is opt-in and off by default.
+    The host write models state normally established before these snapshots;
+    it is opt-in and fails clearly if the image has no resolvable predicate.
 
     Measured from postintro.snap over 60M with weakptr=True: the modal dialog
     goes away and the panel settles on the real main screen (project name,
@@ -185,7 +180,8 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
           'switch': collections.Counter(), 'switch_seq': [],
           'uart_out': bytearray(), 'satisfied': 0, 'depack_clamps': 0}
     inq = collections.deque(send)
-    main_img = open(config.main_image(), 'rb').read()
+    with open(config.main_image(), 'rb') as fh:
+        main_img = fh.read()
     # Resolve addresses from the image itself rather than dspboot's
     # Digitakt-specific module constants -- see emu/symbols.py. Cached per
     # image SHA-256, so this costs nothing extra when dspboot.run has already
@@ -411,11 +407,14 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
                                    % (addr, cur.hex(), want.hex()))
             m.uc.mem_write(addr, new)
     if slc:
-        # Read-only in the firmware; see the docstring. After restore_into for
-        # the same reason weakptr is. Host writes do not enter Machine._fault,
-        # so map the otherwise guest-demand-mapped page first.
-        m.ensure(0x4fe49198)
-        m.uc.mem_write(0x4fe49198, b'\x01')
+        # After restore_into for the same reason weakptr is. Host writes do not
+        # enter Machine._fault, so map the otherwise guest-demand-mapped page
+        # first. The address is extracted from the resolved guest predicate;
+        # using Digitakt's old literal leaves Digitone's predicate at zero.
+        if profile.slc_status_addr is None:
+            raise RuntimeError('slc=True requires an image-resolved SLC status predicate')
+        m.ensure(profile.slc_status_addr)
+        m.uc.mem_write(profile.slc_status_addr, b'\x01')
     if sdgate:
         from emu.gpio import SdGate
         ev['sdgate'] = SdGate(m)
