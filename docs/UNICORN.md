@@ -1,9 +1,10 @@
 # Patched Unicorn requirement
 
-The emulator requires `unicorn==2.1.4` with the small m68k SR-read patch in
-`patches/unicorn-2.1.4-m68k-sr-read.patch`. Stock Unicorn destructively reads
-lazy condition-code state: a host SR read can change the following guest branch.
-That prevents the Digitone from running.
+The emulator requires `unicorn==2.1.4` with the m68k CCR patch in
+`patches/unicorn-2.1.4-m68k-hook-ccr-sync.patch`. Stock Unicorn both
+mutates lazy condition-code state when the host reads SR and leaves lazy CCR
+uncommitted when its count/code hook stops at the instruction after a flag
+producer. Either defect can change the following guest branch.
 
 Install it into the project interpreter after `uv sync`:
 
@@ -19,8 +20,12 @@ a fork. Set `PYTHON=/path/to/python` to target another already-installed project
 interpreter.
 
 `python -m emu.unicorn_compat` runs the compatibility check directly. It covers
-both a zero result (Z taken) and nonzero result (Z clear) after a host SR read;
-it is semantic rather than a binary hash allowlist. `Machine` and `emu.run
+zero/nonzero results when SR is read from the actual code hook after a flag
+producer, plus an equal `CMP` stopped by the count hook at the following
+instruction. The translator patch calls `update_cc_op(dc)` before
+`gen_uc_tracecode(...)`, committing the preceding instruction's lazy CCR before
+a host callback can terminate emulation. The check is semantic rather than a
+binary hash allowlist. `Machine` and `emu.run
 --check` refuse an incompatible runtime before normal emulation begins. Running
 `uv sync` can restore the stock wheel, in which case the guard intentionally
 rejects it; rerun the installer.

@@ -344,6 +344,24 @@ class Machine:
             self.uc.mem_write(sp, struct.pack(
                 '>HHI', 0x4000 | ((vec << 2) & 0x0FFC), sr, pc))
             self.uc.reg_write(UC_M68K_REG_A7, sp)
+            # The frame keeps the INTERRUPTED sr untouched (above); the CPU's
+            # LIVE sr during the handler is a different value, and hardware
+            # always sets S on any exception entry and, for an asynchronous
+            # interrupt, raises the IPL to the level being serviced so a
+            # same-or-lower-level source cannot re-enter. Leaving live SR at
+            # the interrupted value -- what this branch did before -- was
+            # wrong only here, in the srtrap-OFF host-frame path: the
+            # srtrap-ON path below already sets S and the IPL live, via its
+            # `ori.l`/`move.w d0,sr` trampoline (see install_srtrap). This
+            # mirrors that existing trampoline behaviour for the case where
+            # no trampoline runs, now that patched Unicorn's SR read is not
+            # destructive (docs/UNICORN.md). `level=None` marks a synchronous
+            # trap, which sets S but leaves the IPL mask alone, matching the
+            # trampoline's slot for that case.
+            live_sr = sr | 0x2000
+            if level is not None:
+                live_sr = (live_sr & ~0x0700) | ((level & 7) << 8)
+            self.uc.reg_write(UC_M68K_REG_SR, live_sr)
             self.uc.reg_write(UC_M68K_REG_PC, handler)
             return True
 

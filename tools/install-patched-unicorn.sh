@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build the one-line SR-read fix from official Unicorn 2.1.4; no source is vendored.
+# Build the m68k SR-read and code-hook CCR-sync fixes from official Unicorn 2.1.4.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-patch=$root/patches/unicorn-2.1.4-m68k-sr-read.patch
+patch=$root/patches/unicorn-2.1.4-m68k-hook-ccr-sync.patch
 commit=8028ec436f2d9376525352dd38ed9ed6b9f6be10
-patch_sha=01cdaea7357162b44cc00046b811b03594788d969cc48972d463c86c3af84095
+patch_sha=56de71acf2adbd5ca2f448095478e65e49fd79d378aeb5b5e4217d2c90f52f4e
 python=${PYTHON:-$root/.venv/bin/python}
 dry_run=false
 if [[ ${1:-} == --dry-run ]]; then

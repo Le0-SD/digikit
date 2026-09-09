@@ -4,7 +4,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 import emu.unicorn_compat as unicorn_compat
 from emu.dtim import Dtims, Timers
@@ -20,15 +20,24 @@ class UnicornCompatibilityTest(unittest.TestCase):
         unicorn_compat._evaluate_runtime.cache_clear()
 
     def test_evaluator_reports_both_semantic_paths(self):
-        with patch.object(
-            unicorn_compat,
-            "_run_case",
-            side_effect=[{"pass": True, "sr": 4}, {"pass": False, "sr": 4}],
-        ) as run:
+        with (
+            patch.object(
+                unicorn_compat,
+                "_run_case",
+                side_effect=[{"pass": True, "sr": 4}, {"pass": False, "sr": 4}],
+            ) as run,
+            patch.object(
+                unicorn_compat, "_run_count_boundary_case", return_value={"pass": True}
+            ) as count_run,
+        ):
             result = unicorn_compat.evaluate(factory=object())
         self.assertFalse(result["compatible"])
-        self.assertEqual(list(result["cases"]), ["zero_z_taken", "nonzero_z_clear"])
+        self.assertEqual(
+            list(result["cases"]),
+            ["zero_z_taken", "nonzero_z_clear", "count_boundary_cmp_z"],
+        )
         self.assertEqual(run.call_count, 2)
+        count_run.assert_called_once_with(ANY)
 
     def test_failure_is_actionable_without_patched_runtime(self):
         with patch.object(

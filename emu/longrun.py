@@ -528,12 +528,17 @@ def run_until(m, pc, timeout_ms=250):
     deferred = getattr(m, '_checkpoint_deferred_restore', None)
     if deferred is not None:
         deferred.require_claimed()
+    if pc == 0:
+        return pc, 'pc zero'
     try:
         m.uc.emu_start(pc, 0, timeout=timeout_ms * 1000)
         stop = 'stopped'
     except UcError as e:
         stop = str(e)
-    return m.uc.reg_read(UC_M68K_REG_PC), stop
+    pc = m.uc.reg_read(UC_M68K_REG_PC)
+    if stop == 'stopped' and pc == 0:
+        stop = 'pc zero'
+    return pc, stop
 
 
 def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None):
@@ -566,7 +571,10 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None):
     vector has no handler, `install_exceptions` stops the run from inside
     the hook: emu_start returns normally, having executed nothing, and a
     loop that credits itself the full step races to the instruction budget
-    in seconds and reports a run that never happened.
+    in seconds and reports a run that never happened. PC zero is Unicorn's
+    known end sentinel: a normal return there reports ``pc zero`` and credits
+    none of the incomplete step (a conservative lower bound), and does not
+    service timers.
 
     tick=True injects a vector-32 (scheduler) trap at every chunk boundary.
     That is NOT what the hardware does and NOT what dspboot.run does -- it
@@ -586,6 +594,9 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None):
     done, stop = 0, 'limit'
     base = pits.now if pits is not None else 0      # resume, do not rewind
     while done < instrs:
+        if pc == 0:
+            stop = 'pc zero'
+            break
         # No `remaining` in pits mode: run the whole deadline step and
         # overshoot `instrs` rather than truncating, so every emu_start
         # boundary is a timer deadline no matter how the caller splits its
@@ -598,6 +609,9 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None):
         pc = m.uc.reg_read(UC_M68K_REG_PC)
         if m.halt_vec is not None:
             stop = 'unhandled vector %d at %#010x' % (m.halt_vec, pc)
+            break
+        if pc == 0:
+            stop = 'pc zero'
             break
         done += step
         if pits is not None:

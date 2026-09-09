@@ -1,0 +1,128 @@
+{
+  "contract": "digitakt2.mcf5441x-mmio-reference",
+  "schema_version": 1,
+  "notes": "Stable hardware facts only, cross-checked against two independent sources: torvalds/linux (arch/m68k in-tree MCF5441x platform, GPL source cited as file/line references only) and the NetBurner NNDK's MCF5441x register headers (vendored at docs/refs/netburner-coldfire/, see its README for provenance/URL and corpus limitations). Every fact below carries its own 'source' field naming which corpus backs it -- do not assume one corpus for the whole file. See docs/refs/linux-m5441x-893e1178.md and docs/refs/netburner-mcf5441x-layout.md for full HW/QUIRK/POLICY/NEW labels, mismatches and open questions. Renamed from linux-m5441x-893e1178.json because DTIM base/register facts are now NetBurner-sourced, not Linux-sourced -- a single-vendor filename would misattribute them.",
+  "sources": {
+    "linux": {
+      "repo": "torvalds/linux",
+      "commit": "893e11787f78e43b534e252249ac3fff4d1333f8",
+      "clone_command": "git clone --filter=blob:none --sparse https://github.com/torvalds/linux /tmp/linux-m5441x && cd /tmp/linux-m5441x && git checkout 893e11787f78e43b534e252249ac3fff4d1333f8 && git sparse-checkout set arch/m68k drivers/mmc/host/sdhci-esdhc-mcf.c drivers/mmc/host/sdhci-esdhc.h"
+    },
+    "netburner": {
+      "corpus": "docs/refs/netburner-coldfire/",
+      "original_url": "https://www.netburner.com/NBDocsTest/Developer/html/",
+      "limitation": "headers only (declarations, macros), no .c implementation files, no reset values or behavioral documentation -- see docs/refs/netburner-coldfire/README.md"
+    }
+  },
+  "intc": {
+    "controllers": [
+      {"name": "INTC0", "base": "0xFC048000", "vector_base": 64, "icr0_offset": "0x40", "source": "linux", "source_ref": "arch/m68k/include/asm/m5441xsim.h:36-49"},
+      {"name": "INTC1", "base": "0xFC04C000", "vector_base": 128, "icr0_offset": "0x40", "source": "linux", "source_ref": "arch/m68k/include/asm/m5441xsim.h:36-49"},
+      {"name": "INTC2", "base": "0xFC050000", "vector_base": 192, "icr0_offset": "0x40", "source": "linux", "source_ref": "arch/m68k/include/asm/m5441xsim.h:36-49"}
+    ],
+    "icr_encoding": "raw level in low 3 bits (intc-simr family, not level<<3|priority)",
+    "icr_encoding_source": "linux",
+    "icr_encoding_source_ref": "arch/m68k/coldfire/Makefile:32 (CONFIG_M5441x -> intc-simr.o); arch/m68k/coldfire/intc-simr.c:118-124",
+    "imr_offset": "0x08",
+    "imr_offset_note": "IMRH at +0x08, IMRL at +0x0C -- NEW: not exercised by Linux's own intc-simr.c driver for this SoC (SIMR/CIMR only); NetBurner's intcstruct declares this offset independently for the same struct.",
+    "imr_offset_source": "netburner",
+    "imr_offset_source_ref": "arch/coldfire/cpu/MCF5441X/include/sim5441x.h:534-566 (intcstruct: imrh +0x08, imrl +0x0C)",
+    "simr_cimr_offset": {"simr": "0x1C", "cimr": "0x1D"},
+    "simr_cimr_offset_source": "both",
+    "simr_cimr_offset_source_ref": "linux: arch/m68k/coldfire/intc-simr.c (SIMR/CIMR write-source-number); netburner: sim5441x.h:534-566 (intcstruct.simr/cimr)"
+  },
+  "pit": {
+    "channels": [
+      {"channel": 0, "base": "0xFC080000", "intc": "INTC2", "source": 13, "vector": 205},
+      {"channel": 1, "base": "0xFC084000", "intc": "INTC2", "source": 14, "vector": 206},
+      {"channel": 2, "base": "0xFC088000", "intc": "INTC2", "source": 15, "vector": 207},
+      {"channel": 3, "base": "0xFC08C000", "intc": "INTC2", "source": 16, "vector": 208}
+    ],
+    "base_source": "linux",
+    "base_source_ref": "arch/m68k/include/asm/m5441xsim.h:104-114",
+    "clock_domain": "BUSCLK",
+    "clock_domain_source": "linux",
+    "clock_domain_source_ref": "arch/m68k/coldfire/m5441x.c:41-44 (DEFINE_CLK mcfpit.0..3, MCF_BUSCLK); arch/m68k/include/asm/m5441xsim.h:15 (MCF_BUSCLK = MCF_CLK / 2)"
+  },
+  "dtim": {
+    "channels": [
+      {"channel": 0, "base": "0xFC070000", "intc": "INTC0", "source": 32, "vector": 96},
+      {"channel": 1, "base": "0xFC074000", "intc": "INTC0", "source": 33, "vector": 97},
+      {"channel": 2, "base": "0xFC078000", "intc": "INTC0", "source": 34, "vector": 98},
+      {"channel": 3, "base": "0xFC07C000", "intc": "INTC0", "source": 35, "vector": 99}
+    ],
+    "base_source": "netburner",
+    "base_source_ref": "arch/coldfire/cpu/MCF5441X/include/sim5441x.h:1426 (timerstruct timer[4] at 0xFC07_0000..0xFC07_FFFF, 0x4000-byte stride) -- MCF5441x-address-specific, unlike the Linux dma_timer.c reference below which only covers a sibling part (CONFIG_M523x)",
+    "vector_source": "linux",
+    "vector_source_ref": "arch/m68k/include/asm/m5441xsim.h:63-66 (MCFINT0_TIMER0..3 = 32..35)",
+    "register_offsets": {
+      "DTMR": "0x00", "DTXMR": "0x02", "DTER": "0x03", "DTRR": "0x04", "DTCR": "0x08", "DTCN": "0x0C"
+    },
+    "register_offsets_source": "both",
+    "register_offsets_source_ref": "linux: arch/m68k/coldfire/dma_timer.c:22-27 (CONFIG_M523x DMA timer IP block, generic offsets, not m5441x-address-verified); netburner: sim5441x.h:663-674 (timerstruct: tmr/txmr/ter/trr/tcr/tcn at the same offsets, MCF5441x-specific)",
+    "clk_field": {
+      "bits": "[2:1] of DTMR",
+      "bus_div_1": "0b01",
+      "bus_div_16": "0b10"
+    },
+    "clk_field_source": "linux",
+    "clk_field_source_ref": "arch/m68k/coldfire/dma_timer.c:34-36 (DMA_DTMR_CLK_DIV_1 = 1<<1, DMA_DTMR_CLK_DIV_16 = 2<<1)",
+    "bus_div_16_clock_domain": "BUSCLK / 16",
+    "bus_div_16_clock_domain_source": "linux",
+    "bus_div_16_clock_domain_source_ref": "arch/m68k/coldfire/dma_timer.c:31 (DMA_FREQ = (MCF_CLK / 2) / 16)",
+    "trr_plus_one_status": "OPEN -- neither Linux's dma_timer.c (runs DTRR0=0, free-run, never exercises reload arithmetic) nor the NetBurner headers (declarations only, no .c using trr) confirm or contradict the (DTRR+1) reload convention emu/dtim.py uses from MCF5441XRM.pdf table 39-2. Not a contract fact; recorded here so this file does not silently imply it is cross-checked."
+  },
+  "uart": {
+    "channels": [
+      {"name": "UART8", "base": "0xEC070000", "intc": "INTC1", "source": 52, "vector": 180},
+      {"name": "UART9", "base": "0xEC074000", "intc": "INTC1", "source": 53, "vector": 181}
+    ],
+    "source": "linux",
+    "source_ref": "arch/m68k/include/asm/m5441xsim.h:161-171,188-193"
+  },
+  "gpio": {
+    "base": "0xEC094000",
+    "podr_offset": "0x00",
+    "pddr_offset": "0x0C",
+    "ppdsdr_offset": "0x18",
+    "pclrr_offset": "0x24",
+    "port_c_offset": 2,
+    "port_d_offset": 3,
+    "source": "linux",
+    "source_ref": "arch/m68k/include/asm/m5441xsim.h:236-268"
+  },
+  "esdhc": {
+    "base": "0xFC0CC000",
+    "base_source": "linux",
+    "base_source_ref": "arch/m68k/include/asm/m5441xsim.h:299-303",
+    "irq_source": 31,
+    "irq_vector": 223,
+    "irq_source_note": "NEW: NetBurner's own ISR table assigns eSDHC to INTC2 source 31; vector = INTC2 vector_base(192) + 31 = 223. Not stated by the Linux driver map (register layout only).",
+    "irq_source_source": "netburner",
+    "irq_source_source_ref": "arch/coldfire/cpu/MCF5441X/include/intcdefs.h (SETUP_SDHC_ISR = SetIntc(2, f, 31, l))",
+    "xfertyp_offset": "0x0C",
+    "xfertyp_command_index_bits": "[29:24]",
+    "xfertyp_layout_source": "linux",
+    "xfertyp_layout_source_ref": "drivers/mmc/host/sdhci-esdhc-mcf.c:97-114 (esdhc_mcf_writew_be combined TRANSFER_MODE/COMMAND write)",
+    "byte_lane_xor": 3,
+    "word_lane_xor": 2,
+    "lane_xor_source": "linux",
+    "lane_xor_source_ref": "drivers/mmc/host/sdhci-esdhc-mcf.c:129-158 (esdhc_mcf_readb_be/esdhc_mcf_readw_be)",
+    "vendor_dma_error_bit": 28,
+    "vendor_dma_error_bit_source": "linux",
+    "vendor_dma_error_bit_source_ref": "drivers/mmc/host/sdhci-esdhc-mcf.c:22 (ESDHC_INT_VENDOR_SPEC_DMA_ERR); deferred, not applicable to current firmware's eDMA-based transfers"
+  },
+  "edma": {
+    "base": "0xFC044000",
+    "tcd_base": "0xFC045000",
+    "tcd_stride": "0x20",
+    "tcd_offsets": {
+      "SADDR": "0x00", "ATTR": "0x04", "SOFF": "0x06", "NBYTES": "0x08",
+      "SLAST": "0x0C", "DADDR": "0x10", "CITER": "0x14", "DOFF": "0x16",
+      "DLAST_SGA": "0x18", "BITER": "0x1C", "CSR": "0x1E"
+    },
+    "source": "netburner",
+    "source_ref": "arch/coldfire/cpu/MCF5441X/include/sim5441x.h:483-497,527,1404 (edmastruct, edma_tcdstruct: base 0xFC04_4000, tcd[64] at 0xFC04_5000, 0x20-byte stride, CITER at +0x14 / BITER at +0x1C -- the non-Kinetis ordering emu/edma.py's docstring already flags)",
+    "note": "Matches emu/edma.py's EDMA_BASE/TCD_BASE/field offsets, which were already reverse-engineered from a live firmware trace (TCD35 at 0xFC045460) and MCF5441XRM.pdf ch.23, not from Linux. NetBurner corroborates; not the origin of these constants."
+  }
+}

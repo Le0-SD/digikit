@@ -1,3 +1,17 @@
+diff --git a/qemu/target/m68k/translate.c b/qemu/target/m68k/translate.c
+index 5b9a74c..5b3e497 100644
+--- a/qemu/target/m68k/translate.c
++++ b/qemu/target/m68k/translate.c
+@@ -6335,6 +6335,9 @@ static void m68k_tr_translate_insn(DisasContextBase *dcbase, CPUState *cpu)
+         // Sync PC in advance
+         tcg_gen_movi_i32(tcg_ctx, QREG_PC, dc->pc);
+ 
++        // The hook can stop before normal TB finalization.  Commit lazy CCR
++        // from the preceding instruction before exposing host-visible state.
++        update_cc_op(dc);
+         gen_uc_tracecode(tcg_ctx, 2, UC_HOOK_CODE_IDX, uc, dc->pc);
+         // the callback might want to stop emulation immediately
+         check_exit_request(tcg_ctx);
 diff --git a/qemu/target/m68k/unicorn.c b/qemu/target/m68k/unicorn.c
 index 42ef1ff..bb1d5b6 100644
 --- a/qemu/target/m68k/unicorn.c
