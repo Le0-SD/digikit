@@ -358,7 +358,7 @@ class Panel(tk.Frame):
 class App(tk.Tk):
     def __init__(self, snapshot, weakptr=False, slc=False, scale=None, syx=None):
         super().__init__()
-        self.title('Digitakt II - panel')
+        self.title('Digi emulator')
         self.configure(bg='#15181d')
         self.snapshot = snapshot
         # 128x64 is unreadable at 1:1. Default to the largest integer zoom that
