@@ -259,8 +259,20 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     #               what stops the priority-3 job worker monopolising the
     #               CPU. Digitakt 0x40128d0e; resolved per build as
     #               profile.sleep_pend.
+    #   tick_pend     the pend at the top of the RTOS tick dispatcher: pend_b
+    #               (tick_sem); mutex_lock(m); run every due callback;
+    #               mutex_unlock(m); repeat. Unlike the entries above, this
+    #               wait does not gate a re-checked condition -- it IS the
+    #               tick pacing. Satisfying it turns a tick-paced loop
+    #               free-running, which ran the 54-slot software timer wheel
+    #               ~100x per real tick and starved the priority-6 Main OS
+    #               task before it could finish initialising. The pend site
+    #               is the same address, 0x40002a70, in both builds; the
+    #               semaphore it pends differs per build. Resolved per build
+    #               as profile.tick_pend.
     recheck = tuple(a for a in (profile.queue_recv, profile.intro_park,
-                                profile.display_wait, profile.pump_wait)
+                                profile.display_wait, profile.pump_wait,
+                                profile.tick_pend)
                     if a is not None)
     # Only correct when DTIM1 is actually delivered; see build(real_sleep=...).
     real_sleep_pends = tuple(a for a in (profile.sleep_pend,) if a is not None)

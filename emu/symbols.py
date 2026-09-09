@@ -511,6 +511,33 @@ SYMBOLS = [
                       '7001266a002c1f4000304200'), False),
     ('sleep_pend', Offset('pend_call', 6), False),
 
+    # tick_dispatch is the RTOS tick-paced dispatcher loop: pend_b(tick_sem);
+    # mutex_lock(m); run every due callback; mutex_unlock(m); repeat. The
+    # pend at the top of that loop IS the pacing -- it is what holds the
+    # loop to one pass per real tick. Force-satisfying it (as longrun's
+    # unblock briefly did) does not re-check a condition the way the other
+    # recheck entries above do; it makes a tick-paced loop free-running,
+    # which ran the 54-slot software timer wheel roughly 100x per real tick
+    # and starved the priority-6 Main OS task before it could finish
+    # initialising. Verified byte-identical at 0x40002a46 in both Digitakt
+    # II 1.15C and Digitone II 1.10E, and the 36-byte signature below occurs
+    # exactly once in each image. It covers the frame setup, the movem.l,
+    # clr.l d2, the three lea.l loads of fixed RTOS routines (pend_b
+    # 0x400013a6, mutex_lock 0x40001608, mutex_unlock 0x4000172a -- all at
+    # stable RTOS addresses in both builds), the loop-top move.l d2,d3 /
+    # addq.l #1,d3 / eor.l d3,d2, and the pea OPCODE only. The two pea
+    # OPERANDS just past the signature are deliberately excluded: they are
+    # the build-specific tick semaphore and mutex (Digitone 0x46488008 /
+    # 0x464880d0, Digitakt 0x47d9ade0 / 0x47d9aea8).
+    ('tick_dispatch', Fixed(0x40002a46,
+                            verify='4fefffe848d73c0c428249f9400013a6'
+                                   '4bf94000160847f94000172a26025283'
+                                   'b7824879'), False),
+    # tick_pend is the return address of the `jsr (a4)` at tick_dispatch+0x28;
+    # jsr (aN) is two bytes, so the pend returns to tick_dispatch+0x2a -- the
+    # same idiom as sleep_pend being pend_call + 6 above.
+    ('tick_pend', Offset('tick_dispatch', 0x2a), False),
+
     # ----------------------------------------------------------------
     # Bitmap::setPixel / getPixel, and the blit that pushes a Bitmap into
     # the panel's framebuffer. Each of the pixel routines has a near-twin
