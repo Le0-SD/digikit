@@ -110,6 +110,7 @@ def run_arm(args, profile, main_img):
            for a, n in blocks.most_common(args.top)]
 
     return {
+        "intro_live_at_restore": bool(intro),
         "instrs": done,
         "post_intro_instrs": None if post_at is None else done - post_at,
         "stop": stop,
@@ -142,8 +143,11 @@ def classify(obs):
         return "CRASHED", ["stop reason %r" % obs["stop"]]
 
     marks = obs["marks"]
-    if not marks.get("intro_done"):
-        return "PRE_INTRO", ["intro_done never fired"]
+    # A rung saved after the intro has no intro to hand over, so intro_done
+    # never fires for it. That is "already past the intro", not "not there
+    # yet" -- only require the handover when the intro was live at restore.
+    if obs.get("intro_live_at_restore", True) and not marks.get("intro_done"):
+        return "PRE_INTRO", ["intro was live at restore but intro_done never fired"]
 
     checks = {
         "mainloop entered": marks.get("mainloop", 0) > 0,
@@ -182,8 +186,13 @@ def main():
     ap.add_argument("--step", type=int, default=10_000_000)
     ap.add_argument("--top", type=int, default=20)
     ap.add_argument("--slc", action="store_true", default=True)
-    ap.add_argument("--no-profile", dest="profile", action="store_false",
-                    default=True)
+    # OFF by default: UC_HOOK_BLOCK fires on every basic block and perturbs
+    # m68k translation enough to change the outcome, not just the timing --
+    # the same resume reached the Main OS message loop with it off and did
+    # not with it on. Use it to find a hot loop, never to decide pass/fail.
+    ap.add_argument("--profile", action="store_true", default=False,
+                    help="collect a basic-block profile; perturbs the run, "
+                         "so never combine with a pass/fail claim")
     ap.add_argument("--verify", action="store_true",
                     help="run two independent arms and require agreement")
     ap.add_argument("--json", help="write the full report here")
