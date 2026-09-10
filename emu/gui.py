@@ -105,6 +105,7 @@ class Emulator(threading.Thread):
                                     # firmware's own framebuffer (main OS).
         self._last_panel = None     # last panel buffer drawn, to skip repeats
         self._panel_live = False    # seen the OS draw into it at least once
+        self._panel_latch = None    # newest untorn frame, grabbed at diff entry
         self.fb_front = None        # resolved once the image is known -- see run()
         self.profile = None         # the whole symbol profile, same point
 
@@ -215,6 +216,29 @@ class Emulator(threading.Thread):
                 'jobs', mark['jobs'] + 1))
         # 0x4012d2fa is `bra.b` to itself -- the loop the abort path lands in.
         at(0x4012d2fa, lambda uc, a, s, d: mark.__setitem__('terminal', True))
+
+        # Latch the frame at the diff's entry, which emu/panel.py documents as
+        # the one moment [FRONT] is a complete, just-rendered frame. Reading it
+        # at an arbitrary moment instead -- which _publish_panel used to do --
+        # is wrong twice over: mid-flush it is torn on a page boundary, and
+        # once the diff has swapped, [FRONT] is the buffer being rendered into
+        # NEXT rather than the one on the panel. On screen that is a UI that
+        # flickers and elements that come and go between frames.
+        #
+        # This is the same hook emu.panel.Capture installs, and it does change
+        # the run it observes -- but this window already hooks intro_done,
+        # mainloop, job_pump and the terminal loop, and it is a viewer, not a
+        # measurement. Anything comparing totals should not be reading a GUI.
+        if profile.panel_diff is not None and profile.fb_front is not None:
+            def latch_frame(uc, a, s_, d):
+                buf = panel.read(m, profile.fb_front)
+                if buf is not None:
+                    self._panel_latch = buf
+            at(profile.panel_diff, latch_frame)
+        else:
+            print('[gui] WARNING: panel_diff/fb_front did not resolve for this '
+                  'image; falling back to reading the framebuffer at an '
+                  'arbitrary moment, which may tear', flush=True)
         self.ready.set()
         self.stats['status'] = 'running'
         while not self.stop_flag.is_set():
@@ -272,15 +296,22 @@ class Emulator(threading.Thread):
     def _publish_panel(self, m):
         """Once the OS owns the panel, draw the firmware's framebuffer.
 
-        `panel.read` is a plain memory read and installs no hook, so polling it
-        once per BUDGET costs nothing and cannot perturb the run. A frame is
-        counted when the bytes change, which is the firmware's own notion of a
-        new frame -- unlike the setPixel path, which has to infer one from a
-        repeated coordinate.
+        The frame comes from `_panel_latch`, grabbed at the diff's entry where
+        emu/panel.py guarantees [FRONT] is complete and untorn. Polling the
+        pointer here instead would sample at an arbitrary point in the flush
+        and, after a swap, read the buffer being rendered into next -- the
+        window flickered for exactly that reason. The fallback read is only
+        for an image where panel_diff did not resolve, so no latch exists.
+
+        A frame is counted when the bytes change, which is the firmware's own
+        notion of a new frame -- unlike the setPixel path, which has to infer
+        one from a repeated coordinate.
         """
         if not self.use_panel:
             return
-        buf = panel.read(m, self.fb_front)
+        buf = self._panel_latch
+        if buf is None:
+            buf = panel.read(m, self.fb_front)
         if buf is None or buf == self._last_panel:
             return
         px = panel.lit(buf)
