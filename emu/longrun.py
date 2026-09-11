@@ -36,7 +36,7 @@ PEND_A, PEND_B = 0x4000141a, 0x400013a6   # sem object is the arg at 4(a7)
 def build(snapshot, send=b'', syx=None, isa='scoped',
           unblock=False, softfloat=False, bitmap=False, on_pixel=None,
           unblock_except=(), edma=True, real_sleep=False, dsp=False,
-          srtrap=False, weakptr=False, slc=False, sdgate=False, esdhc=False,
+          srtrap=False, weakptr=False, slc=False, sdgate=True, esdhc=True,
           trace=None, trace_path=None, trace_ranges=(), trace_registers=None,
           deferred_components=()):
     """Stand up a hooked Machine and restore `snapshot` onto it.
@@ -175,12 +175,15 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     move through the SoC eDMA with SADDR=DATPORT and nothing backs them, so
     read_blocks returns zeros.
 
-    It is a hardware model, not a shortcut, but it is OFF by default because
-    on its own it makes things worse: with the gate satisfied the driver
-    proceeds and then spins forever at 0x4012001e waiting for SYSCTL's INITA
-    bit to self-clear, since nothing yet models the controller. 36,988,467
-    SYSCTL reads and no progress. Turn it on when there is an eSDHC model
-    behind it.
+    Both default to True now. Without them the firmware's SD bring-up never
+    runs, the storage-ready flag stays 0, and every block-storage read
+    returns -1. With them on, both builds reach MAIN_OS_RUNNING under
+    tools/bootcheck.py --verify: Digitone's display module initialises for
+    the first time, and Digitakt's cold boot creates 9 tasks instead of 5,
+    including the priority-6 Main OS task at entry 0x40032f5a. Digitakt
+    reaches MAIN_OS_RUNNING both with and without them, so turning them on
+    does not regress the previously-working build. Pass sdgate=False and/or
+    esdhc=False to get the old unmodelled-storage behaviour back.
     """
     if trace is not None and trace_path is not None:
         raise ValueError('pass either trace or trace_path, not both')

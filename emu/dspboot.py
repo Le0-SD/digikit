@@ -147,17 +147,25 @@ def build_flash(syx_path, size=0x1000000):
 def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
         patch_sem=True, patch_depack=True, verbose=False, stall_window=3_000_000,
         extra_hook=None, fast=True, resume_from=None, machine_out=None,
-        pre_start=None, sdgate=False, esdhc=False):
+        pre_start=None, sdgate=True, esdhc=True):
     """resume_from: path to a snapshot (see emu/snapshot.py). Loads registers
     and memory instead of starting at ENTRY, but installs the *same* hooks, so
     a resumed run behaves identically to the equivalent straight run. Without
     that the resumed run would miss flash HLE, the semaphore patch and the
     scheduler tick, and silently diverge.
     sdgate: install emu.gpio.SdGate, modelling the GPIO loopback the cold-boot
-    continuity check reads.
-    esdhc: install emu.esdhc.Esdhc behind it, using profile.sd_status as its
-    drv_status (None if unresolved, in which case Esdhc falls back to its own
-    module default).
+    continuity check reads. esdhc: install emu.esdhc.Esdhc behind it, using
+    profile.sd_status as its drv_status (None if unresolved, in which case
+    Esdhc falls back to its own module default). Both default to True: without
+    them the firmware's SD bring-up never runs, the storage-ready flag stays
+    0, and every block-storage read returns -1. With them on, both builds
+    reach MAIN_OS_RUNNING under tools/bootcheck.py --verify -- Digitone's
+    display module initialises for the first time, and Digitakt's cold boot
+    creates 9 tasks instead of 5, including the priority-6 Main OS task at
+    entry 0x40032f5a. Digitakt reaches MAIN_OS_RUNNING both with and without
+    them, so turning them on does not regress the previously-working build.
+    Pass sdgate=False and/or esdhc=False for the old unmodelled-storage
+    behaviour.
     machine_out: if given, receives 'm' (the Machine) and 'st' (the stats
     dict) before emu_start is called, so a pre_start hook can see both."""
     """fast=True (default): FF1/MOVEC and every HOT_ADDRS side effect are

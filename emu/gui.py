@@ -148,6 +148,9 @@ class Emulator(threading.Thread):
             # spin at 0x400cf4ec on its very first transfer and none of the
             # five jobs queued at boot ever runs. See emu/dsp.py.
             extra = {'syx': self.syx} if self.syx else {}
+            # sdgate/esdhc are not passed here -- build()'s own defaults
+            # (True) supply the SD storage models, so they come along with
+            # every call site that does not explicitly override them.
             m, ev, st, pc, inq, at = build(self.snapshot, unblock=True,
                                            softfloat=True, bitmap=True,
                                            dsp=True, on_pixel=on_pixel,

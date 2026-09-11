@@ -190,11 +190,22 @@ def main():
     # A snapshot built by a ladder that had these on is storage-up, and the
     # driver keeps issuing commands after the resume, so the controller has
     # to still be there. Resuming such a rung without them leaves those
-    # commands unanswered. See emu/checkpoint.py's make().
-    ap.add_argument("--sdgate", action="store_true", default=False,
-                    help="install the emu/gpio.py board loopback")
-    ap.add_argument("--esdhc", action="store_true", default=False,
-                    help="install the emu/esdhc.py controller model")
+    # commands unanswered. See emu/checkpoint.py's make(). Default True:
+    # without them the firmware's SD bring-up never runs, the storage-ready
+    # flag stays 0, and every block-storage read returns -1. With them on,
+    # both builds reach MAIN_OS_RUNNING under --verify -- Digitone's display
+    # module initialises for the first time, and Digitakt's cold boot creates
+    # 9 tasks instead of 5, including the priority-6 Main OS task at entry
+    # 0x40032f5a. Digitakt reaches MAIN_OS_RUNNING both with and without
+    # them, so turning them on does not regress the previously-working build.
+    ap.add_argument("--sdgate", dest="sdgate", action="store_true", default=True,
+                    help="install the emu/gpio.py board loopback (default on)")
+    ap.add_argument("--no-sdgate", dest="sdgate", action="store_false",
+                    help="do not install the emu/gpio.py board loopback")
+    ap.add_argument("--esdhc", dest="esdhc", action="store_true", default=True,
+                    help="install the emu/esdhc.py controller model (default on)")
+    ap.add_argument("--no-esdhc", dest="esdhc", action="store_false",
+                    help="do not install the emu/esdhc.py controller model")
     # OFF by default: UC_HOOK_BLOCK fires on every basic block and perturbs
     # m68k translation enough to change the outcome, not just the timing --
     # the same resume reached the Main OS message loop with it off and did

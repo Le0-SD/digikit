@@ -2,10 +2,12 @@
 """Create a boot snapshot, and resume from one.
 
 make:   uv run python -m emu.checkpoint make 60000000,400000000 [prefix] [syx]
-        [--sdgate --esdhc]
+        [--no-sdgate --no-esdhc]
 resume: uv run python -m emu.checkpoint resume snapshots/boot400M.snap 5000000
 """
 
+import hashlib
+import json
 import os
 import sys
 
@@ -51,7 +53,7 @@ def save_longrun(machine, ev, timers, path, extra=None):
 
 
 def make(points, prefix="snapshots/boot", syx=None, img_path=None,
-         sdgate=False, esdhc=False):
+         sdgate=True, esdhc=True):
     """Save a LADDER of checkpoints in one pass.
 
     `points` is a list of instruction counts. Saving mid-run is safe because
@@ -65,6 +67,16 @@ def make(points, prefix="snapshots/boot", syx=None, img_path=None,
     64,164,269 on Digitone -- before the first rung at 60M -- so a ladder
     built without them bakes "no storage" into every rung, and no amount of
     enabling them at resume time can undo that.
+
+    Both default to True now: without them the firmware's SD bring-up never
+    runs, the storage-ready flag stays 0, and every block-storage read
+    returns -1. With them on, both builds reach MAIN_OS_RUNNING under
+    tools/bootcheck.py --verify -- Digitone's display module initialises for
+    the first time, and Digitakt's cold boot creates 9 tasks instead of 5,
+    including the priority-6 Main OS task at entry 0x40032f5a. Digitakt
+    reaches MAIN_OS_RUNNING both with and without them, so turning them on
+    does not regress the previously-working build. Pass sdgate=False and/or
+    esdhc=False to get the old unmodelled-storage behaviour back.
     """
     syx = config.firmware(syx)
     image_path = config.main_image(img_path)
@@ -124,6 +136,25 @@ def make(points, prefix="snapshots/boot", syx=None, img_path=None,
         sdgate=sdgate,
         esdhc=esdhc,
     )
+    if box["saved"]:
+        # A snapshot carries no manifest on the cold-boot path -- save() is
+        # called above without one -- so this sidecar is what lets a later
+        # run (emu/run.py's need_snapshot) tell a ladder built with these
+        # storage models from one built without them, instead of silently
+        # resuming a mismatched configuration.
+        from emu.run import ladder_config_path
+        cfg_path = ladder_config_path(prefix)
+        # pi-lens-ignore: ast-grep:unchecked-throwing-call-python
+        os.makedirs(os.path.dirname(cfg_path) or ".", exist_ok=True)
+        # pi-lens-ignore: ast-grep:unchecked-throwing-call-python
+        with open(cfg_path, "w") as fh:
+            json.dump({
+                "protocol": 1,
+                "sdgate": bool(sdgate),
+                "esdhc": bool(esdhc),
+                "points": points,
+                "main_sha256": hashlib.sha256(img).hexdigest(),
+            }, fh)
     return box["saved"]
 
 
@@ -194,9 +225,10 @@ if __name__ == "__main__":
     # Pulled out before the positional parse so they can be passed in any
     # position without disturbing the existing `make POINTS [prefix] [syx]`
     # argument order that emu/run.py relies on.
-    argv = [a for a in sys.argv if a not in ("--sdgate", "--esdhc")]
-    want_sdgate = "--sdgate" in sys.argv
-    want_esdhc = "--esdhc" in sys.argv
+    argv = [a for a in sys.argv
+            if a not in ("--sdgate", "--esdhc", "--no-sdgate", "--no-esdhc")]
+    want_sdgate = "--no-sdgate" not in sys.argv
+    want_esdhc = "--no-esdhc" not in sys.argv
 
     cmd = argv[1]
     if cmd == "make":

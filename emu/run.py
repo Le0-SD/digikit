@@ -13,6 +13,7 @@ and built if it can be. There are three, and only the first is yours to find:
   3. a boot snapshot, which this builds for you on first run (a few minutes).
 """
 import hashlib
+import json
 import os
 import struct
 import subprocess
@@ -28,6 +29,23 @@ MARKER = '.source-sha256'
 
 def marker_path():
     return os.path.join(config.sections_dir(), MARKER)
+
+
+LADDER_CONFIG = '.ladder.json'
+
+
+def ladder_config_path(prefix):
+    """-> path of the sidecar recording what a ladder was built with.
+
+    A snapshot carries no manifest on the cold-boot path -- snapshot.save is
+    called without one there -- so nothing in the .snap file itself records
+    whether sdgate/esdhc were installed for the build that produced it. This
+    sidecar is what makes a configuration change (e.g. turning storage models
+    on) invalidate an existing ladder instead of silently resuming it into a
+    mixed state: hooks installed now that were not there when the state was
+    captured.
+    """
+    return os.path.join(os.path.dirname(prefix) or '.', LADDER_CONFIG)
 
 
 def sha256(path):
@@ -183,17 +201,58 @@ def need_sections(syx):
     config.main_image()          # confirm; raises config.NotFound if not
 
 
-def need_snapshot(snapshot, prefix, syx):
-    """Build the boot ladder if the snapshot is not there. -> True if built."""
+def need_snapshot(snapshot, prefix, syx, sdgate=True, esdhc=True, main_sha256=None):
+    """Build the boot ladder if the snapshot is missing OR stale. -> True if built.
+
+    "Stale" covers more than "absent": a ladder built by an older version of
+    this code has no storage models baked in, and resuming it now that
+    build()/run() install sdgate/esdhc by default would silently mix an
+    unmodelled-storage cold boot with a storage-modelled resume. The sidecar
+    written by emu.checkpoint.make (see emu/run.py's ladder_config_path) is
+    what makes that detectable: a snapshot itself carries no manifest on the
+    cold-boot path (snapshot.save is called without one there), so without
+    the sidecar there would be nothing to compare against.
+    """
     if os.path.exists(snapshot):
-        return False
+        cfg_path = ladder_config_path(prefix)
+        try:
+            # pi-lens-ignore: ast-grep:unchecked-throwing-call-python
+            with open(cfg_path) as fh:
+                cfg = json.load(fh)
+        except (OSError, ValueError):
+            print('Rebuilding: existing snapshots have no %s sidecar, so '
+                  'their storage-model configuration is unknown.\n' % cfg_path,
+                  flush=True)
+        else:
+            if bool(cfg.get('sdgate')) != bool(sdgate):
+                print('Rebuilding: existing snapshots were built with '
+                      'sdgate=%s, this run wants sdgate=%s.\n'
+                      % (cfg.get('sdgate'), sdgate), flush=True)
+            elif bool(cfg.get('esdhc')) != bool(esdhc):
+                print('Rebuilding: existing snapshots were built with '
+                      'esdhc=%s, this run wants esdhc=%s.\n'
+                      % (cfg.get('esdhc'), esdhc), flush=True)
+            elif main_sha256 is not None and cfg.get('main_sha256') != main_sha256:
+                print('Rebuilding: existing snapshots were built from a '
+                      'different MAIN OS image.\n', flush=True)
+            else:
+                return False
     # pi-lens-ignore: ast-grep:unchecked-throwing-call-python
     os.makedirs(os.path.dirname(snapshot) or '.', exist_ok=True)
-    print('No %s yet. Building the boot snapshots -- one cold boot from\n'
-          'reset, about 400M instructions, so expect a few minutes. This\n'
-          'happens once.\n' % snapshot, flush=True)
+    # The stale paths above have already printed why they are rebuilding, so
+    # only claim the snapshot is absent when it actually is -- otherwise this
+    # reads as a contradiction right under "Rebuilding: existing snapshots...".
+    if os.path.exists(snapshot):
+        print('Rebuilding the boot snapshots -- one cold boot from reset,\n'
+              'about 400M instructions, so expect a few minutes.\n', flush=True)
+    else:
+        print('No %s yet. Building the boot snapshots -- one cold boot from\n'
+              'reset, about 400M instructions, so expect a few minutes. This\n'
+              'happens once.\n' % snapshot, flush=True)
     r = subprocess.run([sys.executable, '-m', 'emu.checkpoint', 'make',
-                        LADDER, prefix, syx])
+                        LADDER, prefix, syx,
+                        '--sdgate' if sdgate else '--no-sdgate',
+                        '--esdhc' if esdhc else '--no-esdhc'])
     if r.returncode != 0 or not os.path.exists(snapshot):
         raise SystemExit('Snapshot build failed; cannot continue.')
     print('\nBuilt %s.\n' % snapshot)
@@ -240,7 +299,7 @@ def main(argv):
         print('Checks passed. firmware=%s  sections=%s/  snapshot=%s'
               % (syx, config.sections_dir(), snapshot))
         return 0
-    need_snapshot(snapshot, prefix, syx)
+    need_snapshot(snapshot, prefix, syx, main_sha256=sha256(config.main_image()))
     # Only when the user did not name one: an explicit snapshot is an
     # instruction, not a suggestion.
     if len(rest) <= 1:
