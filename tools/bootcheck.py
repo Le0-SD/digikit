@@ -52,7 +52,8 @@ def run_arm(args, profile, main_img):
 
     m, ev, st, pc, inq, at = build(
         args.snapshot, syx=args.syx, unblock=True, softfloat=True,
-        bitmap=True, dsp=True, slc=args.slc)
+        bitmap=True, dsp=True, slc=args.slc,
+        sdgate=args.sdgate, esdhc=args.esdhc)
 
     intro = intro_running(m, profile.intro_pit3_isr)
     pits = Timers(Pits(m, hold=intro), Dtims(m, channels=(3,), hold=intro))
@@ -186,6 +187,14 @@ def main():
     ap.add_argument("--step", type=int, default=10_000_000)
     ap.add_argument("--top", type=int, default=20)
     ap.add_argument("--slc", action="store_true", default=True)
+    # A snapshot built by a ladder that had these on is storage-up, and the
+    # driver keeps issuing commands after the resume, so the controller has
+    # to still be there. Resuming such a rung without them leaves those
+    # commands unanswered. See emu/checkpoint.py's make().
+    ap.add_argument("--sdgate", action="store_true", default=False,
+                    help="install the emu/gpio.py board loopback")
+    ap.add_argument("--esdhc", action="store_true", default=False,
+                    help="install the emu/esdhc.py controller model")
     # OFF by default: UC_HOOK_BLOCK fires on every basic block and perturbs
     # m68k translation enough to change the outcome, not just the timing --
     # the same resume reached the Main OS message loop with it off and did
@@ -209,6 +218,8 @@ def main():
     report = {
         "snapshot": args.snapshot,
         "syx": args.syx,
+        "sdgate": bool(args.sdgate),
+        "esdhc": bool(args.esdhc),
         "verdict": verdict,
         "reasons": reasons,
         "digest": digest(arms[0]),

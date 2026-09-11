@@ -2,6 +2,7 @@
 """Create a boot snapshot, and resume from one.
 
 make:   uv run python -m emu.checkpoint make 60000000,400000000 [prefix] [syx]
+        [--sdgate --esdhc]
 resume: uv run python -m emu.checkpoint resume snapshots/boot400M.snap 5000000
 """
 
@@ -49,12 +50,21 @@ def save_longrun(machine, ev, timers, path, extra=None):
     )
 
 
-def make(points, prefix="snapshots/boot", syx=None, img_path=None):
+def make(points, prefix="snapshots/boot", syx=None, img_path=None,
+         sdgate=False, esdhc=False):
     """Save a LADDER of checkpoints in one pass.
 
     `points` is a list of instruction counts. Saving mid-run is safe because
     save() only reads state; emulation continues afterwards. One slow pass
     yields several resume points, so later blocker work can start deep.
+
+    `sdgate`/`esdhc` install the board loopback of emu/gpio.py and the
+    controller of emu/esdhc.py for the cold boot itself. They belong here
+    rather than only on the longrun resume path because the continuity check
+    that decides whether storage comes up at all runs at instruction
+    64,164,269 on Digitone -- before the first rung at 60M -- so a ladder
+    built without them bakes "no storage" into every rung, and no amount of
+    enabling them at resume time can undo that.
     """
     syx = config.firmware(syx)
     image_path = config.main_image(img_path)
@@ -111,6 +121,8 @@ def make(points, prefix="snapshots/boot", syx=None, img_path=None):
         fast=True,
         verbose=False,
         machine_out=box,
+        sdgate=sdgate,
+        esdhc=esdhc,
     )
     return box["saved"]
 
@@ -179,16 +191,23 @@ def extend(path, points, prefix="snapshots/ext", chunk=500_000):
 if __name__ == "__main__":
     import time
 
-    cmd = sys.argv[1]
+    # Pulled out before the positional parse so they can be passed in any
+    # position without disturbing the existing `make POINTS [prefix] [syx]`
+    # argument order that emu/run.py relies on.
+    argv = [a for a in sys.argv if a not in ("--sdgate", "--esdhc")]
+    want_sdgate = "--sdgate" in sys.argv
+    want_esdhc = "--esdhc" in sys.argv
+
+    cmd = argv[1]
     if cmd == "make":
-        pts = _points(sys.argv[2])
-        prefix = sys.argv[3] if len(sys.argv) > 3 else "snapshots/boot"
-        syx = sys.argv[4] if len(sys.argv) > 4 else None
-        make(pts, prefix, syx)
+        pts = _points(argv[2])
+        prefix = argv[3] if len(argv) > 3 else "snapshots/boot"
+        syx = argv[4] if len(argv) > 4 else None
+        make(pts, prefix, syx, sdgate=want_sdgate, esdhc=want_esdhc)
     elif cmd == "extend":
-        snap = sys.argv[2]
-        pts = _points(sys.argv[3])
-        prefix = sys.argv[4] if len(sys.argv) > 4 else "snapshots/ext"
+        snap = argv[2]
+        pts = _points(argv[3])
+        prefix = argv[4] if len(argv) > 4 else "snapshots/ext"
         t0 = time.time()
         saved, m, ev, stop = extend(snap, pts, prefix)
         print(
@@ -198,10 +217,10 @@ if __name__ == "__main__":
         print("new tasks: %s" % ["0x%08x/p%d" % (e, p) for e, p, _ in ev["tasks"]])
         print("prints   : %r" % ev["prints"][:20])
     else:
-        path = sys.argv[2]
+        path = argv[2]
         extra = (
-            _integer(sys.argv[3], "instruction count")
-            if len(sys.argv) > 3
+            _integer(argv[3], "instruction count")
+            if len(argv) > 3
             else 2_000_000
         )
         t0 = time.time()
