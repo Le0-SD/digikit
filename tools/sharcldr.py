@@ -1,0 +1,250 @@
+#!/usr/bin/env python3
+"""Parse and characterise the SHARC DSP blob (container section 7).
+
+Section 7 is the SHARC DSP image. The ColdFire MAIN OS makes no audio; it
+RPCs parameter changes to this DSP, so anything sound-related lives here.
+
+The blob is NOT a pure boot-stream: only the first 11,248 bytes parse as ADI
+boot-stream blocks, and that prologue is byte-identical between Digitakt II
+1.15C and Digitone II 1.10E, so it is a shared second-stage loader, not
+product code. The product-specific material is everything after it, in a
+format this tool does not decode.
+
+The blob begins with an ADI boot-stream: a 16-byte, little-endian, four
+32-bit-field (block_code, target_address, byte_count, argument) header per
+block. A header is valid iff the byte-wise XOR of all 16 header bytes is
+zero -- that is the format's header checksum and the reliable way to find
+block boundaries. block_code bit 12 is FILL: when set, no payload follows
+the header (the block is a zero/constant fill of byte_count bytes);
+otherwise exactly byte_count payload bytes follow. Other block_code bits are
+NOT decoded here -- their ADI semantics have not been verified, so this
+tool only reports them as bitN rather than inventing meanings.
+
+Measured region split, as examples, not universal rules: Digitakt's tail
+(everything after the 11,248-byte prologue) is roughly 56 KB of float-like
+tables and 244 KB of "other"; Digitone's tail is roughly 72 KB float and
+712 KB other -- Digitone's blob is 833,060 bytes total against Digitakt's
+320,780. `kind` is a heuristic over bit patterns only: "float" means the
+32-bit words decode as plausible little-endian IEEE-754 floats, which is
+strong evidence of coefficient or wavetable data; "other" means only "not
+obviously float or zero" -- it is NOT evidence of executable code.
+Confirming code needs a SHARC disassembler, and stock Ghidra 12.1.3 ships
+no SHARC, Blackfin or ADSP processor module (verified by listing its
+Processors directory).
+
+A previously circulated figure of "32 blocks, 178,796 of 320,780 bytes
+loaded" does not reproduce with this parser: it finds 4 blocks and 11,184
+payload bytes. That is a discrepancy to re-check, not a claim that either
+figure is right.
+
+Usage:
+    uv run python tools/sharcldr.py section_7_digitakt.bin --json out.json
+    uv run python tools/sharcldr.py section_7_digitakt.bin --dump-blocks blocks/
+"""
+import argparse, hashlib, json, os, struct, sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+HEADER_LEN = 16
+FILL_BIT = 12
+
+# Bits 24-31 of block_code are the header checksum byte, not flags: the whole
+# 16-byte header XORs to zero, and that byte is what makes it do so. Reporting
+# them as flags is how every block ends up looking like it has eight of them.
+# Every shipping block here has 0xad there, which is a property of the other
+# fields, not a meaning.
+HDRCHK_SHIFT = 24
+
+
+def _flags(block_code):
+    flags = []
+    for bit in range(HDRCHK_SHIFT):
+        if block_code & (1 << bit):
+            flags.append("FILL" if bit == FILL_BIT else "bit%d" % bit)
+    return flags
+
+
+def _header_valid(hdr):
+    x = 0
+    for b in hdr:
+        x ^= b
+    return x == 0
+
+
+def parse_blocks(data):
+    """Walk the ADI boot-stream, returning parsed block dicts.
+
+    Stops at the first invalid header (bad checksum) or at any header whose
+    payload would overrun the file.
+    """
+    blocks = []
+    offset = 0
+    index = 0
+    while offset + HEADER_LEN <= len(data):
+        hdr = data[offset:offset + HEADER_LEN]
+        if not _header_valid(hdr):
+            break
+        block_code, target_address, byte_count, argument = struct.unpack(
+            "<IIII", hdr)
+        fill = bool(block_code & (1 << FILL_BIT))
+        payload_offset = offset + HEADER_LEN
+        payload_len = 0 if fill else byte_count
+        if payload_offset + payload_len > len(data):
+            break
+        blocks.append({
+            "index": index,
+            "offset": offset,
+            "block_code": block_code,
+            "target_address": target_address,
+            "byte_count": byte_count,
+            "argument": argument,
+            "fill": fill,
+            "flags": _flags(block_code),
+            "payload_offset": payload_offset,
+            "payload_len": payload_len,
+        })
+        offset = payload_offset + payload_len
+        index += 1
+    return blocks
+
+
+def _is_float_like(word):
+    try:
+        f = struct.unpack("<f", struct.pack("<I", word))[0]
+    except struct.error:
+        return False
+    if f != f:  # NaN
+        return False
+    af = abs(f)
+    return 1e-6 < af < 1e6
+
+
+def _classify_window(chunk):
+    words = [struct.unpack("<I", chunk[i:i + 4])[0]
+              for i in range(0, len(chunk) - (len(chunk) % 4), 4)]
+    n = len(words)
+    if n == 0:
+        return "other", 0.0, 0.0
+    zeros = sum(1 for w in words if w == 0)
+    floats = sum(1 for w in words if _is_float_like(w))
+    pct_zero = 100.0 * zeros / n
+    pct_float = 100.0 * floats / n
+    if pct_zero > 90.0:
+        kind = "zero"
+    elif pct_float > 90.0:
+        kind = "float"
+    else:
+        kind = "other"
+    return kind, pct_float, pct_zero
+
+
+def characterise(data, start, window):
+    """Classify data[start:] in fixed-size windows, then coalesce runs."""
+    windows = []
+    offset = start
+    while offset < len(data):
+        chunk = data[offset:offset + window]
+        kind, pct_float, pct_zero = _classify_window(chunk)
+        windows.append({
+            "offset": offset,
+            "length": len(chunk),
+            "kind": kind,
+            "pct_float": round(pct_float, 2),
+            "pct_zero": round(pct_zero, 2),
+        })
+        offset += len(chunk)
+
+    regions = []
+    for w in windows:
+        if regions and regions[-1]["kind"] == w["kind"] \
+                and regions[-1]["end"] == w["offset"]:
+            regions[-1]["end"] = w["offset"] + w["length"]
+            regions[-1]["length"] = regions[-1]["end"] - regions[-1]["offset"]
+        else:
+            regions.append({
+                "offset": w["offset"],
+                "end": w["offset"] + w["length"],
+                "length": w["length"],
+                "kind": w["kind"],
+            })
+    return windows, regions
+
+
+def summarise(path, data, blocks, stop_offset):
+    header_bytes = len(blocks) * HEADER_LEN
+    payload_bytes = sum(b["payload_len"] for b in blocks if not b["fill"])
+    fill_bytes = sum(b["byte_count"] for b in blocks if b["fill"])
+    return {
+        "path": path,
+        "size": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "block_count": len(blocks),
+        "header_bytes": header_bytes,
+        "payload_bytes": payload_bytes,
+        "fill_bytes": fill_bytes,
+        "parse_stopped_at": stop_offset,
+        "unparsed_bytes": len(data) - stop_offset,
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("blob", help="path to a section_7_*.bin")
+    ap.add_argument("--window", type=int, default=4096,
+                    help="characterisation window size in bytes")
+    ap.add_argument("--json", help="write the full result dict as JSON")
+    ap.add_argument("--dump-blocks", help="write each block's payload here")
+    args = ap.parse_args()
+
+    data = open(args.blob, "rb").read()
+    blocks = parse_blocks(data)
+    stop_offset = blocks[-1]["payload_offset"] + blocks[-1]["payload_len"] \
+        if blocks else 0
+    windows, regions = characterise(data, stop_offset, args.window)
+    summary = summarise(args.blob, data, blocks, stop_offset)
+
+    if args.dump_blocks:
+        os.makedirs(args.dump_blocks, exist_ok=True)
+        for b in blocks:
+            if b["fill"]:
+                continue
+            name = "blk%02d_%08x.bin" % (b["index"], b["target_address"])
+            with open(os.path.join(args.dump_blocks, name), "wb") as f:
+                f.write(data[b["payload_offset"]:
+                             b["payload_offset"] + b["payload_len"]])
+
+    result = {
+        "summary": summary,
+        "blocks": blocks,
+        "windows": windows,
+        "regions": regions,
+    }
+
+    if args.json:
+        json.dump(result, open(args.json, "w"), indent=2)
+
+    print("=== %s ===" % args.blob)
+    print("size=%d  sha256=%s" % (summary["size"], summary["sha256"]))
+    print("blocks=%d  header_bytes=%d  payload_bytes=%d  fill_bytes=%d" % (
+        summary["block_count"], summary["header_bytes"],
+        summary["payload_bytes"], summary["fill_bytes"]))
+    print("parse_stopped_at=%d  unparsed_bytes=%d" % (
+        summary["parse_stopped_at"], summary["unparsed_bytes"]))
+
+    print("\n--- blocks ---")
+    for b in blocks:
+        print("blk%02d  @%-6d  code=0x%08x  addr=0x%08x  cnt=%-6d  arg=0x%08x  %s" % (
+            b["index"], b["offset"], b["block_code"], b["target_address"],
+            b["byte_count"], b["argument"], ",".join(b["flags"]) or "-"))
+
+    print("\n--- regions ---")
+    for r in regions:
+        print("%-6s %8d..%-8d  (%d KB)" % (
+            r["kind"], r["offset"], r["end"], r["length"] // 1024))
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
