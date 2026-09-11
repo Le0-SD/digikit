@@ -20,3 +20,4 @@ snapshots/
 # (docs/refs/*.md) are committed and cite chapter and table numbers.
 docs/refs/*.pdf
 docs/refs/rm.txt
+.coldtrace/
