@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<language_definitions>
+  <language processor="SHARC" endian="little" size="32" variant="VISA"
+            version="0.1" slafile="sharc.sla" processorspec="sharc.pspec"
+            id="SHARC:LE:32:VISA">
+    <description>Analog Devices SHARC+ (ADSP-2156x) VISA - partial, research</description>
+    <compiler name="default" spec="sharc.cspec" id="default"/>
+  </language>
+</language_definitions>

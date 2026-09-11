@@ -1,0 +1,73 @@
+# SLEIGH specification for Analog Devices SHARC+ (ADSP-2156x) VISA code.
+#
+# Encodings come from tools/sharc_visa_tables.py, transcribed from the
+# SHARC+ Core Programming Reference by reading each figure at 400 DPI.
+#
+# Instruction layout, measured and validated (see tools/sharcscan.py):
+# a 48-bit instruction is three 16-bit words, each LITTLE-endian in memory,
+# concatenated MOST-SIGNIFICANT WORD FIRST:
+#     w0,w1,w2 = unpack('<3H'); insn = (w0<<32)|(w1<<16)|w2
+# So with endian=little, token w0 covers insn bits 47..32, w1 covers 31..16
+# and w2 covers 15..0, and insn bit N maps to w0 bit (N-32) for N>=32.
+#
+# Instructions begin only on even byte offsets, hence alignment=2.
+#
+# ADDRESSING. SHARC code addresses in this image are 16-bit SHORT-WORD units:
+# the loader block declares load address 0x282403f0 and its very first cjump
+# targets 0x1201f8, and (0x282403f0 - 0x28000000) / 2 == 0x1201f8 exactly.
+# Ghidra is given a plain byte-addressed space -- a wordsize=2 space was tried
+# first and silently matches nothing -- so a program is imported at byte base
+# 2 * <word address>, and every branch target is doubled here to match.
+
+define endian=little;
+define alignment=2;
+
+define space ram     type=ram_space      size=4 default;
+define space register type=register_space size=4;
+
+define register offset=0x00 size=4 [ PC ];
+define register offset=0x10 size=4 [ R0  R1  R2  R3  R4  R5  R6  R7
+                                     R8  R9  R10 R11 R12 R13 R14 R15 ];
+define register offset=0x50 size=4 [ I0 I1 I2 I3 I4 I5 I6 I7 ];
+define register offset=0x70 size=4 [ M0 M1 M2 M3 M4 M5 M6 M7 ];
+
+define token w0 (16)
+    w0_all   = (0,15)
+    op47_41  = (9,15)
+    r40      = (8,8)
+    b39      = (7,7)
+    a38      = (6,6)
+    cond37   = (1,5)
+    z32      = (0,0)
+;
+define token w1 (16)
+    w1_all   = (0,15)
+    op31_24  = (8,15)
+    z31_27   = (11,15)
+    j26      = (10,10)
+    z25      = (9,9)
+    ci24     = (8,8)
+    addrhi   = (0,7)
+;
+define token w2 (16)
+    addrlo   = (0,15)
+;
+
+
+
+# 24-bit target, split across w1 (high 8 bits) and w2 (low 16), doubled to
+# convert the firmware's short-word address into this space's byte address.
+Dest24: reloc is op31_24=0x00 & addrhi ; addrlo
+    [ reloc = ((addrhi << 16) + addrlo) << 1; ] { export *:4 reloc; }
+
+# Type 25a_direct -- the compiler's call. This, not Type 8a, is what ADI's
+# compiler emits for a function call, which is why a Type 8a scan finds so few.
+:cjump Dest24 is w0_all=0x1804 ; Dest24 { call Dest24; }
+
+# Type 8a -- direct jump/call. Opcode is bits 47..41 = 0b0000011; bit 40 r
+# selects absolute(0)/PC-relative(1), bit 39 b selects jump(0)/call(1).
+# cond=0x1f is the unconditional encoding.
+:jump Dest24 is op47_41=0x03 & r40=0 & b39=0 & a38=0 & cond37=0x1f & z32=0 ; Dest24
+    { goto Dest24; }
+:call Dest24 is op47_41=0x03 & r40=0 & b39=1 & a38=0 & cond37=0x1f & z32=0 ; Dest24
+    { call Dest24; }
