@@ -595,6 +595,52 @@ SYMBOLS = [
                       'fd2a4e5e4e7500004e56ffe848d7047c'), False),
 
     # ----------------------------------------------------------------
+    # sd_bringup: the eSDHC/eMMC bring-up routine (FUN_4011d67a on Digitone,
+    # FUN_4011fed6 on Digitakt). The two are instruction-for-instruction
+    # identical; they differ only in relocated code addresses, the
+    # driver-struct base, and the EXT_CSD DMA destination.
+    #
+    # It clears the driver's "storage is up" flag on entry and sets it only
+    # after the whole init sequence completes. Everything that reads or
+    # writes block storage returns -1 immediately while that flag is zero,
+    # so nothing downstream works until it is set.
+    #
+    # sd_flag is that flag: the `clr.l (abs).l` operand 28 bytes into the
+    # routine, which is also the driver-struct base. sd_status is the
+    # driver's own status word at base+0x30, which emu/esdhc.py has to write
+    # on command completion; it was previously hardcoded to Digitakt's
+    # 0x44E26F1C, which on Digitone left every command looking permanently
+    # in-progress.
+    #
+    # The signature STOPS at 26 bytes even though the routine's prologue is
+    # longer: the 4-byte window at +26 is `42b9` (clr.l abs.l) followed by
+    # the top half of the flag address, and 0x42b944e2 falls inside the
+    # DATA_HI mask window, so extending the signature masks that window and
+    # takes the two real bytes at +30..31 with it -- which differ between
+    # builds, so a longer signature matches Digitakt and fails on Digitone.
+    # This is exactly the hazard the DATA_HI comment at the top of the file
+    # warns about. Measured: 40-byte signature = 1 hit on Digitakt, 0 on
+    # Digitone; 26-byte = 1 hit on each, at 0x4011fed6 and 0x4011d67a
+    # respectively.
+    # ----------------------------------------------------------------
+    ('sd_bringup', Sig('4fefffe848d70c3c42a776f34eb940126c24487947dcaafc7804',
+                       hi=DATA_HI), False),
+    ('sd_flag', Operand('sd_bringup', at=28), False),
+    ('sd_status', Offset('sd_flag', 0x30), False),
+
+    # sd_cmd_sem / sd_data_sem: two of the three RTOS semaphores the bring-up
+    # routine creates in its phase-1 setup, via the "create semaphore, initial
+    # count 0" primitive, at driver-struct offsets +0x34, +0x44 and +0x4c.
+    # sd_cmd_sem (+0x4c) is the one the command primitive (FUN_4011d5b4 on
+    # Digitone, FUN_40120... on Digitakt) pends on after every XFERTYP write;
+    # sd_data_sem (+0x44) is the one pended after a data transfer completes,
+    # including the EXT_CSD DMA read that ends the bring-up. On Digitone these
+    # resolve to 0x44459058 / 0x44459068 / 0x44459070 and on Digitakt to the
+    # same offsets from 0x44e26eec.
+    ('sd_cmd_sem', Offset('sd_flag', 0x4C), False),
+    ('sd_data_sem', Offset('sd_flag', 0x44), False),
+
+    # ----------------------------------------------------------------
     # Post-intro progress markers. These are what tells you whether the OS
     # actually took over, and emu/gui.py reports them on its status line --
     # it named all three by Digitakt address, so on Digitone the line read

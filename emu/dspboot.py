@@ -147,12 +147,19 @@ def build_flash(syx_path, size=0x1000000):
 def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
         patch_sem=True, patch_depack=True, verbose=False, stall_window=3_000_000,
         extra_hook=None, fast=True, resume_from=None, machine_out=None,
-        pre_start=None):
+        pre_start=None, sdgate=False, esdhc=False):
     """resume_from: path to a snapshot (see emu/snapshot.py). Loads registers
     and memory instead of starting at ENTRY, but installs the *same* hooks, so
     a resumed run behaves identically to the equivalent straight run. Without
     that the resumed run would miss flash HLE, the semaphore patch and the
-    scheduler tick, and silently diverge."""
+    scheduler tick, and silently diverge.
+    sdgate: install emu.gpio.SdGate, modelling the GPIO loopback the cold-boot
+    continuity check reads.
+    esdhc: install emu.esdhc.Esdhc behind it, using profile.sd_status as its
+    drv_status (None if unresolved, in which case Esdhc falls back to its own
+    module default).
+    machine_out: if given, receives 'm' (the Machine) and 'st' (the stats
+    dict) before emu_start is called, so a pre_start hook can see both."""
     """fast=True (default): FF1/MOVEC and every HOT_ADDRS side effect are
     registered as per-address Unicorn hooks (begin=end=addr) instead of one
     global UC_HOOK_CODE that runs Python on every instruction and then
@@ -324,6 +331,31 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
     m.mmio[0xEC070004] = 0x0D000000
     m.mmio[0xFC05C02C] = 0x100000F0   # DSPI0 SR: RXCTR nonzero + RFDF (bit 0x1c)
     m.mmio[0xEC03802C] = 0x80000000   # secondary SPI/serial TX-done status (bit31)
+
+    # The SD bring-up routine is guarded by a ten-iteration GPIO continuity
+    # check (Digitone FUN_4011d604, Digitakt FUN_4011fe60, byte-identical)
+    # that runs at roughly 25-30M instructions -- long before the first
+    # snapshot rung at 60M. Enabling these models only on the emu/longrun.py
+    # resume path is therefore useless: by the time any snapshot is restored
+    # the decision has already been made and the flag is already zero.
+    # Measured: a boot280M resume with sdgate=True, esdhc=True gets zero hits
+    # on the guard and zero on the bring-up.
+    #
+    # Unmodelled GPIO reads zero, so the continuity check fails on its first
+    # pass and the bring-up is skipped, in BOTH builds.
+    #
+    # emu/gpio.py's SdGate is the loopback the check is testing for; it is
+    # useless without Esdhc behind it (the driver then spins on SYSCTL
+    # INITA), so these two are meant to be turned on together.
+    if sdgate:
+        from emu.gpio import SdGate
+        m.sdgate = SdGate(m)
+    if esdhc:
+        from emu.esdhc import Esdhc
+        # cmd_sem/data_sem are per-image for the same reason drv_status is.
+        m.esdhc = Esdhc(m, drv_status=profile.sd_status,
+                        cmd_sem=profile.sd_cmd_sem, data_sem=profile.sd_data_sem)
+
     m.install_mmio()
     m.install_exceptions()
     if resume_from:
@@ -337,6 +369,10 @@ def run(syx_path, main_img, limit=120_000_000, tick_vec=32, tick_every=20000,
         start_pc = profile.entry
     if machine_out is not None:
         machine_out['m'] = m
+        # st['n'] is the live instruction counter -- exposing it here lets a
+        # pre_start hook timestamp itself against it while the run is in
+        # progress, not just after emu_start returns.
+        machine_out['st'] = st
     if pre_start:                 # add extra Unicorn hooks before execution starts
         pre_start(m)
     try:

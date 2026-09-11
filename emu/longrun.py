@@ -484,7 +484,16 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
         ev['sdgate'] = SdGate(m)
     if esdhc:
         from emu.esdhc import Esdhc
-        ev['esdhc'] = Esdhc(m)
+        # drv_status is per image, for the same reason slc_status_addr above
+        # is: the driver struct is at 0x44459024 on Digitone and 0x44e26eec on
+        # Digitakt, and the status word is base+0x30. Leaving it at the module
+        # default writes Digitakt's literal, so on Digitone the word the
+        # command primitive returns is never cleared -- every command reports
+        # "still in progress" and CMD0 takes the -1 exit before CMD1 is ever
+        # reached. Measured: cmd0 returned d0=1 and 0x44459054 stayed 1.
+        # cmd_sem/data_sem are per-image for the same reason.
+        ev['esdhc'] = Esdhc(m, drv_status=profile.sd_status,
+                            cmd_sem=profile.sd_cmd_sem, data_sem=profile.sd_data_sem)
     m.install_mmio()
     if trace_path is not None:
         from emu.trace import JsonlMmioTrace

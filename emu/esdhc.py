@@ -46,7 +46,7 @@ written, and `0x4012001e` spins forever -- measured at 36,988,467 reads.
 """
 import struct
 
-from emu.edma import SERQ, TCD_BASE, SADDR, NBYTES, DADDR, CITER, DOFF, BITER
+from emu.edma import SERQ, TCD_BASE, SADDR, NBYTES, DADDR, CITER, DOFF, BITER, CSR
 
 BASE = 0xFC0CC000
 SIZE = 0x1000
@@ -99,7 +99,12 @@ RESET = {
     ADMAESR: 0, ADMASAR: 0, VENDOR: 1, HOSTVER: 0x00001201,
 }
 
-# The driver's own status word, written by the ISR on real hardware.
+# The driver's own status word, written by the ISR on real hardware. This is
+# the DIGITAKT value, kept as the default; per-image callers should instead
+# pass drv_status resolved from emu/symbols.py's sd_status (Digitone's is
+# 0x44459054). Using Digitakt's literal on Digitone leaves the guest's status
+# word never cleared, so every bge/blt check after CMD0/CMD1/CMD19/CMD14/CMD8
+# reads a stale "in progress" value.
 # 0x4011fe10 sets it to 1 before issuing and returns it after the wait.
 DRV_STATUS = 0x44E26F1C
 
@@ -201,16 +206,30 @@ class Card:
 class Esdhc:
     """The controller. `log` collects (command index, argument) in order."""
 
-    def __init__(self, m, card=None, trace=False):
+    def __init__(self, m, card=None, trace=False, drv_status=None,
+                 cmd_sem=None, data_sem=None):
         from unicorn import UC_HOOK_MEM_WRITE
         self.m = m
         self.uc = m.uc
         self.card = card or Card()
         self.trace = trace
+        self.drv_status = DRV_STATUS if drv_status is None else drv_status
+        self.cmd_sem = cmd_sem
+        self.data_sem = data_sem
         self.log = []
         self.pattern = 0           # last word the host wrote to DATPORT
         self.armed = None          # eDMA channel armed via SERQ for this cmd
         self.dma_bytes = 0
+        # Machine.ensure(addr) maps the 1MB page containing addr. Guest
+        # accesses to an unmapped page go through Machine._fault, which maps
+        # the page and resumes -- but host-side uc.mem_write from Python does
+        # not fire _fault, so it raises UC_ERR_WRITE_UNMAPPED instead. On the
+        # longrun.py resume path this never showed up, because restore_into
+        # pre-maps every page the earlier boot touched. On the cold-boot path
+        # (dspboot.py) nothing has touched this page yet, so without this the
+        # _put loop below died immediately seeding its own reset values. This
+        # is what makes the model usable cold, not just on a snapshot resume.
+        m.ensure(BASE)
         for off, val in RESET.items():
             self._put(off, val)
         from unicorn import UC_HOOK_MEM_READ
@@ -228,6 +247,31 @@ class Esdhc:
         # happy with more than one hook on an address.
         self.uc.hook_add(UC_HOOK_MEM_WRITE, self._on_serq,
                          begin=SERQ, end=SERQ)
+
+    def _post(self, sem):
+        """Post an RTOS semaphore, as the eSDHC ISR does on real hardware.
+
+        On real hardware the eSDHC ISR does two things on command/transfer
+        completion: writes the driver's status word (modelled above via
+        drv_status) and posts the driver's completion semaphore. This is the
+        second half, previously unmodelled -- which is why the command
+        primitive (FUN_4011d5b4 on Digitone) issued its command and then
+        blocked forever in sem_pend on the cold-boot path. Mirrors exactly
+        what emu/longrun.py's `unblock` does for pends generically -- it
+        writes 1 when the count is <= 0 -- but scoped to the two semaphores
+        this controller owns, so the model is correct on the cold-boot path
+        too and does not depend on a global bypass. When `unblock` is also
+        active this is simply a no-op, since it only acts on counts <= 0.
+        """
+        if sem is None:
+            return
+        try:
+            self.m.ensure(sem)
+            count = struct.unpack('>i', bytes(self.uc.mem_read(sem, 4)))[0]
+            if count <= 0:
+                self.uc.mem_write(sem, struct.pack('>i', 1))
+        except Exception:
+            pass
 
     # -- register access -------------------------------------------------
     def _put(self, off, val):
@@ -288,13 +332,23 @@ class Esdhc:
                     self.armed = None
                     if self.trace:
                         print('[esdhc]   CMD%d -> %d bytes by eDMA' % (idx, n))
+                # The bring-up pends on this one after the EXT_CSD DMA read.
+                self._post(self.data_sem)
             else:                                   # host -> card
                 self._set_bits(PRSSTAT, BWEN)
                 self._set_bits(IRQSTAT, BWR)
+                self._post(self.data_sem)
         # The ISR's bookkeeping. 0x4011fe10 pre-sets this to 1 and returns it
         # after the wait; `unblock` satisfies the wait, so without this the
         # caller always sees "still in progress".
-        self.uc.mem_write(DRV_STATUS, struct.pack('>I', 0))
+        # Host-side mem_write does not demand-map; see __init__'s note on
+        # Machine.ensure. This word lives in SDRAM the guest may not have
+        # touched yet at this point.
+        self.m.ensure(self.drv_status)
+        self.uc.mem_write(self.drv_status, struct.pack('>I', 0))
+        # The command-completion half of the ISR: this is what lets
+        # FUN_4011d5b4 return from its sem_pend on the cold-boot path.
+        self._post(self.cmd_sem)
         if self.trace:
             print('[esdhc] CMD%-2d arg=%#010x xfertyp=%#010x -> %#010x'
                   % (idx, arg, xfer, r0))
@@ -322,9 +376,24 @@ class Esdhc:
             return 0
         dst = u32(DADDR)
         chunk = payload[:total].ljust(total, b'\x00')
+        # Host-side mem_write does not demand-map; see __init__'s note on
+        # Machine.ensure. dst is the firmware's EXT_CSD buffer, which the
+        # guest has not necessarily written to yet.
+        self.m.ensure(dst)
         self.uc.mem_write(dst, chunk)
         self.uc.mem_write(tcd + DADDR, struct.pack('>I', dst + total))
         self.uc.mem_write(tcd + CITER, struct.pack('>H', u16(BITER) & 0x7FFF))
+        # The bring-up routine's EXT_CSD read (CMD8 SEND_EXT_CSD) does not
+        # poll any eSDHC register for completion -- it arms eDMA channel 59,
+        # issues the command, then polls TCD59's own CSR bit 7 (DONE) with a
+        # bound of 20 retries of 1000 ticks each. Without this the poll
+        # always times out, the routine bails to its error exit, and the
+        # storage flag at the end of the routine is never set -- so storage
+        # never comes up even though every eSDHC register was serviced
+        # correctly. This is the one poll in the whole routine that has a
+        # timeout, which is why the symptom was a silent failure rather than
+        # a hang.
+        self.uc.mem_write(tcd + CSR, struct.pack('>H', u16(CSR) | 0x80))
         self.dma_bytes += total
         return total
 
