@@ -43,6 +43,37 @@ revision 1):
   no longer used except as a fallback where a crop was genuinely
   ambiguous (documented per-type below).
 
+METHOD ADDENDUM (round 2 -- resolving revision 2's 17 "uncertain" types):
+
+  A second, independent signal was added this round: `pdftotext` on the
+  same PDF pages preserves each bit-cell diagram's per-column DIGIT
+  sequence faithfully (it is printed left-to-right in the content stream
+  in column order), even though it scrambles which field-name LABEL
+  belongs to which bracket. This digit sequence does NOT by itself say
+  which cells are gray vs. white/yellow -- shading is a purely visual
+  property with no text-layer representation -- but it is an
+  independent check on the VALUE printed in a cell this file's vision
+  pass already identified as gray, and it caught several round-1 errors:
+  digit-transposition inside a run of several adjacent gray cells (e.g.
+  Type9a's opcode was read as 0b0001100 in round 1; the text digit row
+  showed only one 1-bit, at bit 43, giving the correct 0b0000100), and
+  cases where round 1 mistook a real field's non-zero PLACEHOLDER digit
+  for a gray cell (Type4b's and Type3b's row-2 "extensions" were both
+  this mistake -- the 1-digits round 1 flagged as suspicious gray
+  candidates turned out to sit inside real, width-confirmed fields once
+  cross-checked against field-name arithmetic).
+
+  Combining "which cells are gray" (vision) with "what digit is actually
+  printed in the cells vision already flagged as gray" (text) resolved
+  12 of round 2's 17 targeted types outright, refined several already-
+  confident round-2 types (4b, 4d, 3b, 3d, 7b), and left 5 types
+  genuinely unresolved after this combined pass: Type3a and
+  Type25c_rframe (source-figure defects -- see their entries, now with
+  text-table-based RECONSTRUCTIONS, marked as such, not readings), and
+  Type11a, Type11c, Type2b (a real gap remains even after this round --
+  see each entry's note for exactly what could and couldn't be pinned
+  down).
+
 REVISION HISTORY (kept because the mistake is informative):
 
   Revision 1 of this file read whole PDF pages and treated Type8a as:
@@ -96,24 +127,27 @@ WHAT IS AND ISN'T VERIFIED NOW:
   decode but were not the coordinator's top priority and are marked
   accordingly per entry.
 
-  IMPORTANT LENGTH-DECODE FINDING: several sibling pairs across a length
+  IMPORTANT LENGTH-DECODE FINDING (round 1; WORKED OUT INTO AN ACTUAL
+  ORDERED PROCEDURE in round 2 -- see LENGTH_RULE_MULTIWORD and
+  decode_length_multiword()): several sibling pairs across a length
   boundary (48-bit "a" form vs. 32-bit "b" form of the same numbered
   type) have IDENTICAL gray bits in their first fetched 16-bit word.
   Concretely, Type1a and Type1b both gray bits 47:45 = 0b001 in that
-  word; Type9a's top word (bits 47:41 = 0b0001100) and Type9b's top word
-  (bits 31:27 = 0b00011) share "0001100" vs "00011" as a literal prefix
-  relationship. In both cases the manual instead marks EXTRA gray
-  (fixed) bits *later* in the encoding for the shorter form, at exactly
-  the position where the longer form has a real, arbitrary operand field
-  (Type1a's compute[22:16] is gray/fixed = 0b0111111 in Type1b; Type9's
-  extra bits are in the second word too). This means: for this
-  instruction family, the first 16-bit word is NOT always sufficient to
-  determine length — the decoder must provisionally read a second 16-bit
-  word and check whether it matches the shorter form's extra fixed
-  pattern before it can be sure it isn't looking at the start of a
-  longer instruction that happens to share the same first word. This is
-  stated plainly rather than papered over; see LENGTH_RULE below for how
-  decode_length() handles (and where it declines to guess at) this.
+  word; Type9a's top word (bits 47:41, corrected in round 2 to
+  0b0000100) and Type9b's top word (bits 31:25, corrected to the SAME
+  0b0000100) are identical, as expected for the same family; Type4a's,
+  Type4b's, and Type4d's shared top word is 0b0110 at bits 47:44. In
+  each case the manual instead marks EXTRA gray (fixed) bits *later* in
+  the encoding for the shorter form, at exactly the position where the
+  longer form has a real, arbitrary operand field (Type1a's
+  compute[22:16] is gray/fixed = 0b0111111 in Type1b; Type9b grays 9
+  bits of its final word that are real in Type9a's corresponding word;
+  Type4b sacrifices 1 bit of its dreg field, Type4d sacrifices 4).
+  LENGTH_RULE_MULTIWORD below gives the exact, ordered, per-group
+  decision procedure the coordinator asked for in round 2, including
+  the one group (Type5a_move/Type5b_move) this transcription could NOT
+  resolve this way -- named precisely, not papered over, with both
+  possible explanations stated.
 
   A SECOND, BROADER FINDING, from brute-force pairwise-checking the 29
   entries LENGTH_RULE actually ended up with (see
@@ -246,14 +280,20 @@ TYPES: List[Dict] = [
     },
     {
         "name": "2b", "bits": 32, "page": 311,
-        "opcode_mask": None, "opcode_value": None,
+        "opcode_mask": _combine(_field(31, 30, 0b11), _field(15, 14, 0b11))[0],
+        "opcode_value": _combine(_field(31, 30, 0b11), _field(15, 14, 0b11))[1],
         "fields": {"cond": (20, 16), "compute_hi": (6, 0)},
         "uncertain": True,
-        "note": "the 400-DPI crop of this page caught only the bare bit-cell grids for Type2b "
-                "(no field-label brackets in the cropped region, and no visible gray/white "
-                "distinction was recorded for this entry during transcription) -- opcode shading "
-                "not confirmed for this type. Field positions carried over from revision 1's "
-                "arithmetic-based placement, mapped -16 from the figure's reused '47:32' header.",
+        "note": "round-1 crop caught only the bare bit-cell grids for Type2b (no field-label "
+                "brackets, no shading recorded). Round 2: the reliable text-layer digit rows "
+                "show non-zero cells at own bits 31:30 (source 47:46 = 1,1) and 15:14 (source "
+                "31:30 = 1,1) -- exactly the same relative position as Type2a's confirmed gray "
+                "cells (source 47:45 lead-in and source 31:30). Populated here BY ANALOGY with "
+                "Type2a's directly-vision-confirmed shading at the same relative position, not "
+                "from an independent shading read of this specific figure -- kept uncertain for "
+                "that reason. Unlike Type2a (row-1 gray = 47:45, cond at 37:33), 2b's row 1 "
+                "1-bits sit at 47:46 (not 47:45), so 2a and 2b do NOT share an identical first "
+                "word -- no length collision between this pair.",
     },
     {
         "name": "2c", "bits": 16, "page": 312,
@@ -268,29 +308,60 @@ TYPES: List[Dict] = [
     {
         "name": "3a", "bits": 48, "page": 315,
         "opcode_mask": 0, "opcode_value": 0,
-        "fields": {},
+        "fields": {
+            "u": (43, 43), "i": (42, 40), "m": (39, 37), "g": (32, 32), "cond": (36, 32),
+            "d": (30, 30), "l": (29, 29), "ureg": (28, 22), "x": (21, 21), "w": (20, 20),
+            "compute_lo": (15, 0),
+        },
         "uncertain": True,
-        "note": "SOURCE FIGURE IS DEFECTIVE, confirmed at 400 DPI (not a resolution artifact): "
-                "page 315's 'Type3a Instruction Opcode' figure is a pixel-identical duplicate of "
-                "the Type1a figure, down to the small 'Type1a' side-caption text, and shows the "
-                "dmd/dmi/dmm/pmi/dmdreg/pmd field set with no cond[4:0] -- which cannot be right, "
-                "since Type3a's own syntax table requires 'IF cond'. Type3a's real encoding could "
-                "not be recovered from this page; unresolved.",
+        "note": "SOURCE FIGURE IS DEFECTIVE, confirmed at 400 DPI AND independently by the "
+                "text layer (round 2 -- the text-layer digit rows for page 315 also show the "
+                "'Type1a'-shaped dmd/dmi/dmm/pmi/dmdreg/pmd label set, not cond/u/g/d/l, ruling "
+                "out a rendering-only mistake): page 315's 'Type3a Instruction Opcode' figure is "
+                "a pixel-identical duplicate of the Type1a figure, down to the small 'Type1a' "
+                "side-caption text -- which cannot be right, since Type3a's own syntax table "
+                "requires 'IF cond'. RECONSTRUCTED (per the task's request) from reliable text "
+                "on the surrounding pages, not from this figure: page 315 itself, right after "
+                "the bad figure, gives Type3a's ACCESS Encode Table with columns 'u g d l', "
+                "exactly the same 4 addressing-mode bits documented for Type3b (page 318, whose "
+                "figure IS readable and confirmed) plus 'cond[4:0]' (required by 'IF cond' in "
+                "Type3a's own syntax table). Type3a and Type3b are the 48-bit/32-bit siblings of "
+                "the same 'Type 3' family (single I/M register pair, contrasted with Type1's dual "
+                "dmi/dmm+pmi/pmm), so this file assumes Type3a's row 1 reuses Type3b's confirmed "
+                "layout verbatim (u, i[2:0], m[2:0], g, cond[4:0]) and its row 2 reuses Type3b's "
+                "confirmed d, l, ureg[6:0], x, w. This does NOT account for where a 'compute' "
+                "field would go: Type3a's syntax table does list an optional 'compute,' clause, "
+                "but d+l+ureg+x+w already fill 11 of row 2's 16 bits with only 5 left (matching "
+                "Type3b's own unclaimed remainder, which this file treats as that pair's a/b "
+                "extension bits, not room for a 7-bit compute[22:16]) -- so either Type3a's "
+                "compute is narrower than the 23-bit compute[22:16]+compute[15:0] used elsewhere "
+                "in Group I, or it does not coexist with a full Ureg transfer in the same "
+                "instruction, or the row-2 layout is NOT actually shared with Type3b after all. "
+                "This file does NOT guess further: 'compute_hi' is omitted from fields (only "
+                "compute_lo, i.e. row 3 bits 15:0, is assumed by analogy with every other Group "
+                "I type's row 3), and opcode_mask/value are left at 0/unset rather than invented. "
+                "Field positions above should be read as 'probably right, by strong analogy', "
+                "not as a verified reading -- still uncertain overall.",
     },
     {
         "name": "3b", "bits": 32, "page": 318,
-        "opcode_mask": _combine(_field(31, 29, 0b010))[0],
-        "opcode_value": _combine(_field(31, 29, 0b010))[1],
+        "opcode_mask": _combine(_field(31, 29, 0b010), _field(3, 2, 0b11))[0],
+        "opcode_value": _combine(_field(31, 29, 0b010), _field(3, 2, 0b11))[1],
         "fields": {
             "u": (27, 27), "i": (26, 24), "m": (23, 21), "cond": (20, 16),
-            "d": (14, 14), "l": (13, 13), "ureg": (12, 6), "x": (5, 5), "w": (4, 4),
+            "d": (15, 15), "l": (14, 14), "ureg": (12, 6), "x": (5, 5), "w": (4, 4),
         },
-        "uncertain": True,
-        "note": "row 1 (own 31:16, shifted -16 from source's reused '47:32' header) gray = 0b010 "
-                "at bits 31:29 (source 47:46:45 = 0,1,0), confirmed. Row 2's extra gray cluster "
-                "(seen near source bits 22:18, i.e. own 6:2, values roughly 0,1,1,1,1) was noted "
-                "but not pinned to exact bit positions with confidence -- marked uncertain for "
-                "that reason even though row 1 is solid.",
+        "uncertain": False,
+        "note": "CORRECTED (round 2): the reliable text-layer digit row for row 2 (source bits "
+                "31:16) is '1 1 0 0 0 0 0 0 0 0 1 1 1 1 0 0'. Field-width arithmetic (d+l+ureg"
+                "[6:0]+x+w = 1+1+7+1+1 = 11) leaves exactly 5 bits unclaimed by real fields once "
+                "d(31),l(30),ureg(28:22),x(21),w(20) are placed -- those 5 are source bits 29 "
+                "and 19:16. The digit row's four 1-bits at source 21,20,19,18 are placeholder "
+                "EXAMPLE values inside/adjacent to the real x(21)/w(20) fields, not gray cells "
+                "(same category of round-1 misreading as Type4b's, caught the same way); only "
+                "source bits 19:18 (own 3:2) remain unaccounted after x/w and are the genuine "
+                "gray extension, value 0b11. Source bits 29, 17, 16 (own 13, 1, 0) stay "
+                "unclaimed/reserved-white, not part of opcode_mask.",
     },
     {
         "name": "3c", "bits": 16, "page": 321,
@@ -303,18 +374,26 @@ TYPES: List[Dict] = [
     },
     {
         "name": "3d", "bits": 48, "page": 323,
-        "opcode_mask": _combine(_field(47, 45, 0b010), _field(31, 30, 0b11), _field(22, 20, 0b011))[0],
-        "opcode_value": _combine(_field(47, 45, 0b010), _field(31, 30, 0b11), _field(22, 20, 0b011))[1],
+        "opcode_mask": _combine(_field(47, 45, 0b010), _field(31, 30, 0b11), _field(21, 20, 0b11))[0],
+        "opcode_value": _combine(_field(47, 45, 0b010), _field(31, 30, 0b11), _field(21, 20, 0b11))[1],
         "fields": {
             "u": (44, 44), "i": (43, 41), "m": (40, 38), "cond": (37, 33), "g": (32, 32),
-            "ureg": (26, 20), "x": (23, 23), "w": (22, 22), "ex": (16, 16),
+            "ureg": (28, 22), "ex": (16, 16),
         },
-        "uncertain": True,
-        "note": "row 1 gray = bits 47:45 (0b010, same as Type3b's row 1). Row 2 gray at 31:30 "
-                "(0b11) confirmed; a further gray cluster read near bits 22:20 (0b011) is "
-                "lower-confidence on its exact width/position (arithmetic suggested 4 bits, the "
-                "crop looked like 3) -- kept but flagged uncertain. Row 3 (bits 15:0) is entirely "
-                "YELLOW (generic reserved, not gray) per the crop -- no operand there.",
+        "uncertain": False,
+        "note": "CORRECTED (round 2): row 2's gray cluster was re-read against the reliable "
+                "text-layer digit row ('1 1 0 0 0 0 0 0 0 0 1 1 0 0 0 0' for bits 31:16) -- the "
+                "two 1-bits sit at bits 21:20, not 22:20 as round 1 guessed (bit 22 is 0 in the "
+                "digit row). Field-width arithmetic (d+l+ureg[6:0]+x+w+ex = 1+1+7+1+1+1 = 12) "
+                "plus this corrected 4-bit gray run (31:30, 21:20) accounts for all 16 bits "
+                "with no gaps -- but round 1's specific placement of d/l/x/w within that "
+                "remaining 12 bits produced an internal overlap (d and x both claimed bit 23; "
+                "l and w both claimed bit 22), so those four single-bit fields are deliberately "
+                "OMITTED from 'fields' here rather than re-guessed; only ureg[6:0] (28:22, "
+                "width-confirmed) and ex (16, per Type14d's analogous 'ex' bit) are kept. Row 1 "
+                "gray = bits 47:45 (0b010, same as Type3b's row 1, confirmed against the text "
+                "digit row too). Row 3 (bits 15:0) is entirely YELLOW (generic reserved, not "
+                "gray) per the crop -- no operand there.",
     },
     # ---- Type 4: cond + comp + mem data move w/ 6-bit imm modifier ----
     {
@@ -334,34 +413,42 @@ TYPES: List[Dict] = [
     },
     {
         "name": "4b", "bits": 32, "page": 331,
-        "opcode_mask": _combine(_field(31, 28, 0b0110))[0],
-        "opcode_value": _combine(_field(31, 28, 0b0110))[1],
+        "opcode_mask": _combine(_field(31, 28, 0b0110), _field(0, 0, 0))[0],
+        "opcode_value": _combine(_field(31, 28, 0b0110), _field(0, 0, 0))[1],
         "fields": {
             "i": (27, 25), "g": (24, 24), "d": (23, 23), "data5": (22, 22),
             "cond": (21, 17), "u": (16, 16),
-            "data4_0": (14, 10), "dreg": (9, 3), "x": (2, 2), "w": (1, 1), "l": (0, 0),
+            "data4_0": (15, 11), "dreg": (10, 4), "x": (3, 3), "w": (2, 2), "l": (1, 1),
         },
         "uncertain": False,
-        "note": "row 1 (own 31:16, shifted -16) gray = 0b0110 at bits 31:28 -- SAME as Type4a's "
-                "row-1 pattern. Row 2 gray at own bits 22:19 (source 23:20 shown as figure "
-                "'22 21 20|19' gray cluster values 0,1,1,1) is the a/b length-extension signature "
-                "in the same style as Type1a/1b; positions here are approximate (field-width "
-                "arithmetic placed them, not a direct shading read of the full row-2 split).",
+        "note": "CORRECTED (round 2): the reliable text-layer field label for row 2 reads "
+                "'dreg[6:0]' (7 bits), not 'dreg[3:0]' -- with that width, data[4:0](5) + "
+                "dreg[6:0](7) + x(1) + w(1) + l(1) = 15 bits, leaving exactly ONE gray bit "
+                "(own bit 0, source bit 16, value 0), not the wide multi-bit cluster guessed in "
+                "round 1. The apparent '1'-valued cells at source bits 31,30 and 21:18 that "
+                "motivated the round-1 guess are placeholder EXAMPLE digits inside the real "
+                "data[4:0]/dreg[6:0]/x/w fields, not gray/fixed cells -- this was the same kind "
+                "of misreading the original (wrong) Type8a calibration made, now caught by "
+                "cross-checking field-width arithmetic against the text-layer digit row. "
+                "Row 1 gray (0b0110 at 31:28) unchanged and still matches Type4a's.",
     },
     {
         "name": "4d", "bits": 48, "page": 334,
-        "opcode_mask": _combine(_field(47, 44, 0b0110), _field(22, 20, 0b011))[0],
-        "opcode_value": _combine(_field(47, 44, 0b0110), _field(22, 20, 0b011))[1],
+        "opcode_mask": _combine(_field(47, 44, 0b0110), _field(22, 20, 0b011), _field(16, 16, 0))[0],
+        "opcode_value": _combine(_field(47, 44, 0b0110), _field(22, 20, 0b011), _field(16, 16, 0))[1],
         "fields": {
             "i": (43, 41), "g": (40, 40), "d": (39, 39),
             "cond": (37, 33), "data4_0": (31, 27), "dreg": (26, 23),
-            "x": (18, 18), "w": (17, 17), "l": (16, 16), "compute_lo": (15, 0),
+            "x": (19, 19), "w": (18, 18), "l": (17, 17), "compute_lo": (15, 0),
         },
         "uncertain": False,
-        "note": "row 1 gray = bits 47:44 = 0b0110, SAME as 4a/4b. Row 2 gray at bits 22:20 = 0b011 "
-                "(3 cells, confirmed at 400 DPI) -- narrower than Type4b's 4-cell extension at "
-                "the same rough position, which is itself a valid distinguishing feature between "
-                "the 4b and 4d siblings even though both are extensions of 4a.",
+        "note": "row 1 gray = bits 47:44 = 0b0110, SAME as 4a/4b. Row 2: data[4:0](5) + "
+                "dreg[3:0](4, this type's label IS '[3:0]', unlike 4b's '[6:0]') + x + w + l (3) "
+                "= 12 real bits, leaving 4 gray bits at 22:20 (0b011) and 16 (0) -- refined "
+                "from round 1's 3-bit reading by the same text-digit-row cross-check used for "
+                "4b. This 4-bit signature (vs. 4b's 1-bit signature at the analogous position) "
+                "is how a decoder distinguishes 4a/4d (48-bit) from 4b (32-bit) in the second "
+                "fetched word -- see LENGTH_RULE_MULTIWORD.",
     },
     # ---- Type 5: cond + comp + reg data swap/move ---------------------
     {
@@ -434,13 +521,15 @@ TYPES: List[Dict] = [
     },
     {
         "name": "6a_nomem", "bits": 48, "page": 346,
-        "opcode_mask": _combine(_field(47, 47, 1), _field(31, 31, 0), _field(26, 23, 0b0001))[0],
-        "opcode_value": _combine(_field(47, 47, 1), _field(31, 31, 0), _field(26, 23, 0b0001))[1],
+        "opcode_mask": _combine(_field(47, 47, 1), _field(31, 31, 0), _field(26, 23, 0b0000))[0],
+        "opcode_value": _combine(_field(47, 47, 1), _field(31, 31, 0), _field(26, 23, 0b0000))[1],
         "fields": {"cond": (36, 32), "dataex": (30, 27), "shiftimm_hi": (22, 16), "shiftimm_lo": (15, 0)},
-        "uncertain": True,
-        "note": "bit 47 = 1 confirmed (same as 6a_mem). A further gray cluster at row 2 bits "
-                "31 and 26:23 was read but the exact digit values at 26:23 were inconsistent "
-                "between two passes (0b0000 vs 0b0001) -- kept as 0b0001 but flagged uncertain.",
+        "uncertain": False,
+        "note": "bit 47 = 1 confirmed (same as 6a_mem). Row 2 gray cluster at bits 31 and 26:23 "
+                "RESOLVED (round 2): the round-1 reading was inconsistent between two passes "
+                "(0b0000 vs 0b0001) about the value at 26:23; the reliable text-layer digit row "
+                "for this figure's row 2 is entirely zero, resolving it to 0b0000. Extent "
+                "(which bits are gray at all) still comes from the 400-DPI shading read.",
     },
     # ---- Type 7: cond + comp + index modify / address switch ----------
     {
@@ -459,19 +548,22 @@ TYPES: List[Dict] = [
     },
     {
         "name": "7b", "bits": 32, "page": 350,
-        "opcode_mask": _combine(_field(31, 28, 0b0000), _field(26, 26, 1), _field(7, 0, 0b00111111))[0],
-        "opcode_value": _combine(_field(31, 28, 0b0000), _field(26, 26, 1), _field(7, 0, 0b00111111))[1],
+        "opcode_mask": _combine(_field(31, 28, 0b0000), _field(26, 26, 1), _field(5, 3, 0b111))[0],
+        "opcode_value": _combine(_field(31, 28, 0b0000), _field(26, 26, 1), _field(5, 3, 0b111))[1],
         "fields": {
             "g": (22, 22), "is2": (21, 21), "cond": (20, 16),
-            "is10": (15, 14), "m": (13, 11), "idis": (10, 8),
+            "is10": (15, 14), "m": (13, 11), "idis": (2, 0),
         },
-        "uncertain": True,
-        "note": "row 1 (own 31:16, shifted -16) gray = bits 31:28 (0b0000) plus one further gray "
-                "bit read near source bit 42 -- own bit 26 -- (value 1); mapped from a single-pass "
-                "reading, positioning approximate. A gray run at the bottom of row 2 (own bits "
-                "7:0, from source 23:16) was also seen, value approximately 0b00111111 by analogy "
-                "with other a/b pairs' extension pattern, but not independently confirmed digit "
-                "by digit -- flagged uncertain.",
+        "uncertain": False,
+        "note": "CORRECTED (round 2): the reliable text-layer digit row for row 2 (source bits "
+                "31:16) is '0 0 0 0 0 0 0 0 0 0 1 1 1 1 1 1' -- six 1-bits at source 21:16 (own "
+                "5:0), not the round-1 guess of an 8-bit run at own 7:0. Field-width arithmetic "
+                "(is[1:0]+m[2:0]+idis[2:0] = 2+3+3 = 8 real bits) fits cleanly with idis[2:0] "
+                "occupying the low 3 of those six 1-cells (own 2:0, real, placeholder=1,1,1) "
+                "and the gray extension being the other 3 (own 5:3, value 0b111) -- own bits "
+                "10:6 remain unclaimed/reserved, not part of opcode_mask. Row 1: gray = bits "
+                "31:28 (0b0000, source 47:44) plus own bit 26 (source 42) = 1, confirmed via "
+                "the reliable text digit row for row 1 too (single 1-bit at source 42).",
     },
     {
         "name": "7d", "bits": 48, "page": 352,
@@ -513,33 +605,58 @@ TYPES: List[Dict] = [
     # ---- Type 9: cond + branch + comp/else comp ------------------------
     {
         "name": "9a", "bits": 48, "page": 360,
-        "opcode_mask": _combine(_field(47, 41, 0b0001100), _field(23, 23, 0))[0],
-        "opcode_value": _combine(_field(47, 41, 0b0001100), _field(23, 23, 0))[1],
+        "opcode_mask": _combine(_field(47, 41, 0b0000100), _field(23, 23, 0))[0],
+        "opcode_value": _combine(_field(47, 41, 0b0000100), _field(23, 23, 0))[1],
         "fields": {
             "rel": (40, 40), "b": (39, 39), "a": (38, 38), "pmi2": (37, 37), "cond": (36, 32),
             "pmi10": (31, 30), "pmm": (29, 27), "ci": (25, 25), "e": (24, 24),
             "compute_hi": (22, 16), "compute_lo": (15, 0),
         },
         "uncertain": False,
-        "note": "row 1 gray = bits 47:41 = 0b0001100 (7 bits, confirmed). Row 2 gray = bit 23 "
-                "only (0). NOTE the module-docstring length finding: 9a's top-word gray "
-                "(0001100) and 9b's top-word gray (00011, below) share '00011' as a literal "
-                "prefix -- see LENGTH_RULE.",
+        "note": "CORRECTED (round 2): the earlier reading (0b0001100) had two 1-bits in this "
+                "7-bit run; cross-checking the reliable text-layer digit row for this figure "
+                "('0 0 0 0 1 0 0 0 ...' for bits 47:32) shows only ONE 1-bit, at bit 43. "
+                "Gray = bits 47:41 = 0b0000100 (7 bits); row 2 gray = bit 23 only (0). CALL vs "
+                "JUMP: bit 39 (b) -- 0=jump, 1=call, per the reliable JUMPCLAUSE text table on "
+                "this page (b=0,a=0,j=0,ci=0 -> jump; b=1,a=0,j=0,ci=0 -> call). Absolute vs "
+                "PC-relative: bit 40 (rel) -- 0=(M2REG,I2REG) register-indirect, 1=(pc,imm6pc) "
+                "PC-relative, per the reliable ADDRCLAUSE text table. TARGET FIELD: when rel=0, "
+                "the target register pair is (pmi[2:0], pmm[2:0]) = bit 37 (pmi high bit) "
+                "concatenated with bits 31:30 (pmi low bits) selecting the I register, and bits "
+                "29:27 (pmm[2:0]) selecting the M register -- together (Md,Ic). When rel=1, "
+                "the SAME 6 physical bits (37, 31:30, 29:27) are reinterpreted as the 6-bit "
+                "two's-complement PC-relative displacement <reladdr6> (this reuse of a "
+                "register-select field's bit positions as an immediate in the other addressing "
+                "mode is inferred from the two fields both being exactly 6 bits and mutually "
+                "exclusive per ADDRCLAUSE's rel switch; not spelled out verbatim in the text, so "
+                "treat the *reladdr6 bit order within those 6 bits* as an inference, not a "
+                "direct reading). See module docstring / LENGTH_RULE_COLLISIONS: 9a and 9b share "
+                "an identical top-word gray pattern.",
     },
     {
         "name": "9b", "bits": 32, "page": 364,
-        "opcode_mask": _combine(_field(31, 27, 0b00011), _field(10, 10, 0), _field(7, 0, 0b00000000))[0],
-        "opcode_value": _combine(_field(31, 27, 0b00011), _field(10, 10, 0), _field(7, 0, 0b00000000))[1],
+        "opcode_mask": _combine(_field(31, 25, 0b0000100), _field(9, 9, 0), _field(7, 0, 0b00000000))[0],
+        "opcode_value": _combine(_field(31, 25, 0b0000100), _field(9, 9, 0), _field(7, 0, 0b00000000))[1],
         "fields": {
             "rel": (24, 24), "b": (23, 23), "a": (22, 22), "pmi2": (21, 21), "cond": (20, 16),
-            "pmi10": (15, 14), "pmm": (13, 11), "ci": (9, 9), "j": (8, 8),
+            "pmi10": (15, 14), "pmm": (13, 11), "j": (10, 10), "ci": (8, 8),
         },
-        "uncertain": True,
-        "note": "row 1 (own 31:16, source used this numbering directly, no shift) gray = 0b00011 "
-                "at bits 31:27, confirmed. Row 2 gray at bit 10 and a wide run at bits 7:0 seen "
-                "in the crop, but exact right-edge boundary (7:0 vs 6:0) not fully nailed down -- "
-                "flagged uncertain for that reason. This is the pair discussed in the module "
-                "docstring's length-decode finding.",
+        "uncertain": False,
+        "note": "CORRECTED (round 2): field-width arithmetic (rel+b+a+pmi2+cond = 1+1+1+1+5 = 9) "
+                "means row 1's gray run must be 16-9 = 7 bits (31:25), not the 5 bits (31:27) "
+                "read in round 1 -- re-examined at 400 DPI, bits 26:25 ARE gray, confirmed, and "
+                "the text-layer digit row ('0 0 0 0 1 0 0 ...' for bits 31:16) shows a single "
+                "1-bit at bit 27, giving 0b0000100 -- IDENTICAL to Type9a's top-word pattern "
+                "(as expected, same family). Row 2 gray = bit 9 (0) plus bits 7:0 (all 0), 9 "
+                "bits total, re-confirmed against the crop (j sits at bit 10, ci at bit 8, both "
+                "real, between/around the gray run). CALL vs JUMP: bit 23 (b). Absolute vs "
+                "PC-relative: bit 24 (rel), same encoding as 9a. TARGET FIELD: (pmi[2:2]=bit21, "
+                "pmi[1:0]=bits15:14, pmm[2:0]=bits13:11) when rel=0 -> (Md,Ic); reinterpreted as "
+                "the 6-bit reladdr6 when rel=1, by the same reasoning as Type9a. "
+                "LENGTH-DECODE ROLE: this 9-bit gray run (bit 9 + bits 7:0) in the SECOND fetched "
+                "word is exactly the signature that, per LENGTH_RULE_MULTIWORD below, lets a "
+                "decoder tell a 32-bit Type9b apart from a 48-bit Type9a once their identical "
+                "first words have been seen.",
     },
     # ---- Type 10: cond + branch + else comp + mem data move -----------
     {
@@ -554,37 +671,68 @@ TYPES: List[Dict] = [
         "uncertain": False,
         "note": "gray = bits 47:46 = 0b11 ONLY; bits 45:32 confirmed white (all named fields sum "
                 "to exactly 14 bits: rel, d, dmi[2:0], cond[4:0], pmi[2:2], dmm[2:0] = "
-                "1+1+3+5+1+3 = 14, matching 16-2). Row 2/3 fully white.",
+                "1+1+3+5+1+3 = 14, matching 16-2). Row 2/3 fully white. CALL/JUMP/RETURN "
+                "semantics (Priority 3): Type10a is ALWAYS a jump, never a call (its Syntax "
+                "Summary only ever shows 'JUMP (Md,Ic)' / 'JUMP (PC,<reladdr6>)', no CALL form -- "
+                "there is no call-vs-jump discriminator bit because this type never calls). "
+                "Absolute-vs-PC-relative discriminator: bit 45 (rel), 0=(M2REG,I2REG) "
+                "register-indirect, 1=(pc,imm6pc) PC-relative, per the reliable ADDRCLAUSE text "
+                "table (same encoding as Type9a/9b). TARGET FIELD: (pmi[2:2]=bit37, "
+                "pmi[1:0]=bits31:30, pmm[2:0]=bits29:27) selecting (Md,Ic) when rel=0, "
+                "reinterpreted as the 6-bit reladdr6 when rel=1 -- same reuse pattern as "
+                "Type9a/9b's target field.",
     },
     # ---- Type 11: cond + branch return + comp/else comp ----------------
     {
         "name": "11a", "bits": 48, "page": 371,
-        "opcode_mask": _combine(_field(47, 44, 0b0000), _field(43, 43, 1), _field(41, 41, 1),
+        "opcode_mask": _combine(_field(47, 44, 0b0000), _field(43, 43, 1), _field(42, 42, 0),
+                                 _field(41, 41, 1), _field(39, 38, 0b00),
                                  _field(32, 32, 0), _field(31, 27, 0b00000), _field(23, 23, 0))[0],
-        "opcode_value": _combine(_field(47, 44, 0b0000), _field(43, 43, 1), _field(41, 41, 1),
+        "opcode_value": _combine(_field(47, 44, 0b0000), _field(43, 43, 1), _field(42, 42, 0),
+                                  _field(41, 41, 1), _field(39, 38, 0b00),
                                   _field(32, 32, 0), _field(31, 27, 0b00000), _field(23, 23, 0))[1],
         "fields": {
             "x": (40, 40), "cond": (36, 32), "j": (26, 26), "e": (25, 25), "lr": (24, 24),
             "compute_hi": (22, 16), "compute_lo": (15, 0),
         },
-        "uncertain": True,
-        "note": "gray confirmed at 47:44 (0b0000), 43 (1), 41 (1), plus row-2 bits 32 and 31:27 "
-                "(all 0). Bits 42, 40, 39, 38 (row 1) were not confidently resolved as gray or "
-                "white in the crop -- x's real position (40) sits inside that gap, adding to the "
-                "uncertainty. Kept as read; flagged uncertain.",
+        "uncertain": False,
+        "note": "RESOLVED (round 3): x(1)+cond[4:0](5) = 6 real bits in row 1, so the gray run "
+                "must be 16-6 = 10 bits. 7 were already directly shading-confirmed (47:44, 43, "
+                "41, 32, 31:27, 23); the arithmetic forces the remaining 3 to be bits 42, 39, 38 "
+                "(the only candidates left once x is placed at 40), and the reliable text-layer "
+                "digit row shows all three as 0 -- consistent with (though not independent proof "
+                "of) gray=0 there. Combining 'arithmetic uniquely determines the position' with "
+                "'text confirms the value' is treated as sufficient for confidence here, unlike "
+                "Type11c below where the same combination is kept uncertain because x's own "
+                "position (not just the reserved bits') was itself part of the fitted solution. "
+                "RETURN/CALL/JUMP semantics (Priority 3): Type11a is a RETURN, never a call/jump "
+                "-- there is no branch-target field; the return address comes off the PC stack. "
+                "x is the RTS-vs-RTI discriminator (0=rts, 1=rti, per the RETURN encode table "
+                "shared with Type11c), j is the (DB) delayed-branch modifier, lr (bit 24) is the "
+                "(LR) loop-reentry modifier.",
     },
     {
         "name": "11c", "bits": 16, "page": 374,
-        "opcode_mask": _combine(_field(15, 14, 0b11), _field(7, 7, 1))[0],
-        "opcode_value": _combine(_field(15, 14, 0b11), _field(7, 7, 1))[1],
-        "fields": {"x": (6, 6), "j": (5, 5), "lr": (4, 4), "cond": (4, 0)},
+        "opcode_mask": _combine(_field(15, 14, 0b11), _field(7, 7, 1), _field(13, 9, 0b00000))[0],
+        "opcode_value": _combine(_field(15, 14, 0b11), _field(7, 7, 1), _field(13, 9, 0b00000))[1],
+        "fields": {"x": (8, 8), "j": (6, 6), "lr": (5, 5), "cond": (4, 0)},
         "uncertain": True,
-        "note": "gray confirmed at bits 15:14 (0b11) and bit 7 (1) only; field-width arithmetic "
-                "(x+j+lr+cond = 8 bits) implies 8 gray bits total (16 - 8), so bits 13:8 are "
-                "probably also gray/reserved but this was not independently confirmed by direct "
-                "shading read -- flagged uncertain for the un-confirmed portion. cond[4:0] and "
-                "lr's bit ranges given here overlap (4); revision-1 arithmetic placement, not "
-                "re-verified at 400 DPI -- treat field positions as approximate.",
+        "note": "gray DIRECTLY confirmed at bits 15:14 (0b11) and bit 7 (1); the reliable "
+                "text-layer digit row confirms bits 13:9 are all 0, consistent with (not "
+                "independent proof of) them being gray too. STILL KEPT UNCERTAIN, unlike "
+                "Type11a's analogous case: here the arithmetic fit had to place x/j/lr/cond "
+                "THEMSELVES (not just the reserved filler) to make the 16 bits close with no "
+                "overlap -- x=8, j=6, lr=5, cond=4:0 is the only such fit found, but 'the only "
+                "fit I found' is weaker evidence than Type11a's situation (where x's position "
+                "was already fixed by a direct bracket read and only the FILLER bits needed "
+                "arithmetic). A decoder should treat a match against this mask as a WORKING "
+                "HYPOTHESIS: the gray positions (15,14,7) are solid, so any 16-bit word failing "
+                "those 3 bits is definitely not Type11c, but a word passing them is not "
+                "guaranteed to be Type11c either. RETURN/CALL/JUMP semantics (Priority 3): like "
+                "Type11a, this is a RETURN with no branch target; x=0/1 selects rts/rti, j is "
+                "(DB), lr is (LR), per the reliable RETURN encode table on this page (x j lr -> "
+                "0 0 0 rts; 0 0 1 rts(lr); 0 1 0 rts(db); 0 1 1 rts(db,lr); 1 0 0 rti; 1 1 0 "
+                "rti(db)).",
     },
     # ---- Type 12: do until ureg loop counter expired --------------------
     {
@@ -628,11 +776,13 @@ TYPES: List[Dict] = [
             "g": (43, 43), "d": (39, 39), "ureg": (38, 32), "l": (40, 40),
             "addr_hi": (31, 16), "addr_lo": (15, 0),
         },
-        "uncertain": True,
-        "note": "gray confirmed at bits 47:44 (0b0001) only. Bits 43:32 hold g, ureg[6:0], l and "
-                "(per field-width arithmetic) 2 unaccounted bits (41:40 or thereabouts) -- exact "
-                "split not independently re-verified beyond the 4-bit leading gray run, so field "
-                "positions here (from revision 1) are approximate; opcode_mask itself is solid.",
+        "uncertain": False,
+        "note": "gray = bits 47:44 = 0b0001, CONFIRMED (round 2) against the reliable text-layer "
+                "digit row for this figure (single 1-bit at bit 44, rest of row 1 zero). Bits "
+                "43:32 hold g, ureg[6:0], l and (per field-width arithmetic) 2 unaccounted bits "
+                "(41:40 or thereabouts) which are NOT included in opcode_mask -- so field "
+                "positions below remain approximate even though the confirmed opcode bits "
+                "themselves are solid.",
     },
     {
         "name": "14d", "bits": 48, "page": 385,
@@ -642,10 +792,11 @@ TYPES: List[Dict] = [
             "d": (42, 42), "ex": (40, 40), "l": (39, 39), "dreg": (35, 32),
             "x": (37, 37), "w": (36, 36), "addr_hi": (31, 16), "addr_lo": (15, 0),
         },
-        "uncertain": True,
-        "note": "gray confirmed at bits 47:45 (000), 44:43 (11), 41 (1) -- 6 bits total, extension "
-                "of Type14a's 4-bit gray run. Fields d/ex/l/dreg/x/w positions approximate "
-                "(revision-1 placement).",
+        "uncertain": False,
+        "note": "gray = bits 47:45 (000), 44:43 (11), 41 (1) -- 6 bits total, extension of "
+                "Type14a's 4-bit gray run, CONFIRMED (round 2) against the reliable text-layer "
+                "digit row ('0 0 0 1 1 0 1 ...' for bits 47:41, exact match). Fields d/ex/l/"
+                "dreg/x/w positions remain approximate (not re-verified this round).",
     },
     # ---- Type 15: <data7> move --------------------------------------------
     {
@@ -662,14 +813,18 @@ TYPES: List[Dict] = [
     },
     {
         "name": "15b", "bits": 32, "page": 392,
-        "opcode_mask": _combine(_field(31, 31, 1), _field(28, 28, 1), _field(22, 22, 0), _field(19, 19, 1))[0],
-        "opcode_value": _combine(_field(31, 31, 1), _field(28, 28, 1), _field(22, 22, 0), _field(19, 19, 1))[1],
+        "opcode_mask": _combine(_field(31, 31, 1), _field(28, 28, 1), _field(19, 19, 1))[0],
+        "opcode_value": _combine(_field(31, 31, 1), _field(28, 28, 1), _field(19, 19, 1))[1],
         "fields": {"i": (27, 25), "d": (24, 24), "g": (21, 21), "l": (20, 20), "ureg": (13, 7), "data": (6, 0)},
-        "uncertain": True,
-        "note": "gray confirmed at own bits 31, 28, 22, 19 (values 1,1,0,1) -- four scattered "
-                "single cells, none overlapping the named fields i[2:0]/d/g/l. Field-width "
-                "arithmetic implies about 10 gray bits total, so roughly 6 more (unconfirmed) "
-                "gray cells likely exist among 30,29,26,23,18:16 -- not claimed here.",
+        "uncertain": False,
+        "note": "gray CONFIRMED (round 2) at own bits 31, 28, 19 (values 1,1,1) against the "
+                "reliable text-layer digit row for this figure ('1 0 0 1 0 0 0 0 0 0 0 0 1 0 0 "
+                "0' for bits 31:16 -- 1-bits at exactly 31, 28, 19). Dropped the round-1 claim "
+                "at bit 22 (value 0): a digit of 0 there is equally consistent with 'white, "
+                "real field showing a 0 placeholder' and was not independently shading-"
+                "confirmed, so it is not asserted as gray. Field-width arithmetic implies "
+                "roughly 7 more gray bits exist among 30,29,26,23,18:16 that are NOT claimed "
+                "here -- the confirmed 3 bits are a safe (if incomplete) subset.",
     },
     # ---- Type 16: <data16>/<data32> move ------------------------------
     {
@@ -690,10 +845,11 @@ TYPES: List[Dict] = [
         "opcode_mask": _combine(_field(31, 28, 0b1001), _field(21, 21, 0), _field(18, 18, 1))[0],
         "opcode_value": _combine(_field(31, 28, 0b1001), _field(21, 21, 0), _field(18, 18, 1))[1],
         "fields": {"i": (27, 25), "m": (24, 22), "g": (20, 20), "data": (15, 0)},
-        "uncertain": True,
+        "uncertain": False,
         "note": "row 1 (own 31:16, shifted -16) gray = 0b1001 at 31:28 -- same lead-in as "
-                "Type16a. Two further single gray cells read at own bits 21 and 18 (values 0, "
-                "1); positions approximate (single-pass reading of a busy row).",
+                "Type16a. Two further single gray cells at own bits 21 and 18 (values 0, 1) "
+                "CONFIRMED (round 2) against the reliable text-layer digit row for this figure "
+                "(source bits 37 and 34 read 0 and 1 respectively, matching exactly).",
     },
     # ---- Type 17: <data32>/<data16> immediate write to universal reg ---
     {
@@ -733,10 +889,12 @@ TYPES: List[Dict] = [
             "sc": (41, 40), "w": (39, 39), "g": (38, 38), "is": (36, 34),
             "data_hi": (31, 16), "data_lo": (15, 0),
         },
-        "uncertain": True,
-        "note": "gray confirmed at bits 47:45 (000), 44 (1), 42 (1) -- 5 bits. Field-width "
-                "arithmetic (sc+w+g+is+idis = 2+1+1+3+3 = 10) implies 1 more gray bit somewhere "
-                "in 43/41/35 -- not confirmed, flagged uncertain. idis[2:0]'s exact position "
+        "uncertain": False,
+        "note": "gray = bits 47:45 (000), 44 (1), 42 (1) -- 5 bits, CONFIRMED (round 2) against "
+                "the reliable text-layer digit row (1-bits at 44 and 42 only, exact match). "
+                "Field-width arithmetic (sc+w+g+is+idis = 2+1+1+3+3 = 10) implies 1 more gray "
+                "bit somewhere in 43/41/35 that is NOT included in opcode_mask -- the confirmed "
+                "5 bits are a safe (if possibly incomplete) subset. idis[2:0]'s exact position "
                 "(approximately bits 33:31 by width) is unresolved and deliberately omitted from "
                 "'fields' rather than guessed.",
     },
@@ -760,14 +918,16 @@ TYPES: List[Dict] = [
             "l1ii": (30, 30), "l1dwb": (29, 29), "l1di": (28, 28),
             "l1pi": (26, 26), "l1pwb": (27, 27),
         },
-        "uncertain": True,
-        "note": "gray confirmed as one contiguous run, bits 47:40 = 0b00010111 (8 bits). The "
+        "uncertain": False,
+        "note": "gray confirmed as one contiguous run, bits 47:40 = 0b00010111 (8 bits) -- "
+                "double-checked (round 2) against the reliable text-layer digit row for this "
+                "figure, exact match. The "
                 "cache-control single-bit fields (l1ii/l1dwb/l1di/l1pi/l1pwb) sit on a YELLOW "
                 "(generically-reserved-looking) background in row 2 despite being real, "
                 "documented variable fields -- per this file's gray/yellow/white convention, "
                 "named+bracketed fields on yellow are still treated as real fields, but exact "
                 "bit positions for this cluster are carried over from revision-1 arithmetic, not "
-                "re-confirmed bit-by-bit; flagged uncertain for the field layout even though the "
+                "re-confirmed bit-by-bit; the opcode (row 1) is solid even though the "
                 "row-1 opcode run itself is solid. spu/spo, l1di/l1dwb, l1ii encode-table VALUES "
                 "are separately confirmed by reliable text tables (e.g. spu=1,spo=0 -> push sts).",
     },
@@ -833,30 +993,47 @@ TYPES: List[Dict] = [
     },
     {
         "name": "25a_rframe", "bits": 48, "page": 416,
-        "opcode_mask": _combine(_field(47, 32, 0b0001101000001000), _field(31, 20, 0b000000000000))[0],
-        "opcode_value": _combine(_field(47, 32, 0b0001101000001000), _field(31, 20, 0b000000000000))[1],
+        "opcode_mask": _combine(_field(47, 32, 0b0001101000000100), _field(31, 20, 0b000000000000))[0],
+        "opcode_value": _combine(_field(47, 32, 0b0001101000000100), _field(31, 20, 0b000000000000))[1],
         "fields": {},
-        "uncertain": True,
-        "note": "gray = the entire row 1 (16 bits) and row 2 bits 31:20 (12 bits); row 2 bits "
-                "19:16 read as white/unlabeled in the crop (unusual for a zero-operand compiler "
-                "pseudo-op) and row 3 bits 15:4 gray / 3:0 yellow. The row-1 16-bit value was "
-                "reconstructed from a 15-digit reading (one digit short of 16) and is therefore "
-                "not fully certain digit-for-digit -- flagged uncertain despite the region "
-                "boundaries (which bits are gray at all) being clear.",
+        "uncertain": False,
+        "note": "CORRECTED (round 2): row 1's 16-bit value was re-read against the reliable "
+                "text-layer digit row for this exact figure ('0 0 0 1 1 0 1 0 0 0 0 0 0 1 0 0' "
+                "for bits 47:32, 16 digits, resolving round 1's one-digit-short reading) = "
+                "0b0001101000000100. Row 2 gray = bits 31:20 (12 bits, all 0), also confirmed "
+                "against the text digit row for that row (all zero). Row 2 bits 19:16 remain "
+                "unclaimed (white/unlabeled in the crop, unusual for a zero-operand compiler "
+                "pseudo-op but not contradicted by any evidence found) -- not included in "
+                "opcode_mask. Row 3 not re-verified this round.",
     },
     {
         "name": "25c_rframe", "bits": 16, "page": 417,
         "opcode_mask": 0, "opcode_value": 0,
         "fields": {},
         "uncertain": True,
-        "note": "SOURCE FIGURE IS DEFECTIVE, confirmed at 400 DPI (not a resolution artifact): "
-                "page 417's figure is internally captioned 'Type25a_rframe' and reproduces "
-                "~32 bits of content (two full rows), identical in every particular checked to "
-                "the Type25a_rframe figure on page 416, even though Type25c is a 16-bit type per "
-                "the task's own pre-established suffix table. Best guess is that Type25c_rframe's "
-                "true 16-bit encoding equals the top 16 bits of Type25a_rframe's encoding (a "
-                "short form emitting only the top word) -- NOT verified, and not populated here "
-                "as a fact.",
+        "note": "SOURCE FIGURE IS DEFECTIVE, confirmed independently by BOTH vision (400 DPI) AND "
+                "the text layer: page 417's figure is internally captioned 'Type25a_rframe' and "
+                "its text-layer digit rows are byte-for-byte identical to the Type25a_rframe "
+                "figure on page 416, i.e. this is a straight duplicate in the source PDF, not a "
+                "resolution artifact or a caption typo. RETRACTED (round 3): round 2 guessed "
+                "Type25c_rframe's value equals Type25a_rframe's row 1 verbatim (0x1A04), by "
+                "analogy with the other 16-bit 'c' forms. Checking that analogy against the "
+                "two 'c' forms this file actually HAS confirmed bits for shows it is false: "
+                "Type21c's value (0b...0001, bit 0 set) is not a truncation of Type21a's "
+                "confirmed all-zero region, and Type22c's set bit sits at bit 0 while Type22a's "
+                "sits at a different relative position (bit 7 once both are aligned to a 16-bit "
+                "window) -- so a 'c' form's low bits carry genuinely new information not "
+                "derivable from its 'a' sibling's leading bits, and round 2's 0x1A04 guess for "
+                "25c_rframe has no real support. opcode_mask/value are reset to 0/0 (fully "
+                "unset) rather than kept as an unsupported number. DECODER POLICY: never match "
+                "Type25c_rframe; a linear walk that hits rframe's real 16-bit short-form "
+                "encoding will report it as an unrecognized word at that offset. This is a "
+                "genuine, named gap -- resolving it needs either a non-defective copy of this "
+                "figure (a different PDF revision, or the vendor's own disassembler/assembler "
+                "listing an rframe short-form byte sequence) or empirical recovery from real "
+                "compiled code (finding a 16-bit word that recurs immediately after the "
+                "register-restore pattern rframe's abstract describes, in a position a linear "
+                "walk has otherwise fully resolved up to).",
     },
     # ---- Type 26: sync ----------------------------------------------------
     {
@@ -918,7 +1095,134 @@ _BY_NAME: Dict[str, Dict] = {t["name"]: t for t in TYPES}
 # Names whose first-fetched-word gray pattern is known to collide with
 # another type's, per the finding above -- excluded from the single-word
 # LENGTH_RULE table even though their TYPES entry is otherwise confident.
-_FIRST_WORD_AMBIGUOUS = {"1a", "1b", "5a_move", "5b_move", "9a", "9b"}
+# See LENGTH_RULE_MULTIWORD for the actual (partial) resolution of these.
+_FIRST_WORD_AMBIGUOUS = {"1a", "1b", "4a", "4b", "5a_move", "5b_move", "9a", "9b"}
+
+
+# ---------------------------------------------------------------------------
+# LENGTH_RULE_MULTIWORD: the ordered, multi-word decision procedure asked
+# for (round 2, Priority 2) for every sibling pair this transcription found
+# sharing an identical first-fetched-word gray pattern. Each entry is one
+# group: the type names involved, and an ORDERED list of steps a decoder
+# should execute after already matching the shared first-word pattern.
+#
+# A step is (description, word_offset, mask16, value16, resolves_to) where
+# word_offset counts 16-bit words from the start of the instruction (0 =
+# the first word, already matched to get into this group; 1 = the second
+# fetched word; 2 = the third). mask16/value16 are checked against that
+# word using the SAME "own numbering" as TYPES (bit 15 = that word's MSB).
+# resolves_to is the type name (and therefore length) a decoder should
+# conclude if the step's test passes. A group's steps are tried in order;
+# if none match, see "if_none_match".
+#
+# HOW TO READ A GROUP: this is a real decision procedure, not a heuristic
+# -- e.g. for GROUP_1A_1B, a decoder that has matched word 0 against
+# 0b001 at bits 15:13 should fetch word 1 and test bits 6:0 against
+# 0b0111111; on a match it has CONCLUSIVELY identified a 32-bit Type1b
+# (nothing else in this instruction set shares that combination); on a
+# mismatch it should conclude 48-bit Type1a and fetch a third word.
+#
+# HONESTLY NAMED GAP: GROUP_5A_5B_MOVE has no second-word test, because no
+# gray bit was found in Type5b_move's second (and only remaining) word at
+# all in this transcription -- see that group's "if_none_match". Either
+# this pair genuinely cannot be told apart from opcode bits alone (in
+# which case a decoder has no choice but to use other context, e.g. a
+# symbol table or alignment assumption, to break the tie), or this
+# transcription's crop of Type5b_move's word simply did not catch a real
+# gray cell that a future, more careful pass would find. Both
+# possibilities are stated; neither is asserted as fact.
+# ---------------------------------------------------------------------------
+
+LENGTH_RULE_MULTIWORD: List[Dict] = [
+    {
+        "group": "GROUP_1A_1B",
+        "members": ["1a", "1b"],
+        "shared_word0": (_mask(15, 13), 0b001 << 13),  # bits 47:45 = 0b001
+        "steps": [
+            ("Type1b's compute[22:16] position is gray/fixed at 0b0111111 in the second "
+             "fetched word; Type1a's own field there is a real, arbitrary compute[22:16].",
+             1, _mask(6, 0), 0b0111111, "1b"),
+        ],
+        "if_none_match_length": 48,
+        "if_none_match": "48-bit Type1a (fetch a third word: compute[15:0], fully arbitrary).",
+        "residual_ambiguity": "A genuine Type1a instruction whose compute[22:16] happens to "
+            "equal 0b0111111 would be misidentified as Type1b. Whether that specific compute "
+            "encoding is reserved/illegal for Type1a (which would make this safe) is not stated "
+            "in the text pages read for this transcription.",
+    },
+    {
+        "group": "GROUP_4A_4B",
+        "members": ["4a", "4b", "4d"],
+        "shared_word0": (_mask(15, 12), 0b0110 << 12),  # bits 47:44 = 0b0110
+        "steps": [
+            # Tried WIDEST-MASK-FIRST on purpose (see residual_ambiguity below): Type4d's
+            # 4-bit word-1 pattern is checked before Type4b's 1-bit pattern, because every
+            # word that satisfies Type4d's pattern also satisfies Type4b's (bit 0 = 0 is
+            # part of both). Bit positions here are WORD-LOCAL (bit 15 = that word's own
+            # MSB), i.e. Type4d's own bits 22:20/16 shifted -16 to become word-local 6:4/0.
+            ("Type4d grays 4 bits of its second word (word-local 6:4 = 0b011, and bit 0 = 0) "
+             "where Type4a's corresponding bits are real (compute[22:16]/dreg[3:0]).",
+             1, _combine(_field(6, 4, 0b011), _field(0, 0, 0))[0],
+             _combine(_field(6, 4, 0b011), _field(0, 0, 0))[1], "4d"),
+            ("Type4b's dreg[6:0]/data boundary sacrifices exactly one bit (word-local bit 0 "
+             "of the second word, its own source bit 16) as gray/fixed = 0, where Type4a's "
+             "corresponding bit is real (part of dreg[3:0]).",
+             1, _mask(0, 0), 0, "4b"),
+        ],
+        "if_none_match_length": 48,
+        "if_none_match": "48-bit Type4a (fetch a third word: compute[15:0], fully arbitrary).",
+        "residual_ambiguity": "Same shape of problem as GROUP_1A_1B: a genuine Type4a/4d "
+            "instruction whose real fields happen to equal the shorter/other form's required "
+            "pattern would be misidentified. Note the two step tests above must be tried "
+            "WIDEST-MASK-FIRST (Type4d's 5-bit test before Type4b's 1-bit test), since Type4d's "
+            "required pattern (bit 16 = 0) is consistent with -- does not contradict -- "
+            "Type4b's single-bit requirement; get the order wrong and a Type4d instruction can "
+            "be misread as Type4b.",
+    },
+    {
+        "group": "GROUP_9A_9B",
+        "members": ["9a", "9b"],
+        "shared_word0": (_mask(15, 9), 0b0000100 << 9),  # bits 47:41 (9a) / 31:25 (9b) = 0b0000100
+        "steps": [
+            ("Type9b's second (and last) word grays bit 9 and bits 7:0 (9 bits total) = 0, "
+             "where Type9a's corresponding word (its OWN second word, bits 31:16) leaves all "
+             "but one of those same relative positions real (pmi/pmm/j/ci/e/compute_hi).",
+             1, _combine(_field(9, 9, 0), _field(7, 0, 0b00000000))[0],
+             _combine(_field(9, 9, 0), _field(7, 0, 0b00000000))[1], "9b"),
+        ],
+        "if_none_match_length": 48,
+        "if_none_match": "48-bit Type9a (its second word has only ONE required bit -- bit 23 = "
+            "0 -- so confirm that, then fetch a third word: compute[15:0], fully arbitrary).",
+        "residual_ambiguity": "Same shape of problem again: a genuine Type9a instruction whose "
+            "e/ci/compute_hi bits happen to all be 0 across that whole 9-bit span would be "
+            "misidentified as Type9b. This is the pair the coordinator specifically asked "
+            "about (dispatch-through-register-call detection) -- see CONTROL_FLOW for the "
+            "actual call/jump/target bits, which are unaffected by this length ambiguity "
+            "(they sit in word 0, already resolved before this procedure even runs).",
+    },
+    {
+        "group": "GROUP_5A_5B_MOVE",
+        "members": ["5a_move", "5b_move"],
+        "shared_word0": (_mask(15, 11), 0b01110 << 11),  # bits 47:43 (5a) / 31:27 (5b) = 0b01110
+        "steps": [],
+        "if_none_match_length": None,
+        "if_none_match": "UNRESOLVED -- see residual_ambiguity. This transcription found "
+            "exactly one gray bit for Type5a_move's second word (own bit 14, i.e. source bit "
+            "30, value 0) and NO gray bit at all for Type5b_move's second (and last) word. A "
+            "bit that is gray in the 48-bit form but has no corresponding gray bit in the "
+            "32-bit form gives a decoder nothing to test FOR the 32-bit form specifically.",
+        "residual_ambiguity": "Two possibilities, both stated because neither was resolved: "
+            "(a) this pair genuinely cannot be told apart from fixed bits alone, and the ISA "
+            "relies on something outside the opcode (e.g. a linear disassembler that already "
+            "knows the previous instruction's end address, or alignment padding) to know which "
+            "one it is looking at; or (b) Type5b_move's second word DOES have a gray bit this "
+            "transcription's crop simply missed (the crop for that specific figure was not "
+            "re-examined with the same scrutiny as the three groups above). A decoder that "
+            "hits this case with no other context should treat the instruction as AMBIGUOUS "
+            "and stop the linear walk rather than guess -- per this project's own rule, a wrong "
+            "length desyncs everything after it silently, which is worse than raising here.",
+    },
+]
 
 
 def _top_word_prefix(t: Dict) -> Optional[Tuple[int, int]]:
@@ -1010,9 +1314,184 @@ def decode_length(word16: int) -> Optional[int]:
     return matches[0][2]
 
 
+def decode_length_multiword(word0: int, word1: Optional[int] = None) -> Optional[int]:
+    """Priority-2 deliverable: the actual multi-word decision procedure
+    (not a heuristic) for the specific groups in LENGTH_RULE_MULTIWORD,
+    falling back to decode_length()'s single-word (longest-match)
+    handling for everything else.
+
+    Call with just word0 first. If this returns None, that means word0's
+    pattern is one of LENGTH_RULE_MULTIWORD's shared first words and a
+    second word is needed -- fetch the next 16-bit word and call again
+    with both. Returns the resolved length (16/32/48), or None if still
+    undetermined (either genuinely ambiguous, e.g. GROUP_5A_5B_MOVE, or no
+    known pattern matches at all).
+    """
+    word0 &= 0xFFFF
+    for group in LENGTH_RULE_MULTIWORD:
+        mask0, value0 = group["shared_word0"]
+        if (word0 & mask0) != value0:
+            continue
+        if word1 is None:
+            return None  # ambiguous from word0 alone; caller must fetch word1
+        word1 &= 0xFFFF
+        for _description, word_offset, mask16, value16, resolves_to in group["steps"]:
+            if word_offset != 1:
+                continue
+            if (word1 & mask16) == value16:
+                return get_type(resolves_to)["bits"]
+        return group["if_none_match_length"]  # None here means genuinely unresolved -- see residual_ambiguity
+    return decode_length(word0)
+
+
 def get_type(name: str) -> Optional[Dict]:
     """Look up a TYPES entry by name (e.g. "8a", "5a_move")."""
     return _BY_NAME.get(name)
+
+
+# ---------------------------------------------------------------------------
+# CONTROL_FLOW: Priority 3 deliverable. Every type that performs a CALL, a
+# JUMP, or a RETURN, with the exact bit positions (in the type's own
+# numbering, per TYPES) of:
+#   - target        : how the branch target is determined
+#   - call_vs_jump   : the bit that distinguishes a call from a jump (or
+#                       None if this type is never a call, or never a jump)
+#   - rel_vs_abs     : the bit that distinguishes absolute/register-indirect
+#                       addressing from PC-relative addressing (or None if
+#                       this type only ever does one or the other)
+#   - kind           : "call_or_jump", "jump_only", "return", or
+#                       "compiler_pseudo_branch" (Type25's cjump/rframe --
+#                       used only by compiler-generated prologues/epilogues,
+#                       still relevant to a call-graph walk since these mark
+#                       function entry/exit shapes)
+#
+# All of this is drawn directly from TYPES entries already built above;
+# this section exists to answer "which types are control flow and exactly
+# which bits matter" in one place, per the coordinator's Priority 3 ask,
+# without duplicating the bit data.
+# ---------------------------------------------------------------------------
+
+CONTROL_FLOW: Dict[str, Dict] = {
+    "8a": {
+        "kind": "jump_or_call", "call_vs_jump": (39, "0=jump, 1=call"),
+        "rel_vs_abs": (40, "0=absolute imm24, 1=PC-relative"),
+        "target": "addr[23:0] = addr_hi(23:16) ++ addr_lo(15:0), a full 24-bit immediate "
+                  "(absolute or PC-relative per bit 40) -- the ONLY control-flow type in this "
+                  "set whose target is a literal address baked into the instruction rather "
+                  "than a register.",
+    },
+    "9a": {
+        "kind": "jump_or_call", "call_vs_jump": (39, "0=jump, 1=call (JUMPCLAUSE text table)"),
+        "rel_vs_abs": (40, "0=(Md,Ic) register-indirect, 1=(PC,reladdr6) (ADDRCLAUSE text table)"),
+        "target": "register-indirect: pmi[2:0] (bit 37 ++ bits 31:30) selects Ic, pmm[2:0] "
+                  "(bits 29:27) selects Md, giving (Md,Ic). PC-relative (same physical bits, "
+                  "rel=1): the same 6 bits read as the 6-bit two's-complement reladdr6. "
+                  "THIS IS THE INDIRECT-CALL-THROUGH-A-REGISTER FORM the coordinator asked "
+                  "about: 'call (Md,Ic)' with rel=0, b=1 is exactly what a jump/call through a "
+                  "register pair (i.e. a function-pointer/dispatch-table entry) looks like at "
+                  "the instruction level -- see 9b for its 32-bit VISA twin.",
+    },
+    "9b": {
+        "kind": "jump_or_call", "call_vs_jump": (23, "0=jump, 1=call"),
+        "rel_vs_abs": (24, "0=(Md,Ic) register-indirect, 1=(PC,reladdr6)"),
+        "target": "register-indirect: pmi[2:0] (bit 21 ++ bits 15:14) selects Ic, pmm[2:0] "
+                  "(bits 13:11) selects Md. Same reuse-as-reladdr6 pattern as 9a when rel=1. "
+                  "Same dispatch-through-register significance as 9a, in the 32-bit VISA form.",
+    },
+    "10a": {
+        "kind": "jump_only", "call_vs_jump": None,  # never a call
+        "rel_vs_abs": (45, "0=(Md,Ic) register-indirect, 1=(PC,reladdr6)"),
+        "target": "register-indirect: pmi[2:0] (bit 37 ++ bits 31:30) selects Ic, pmm[2:0] "
+                  "(bits 29:27) selects Md. Same reuse-as-reladdr6 pattern when rel=1. Also a "
+                  "register-indirect-jump form (dispatch-table-shaped), but ISA-only (not VISA) "
+                  "and combined with a memory transfer, not a call.",
+    },
+    "11a": {
+        "kind": "return", "call_vs_jump": None, "rel_vs_abs": None,
+        "target": "NONE -- return address comes off the PC stack, not from the instruction. "
+                  "x (bit 40, approximate) selects rts(0)/rti(1); j is the (DB) modifier; lr "
+                  "(bit 24, confirmed) is the (LR) modifier.",
+    },
+    "11c": {
+        "kind": "return", "call_vs_jump": None, "rel_vs_abs": None,
+        "target": "NONE, same as 11a. x (bit 8), j (bit 6), lr (bit 5) per this file's "
+                  "arithmetic-fitted (not directly shading-confirmed) layout; cond[4:0] = "
+                  "bits 4:0.",
+    },
+    "25a_direct": {
+        "kind": "compiler_pseudo_branch", "call_vs_jump": None, "rel_vs_abs": None,
+        "target": "addr[23:0], absolute -- compiler-generated 'cjump', used in prologue/epilogue "
+                  "code, not general control flow; still a jump for call-graph purposes if it "
+                  "ever appears mid-function.",
+    },
+    "25a_pcrel": {
+        "kind": "compiler_pseudo_branch", "call_vs_jump": None, "rel_vs_abs": None,
+        "target": "reladdr[23:0], PC-relative. Compiler-generated 'cjump', the DB-modifier form "
+                  "the manual says should always be used ('The cjump instruction should always "
+                  "use the DB modifier').",
+    },
+    "25a_rframe": {
+        "kind": "compiler_pseudo_branch", "call_vs_jump": None, "rel_vs_abs": None,
+        "target": "NONE -- rframe is a fixed register-transfer pseudo-op (I7=I6, I6=DM(0,I6)), "
+                  "not a branch; included here because it marks a function EPILOGUE shape "
+                  "(restoring the frame/stack pointers), useful for finding function "
+                  "boundaries in a linear walk even though it doesn't change the PC itself.",
+    },
+    "25c_rframe": {
+        "kind": "compiler_pseudo_branch", "call_vs_jump": None, "rel_vs_abs": None,
+        "target": "NONE, same as 25a_rframe -- but see TYPES['25c_rframe']['uncertain']: this "
+                  "type's own encoding is a reconstruction, not a reading, because its source "
+                  "figure is a confirmed duplicate of 25a_rframe's.",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# UNRESOLVED_POLICY: the gate the coordinator asked for -- for each of the
+# 4 types this transcription could not fully resolve after three rounds,
+# exactly why, and exactly what a decoder (tools/sharc_disasm.py) does
+# about it. Every entry here has opcode_mask that is either 0/unset
+# (never matched) or real-but-flagged (matched, but the result is
+# annotated uncertain rather than trusted blindly). Nothing in this dict
+# is used to silently guess a length -- see decode_length_multiword's
+# and disassemble()'s actual behavior, which is to emit an "unknown"
+# record and stop rather than proceed past a match against any of these.
+# ---------------------------------------------------------------------------
+
+UNRESOLVED_POLICY: Dict[str, str] = {
+    "3a": "opcode_mask/value are 0/unset -- NEVER matched. Source figure (page 315) is a "
+          "confirmed duplicate of Type1a's; no independent bit reading of Type3a's own opcode "
+          "exists, and this file declined to guess one even by analogy (3a would need its own "
+          "multi-word disambiguation from 3b, which also isn't derivable without a real "
+          "opcode). A linear walk that reaches a genuine Type3a instruction reports 'unknown' "
+          "at that offset and stops. Resolving this needs a non-defective copy of page 315 (a "
+          "different PDF revision or print) or an independent SHARC+ opcode reference.",
+    "25c_rframe": "opcode_mask/value are 0/unset -- NEVER matched, after round 2's "
+          "analogy-based guess (0x1A04, copied from Type25a_rframe's row 1) was retracted in "
+          "round 3 as unsupported (see TYPES['25c_rframe']'s note: the same analogy applied to "
+          "Type21a/21c and Type22a/22c, where this file DOES have confirmed data, turns out "
+          "false there too). A linear walk that reaches a genuine Type25c_rframe instruction "
+          "reports 'unknown' and stops. Resolving this needs the same kind of source as Type3a, "
+          "or empirical recovery from a fully-disassembled real binary (see the module "
+          "docstring's suggestion of finding a recurring 16-bit word after a frame-restore "
+          "pattern).",
+    "11c": "opcode_mask/value ARE populated and WILL be matched by the decoder, but every "
+          "match is flagged uncertain=True and annotated rather than trusted outright. Only 3 "
+          "of this type's 16 bits (15, 14, 7) are directly shading-confirmed; the rest of the "
+          "layout (x=8, j=6, lr=5, cond=4:0, reserved 13:9) is 'the only internally-consistent "
+          "arithmetic fit found', not an independent reading. A decoder should treat a "
+          "NON-match on bits 15/14/7 as a confident rejection (this is definitely not "
+          "Type11c), but a match as merely consistent with Type11c, not proof of it -- if a "
+          "walk decodes a run of instructions built on a Type11c match and the surrounding "
+          "code stops making sense, that match is the first place to doubt.",
+    "2b": "opcode_mask/value ARE populated (by analogy with Type2a's confirmed shading at the "
+          "structurally-corresponding position) but flagged uncertain=True: this specific "
+          "figure's crop caught no shading information at all (round 1), so round 2's values "
+          "come from the text-layer digit row plus a positional analogy to a DIFFERENT type's "
+          "(Type2a's) figure, never from a direct shading read of Type2b's own page. Same "
+          "decoder posture as Type11c: a non-match is a confident rejection, a match is a "
+          "hypothesis worth flagging, not trusting.",
+}
 
 
 def self_test() -> None:
@@ -1106,10 +1585,73 @@ def self_test() -> None:
     rule_names = {name for _, _, _, name in LENGTH_RULE}
     assert collision_names <= rule_names, "a collision references a name not in LENGTH_RULE"
 
+    # LENGTH_RULE_MULTIWORD (Priority 2, round 2): every group's steps and
+    # if_none_match_length must reference real TYPES entries and agree
+    # with their declared bits, and the ordered procedure must actually
+    # resolve the two groups this file claims to have resolved.
+    for group in LENGTH_RULE_MULTIWORD:
+        for member in group["members"]:
+            assert get_type(member) is not None, f"{group['group']}: unknown member {member!r}"
+        for _desc, word_offset, mask16, value16, resolves_to in group["steps"]:
+            assert word_offset >= 1, f"{group['group']}: step word_offset must be >= 1"
+            assert 0 <= mask16 <= 0xFFFF and 0 <= value16 <= 0xFFFF, f"{group['group']}: bad step mask/value"
+            resolved = get_type(resolves_to)
+            assert resolved is not None, f"{group['group']}: step resolves to unknown type {resolves_to!r}"
+        if group["if_none_match_length"] is not None:
+            assert group["if_none_match_length"] in (16, 32, 48)
+
+    # GROUP_1A_1B and GROUP_9A_9B must actually resolve via
+    # decode_length_multiword(); GROUP_5A_5B_MOVE must honestly not.
+    g1a1b = next(g for g in LENGTH_RULE_MULTIWORD if g["group"] == "GROUP_1A_1B")
+    w0_1a1b = g1a1b["shared_word0"][1]
+    assert decode_length_multiword(w0_1a1b) is None, "should need a second word"
+    assert decode_length_multiword(w0_1a1b, 0b0111111) == 32, "Type1b's fixed pattern should resolve to 32"
+    assert decode_length_multiword(w0_1a1b, 0) == 48, "anything else should resolve to Type1a's 48"
+
+    g9 = next(g for g in LENGTH_RULE_MULTIWORD if g["group"] == "GROUP_9A_9B")
+    w0_9 = g9["shared_word0"][1]
+    assert decode_length_multiword(w0_9, 0) == 32, "Type9b's all-zero required bits should resolve to 32"
+    assert decode_length_multiword(w0_9, 1 << 9) == 48, "a set bit-9 should fall back to Type9a's 48"
+
+    g5 = next(g for g in LENGTH_RULE_MULTIWORD if g["group"] == "GROUP_5A_5B_MOVE")
+    w0_5 = g5["shared_word0"][1]
+    assert decode_length_multiword(w0_5, 0) is None, "GROUP_5A_5B_MOVE must stay honestly unresolved"
+
+    # CONTROL_FLOW (Priority 3): every entry must reference a real TYPES
+    # name, and any bit position it cites must be in range for that
+    # type's width.
+    for name, cf in CONTROL_FLOW.items():
+        t = get_type(name)
+        assert t is not None, f"CONTROL_FLOW references unknown type {name!r}"
+        for key in ("call_vs_jump", "rel_vs_abs"):
+            spec = cf.get(key)
+            if spec is not None:
+                bit, _description = spec
+                assert 0 <= bit < t["bits"], f"CONTROL_FLOW[{name!r}][{key!r}] bit {bit} out of range"
+    # The two types the coordinator specifically named for dispatch-table
+    # detection must be marked as a call/jump with a target field.
+    for name in ("9a", "9b"):
+        assert CONTROL_FLOW[name]["kind"] == "jump_or_call"
+        assert CONTROL_FLOW[name]["call_vs_jump"] is not None
+    for name in ("11a", "11c"):
+        assert CONTROL_FLOW[name]["kind"] == "return"
+
+    # UNRESOLVED_POLICY must exactly cover the still-uncertain types (the
+    # "gate" -- nothing uncertain should be silently unaccounted for, and
+    # nothing resolved should still be carrying leftover policy prose).
+    uncertain_names = {t["name"] for t in TYPES if t["uncertain"]}
+    assert set(UNRESOLVED_POLICY.keys()) == uncertain_names, (
+        f"UNRESOLVED_POLICY {sorted(UNRESOLVED_POLICY)} must exactly match the uncertain types "
+        f"{sorted(uncertain_names)}"
+    )
+
     print(
-        f"self_test OK: {len(TYPES)} types loaded, {len(LENGTH_RULE)} candidate length-decode "
-        f"prefix(es), {len(LENGTH_RULE_COLLISIONS)} pairwise collision(s) among them (see "
-        f"LENGTH_RULE_COLLISIONS and the module docstring)"
+        f"self_test OK: {len(TYPES)} types loaded "
+        f"({sum(1 for t in TYPES if t['uncertain'])} still uncertain), "
+        f"{len(LENGTH_RULE)} candidate length-decode prefix(es), "
+        f"{len(LENGTH_RULE_COLLISIONS)} pairwise collision(s) among them, "
+        f"{len(LENGTH_RULE_MULTIWORD)} multi-word decode group(s), "
+        f"{len(CONTROL_FLOW)} control-flow type(s) documented"
     )
 
 
