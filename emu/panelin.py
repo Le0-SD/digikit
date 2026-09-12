@@ -128,3 +128,58 @@ def state(m, profile):
         'consumed': _u32(m, profile.uart8_consume_idx),
         'rx_callback': _u32(m, profile.uart8_rx_callback),
     }
+
+
+def _cstr(m, addr, limit=64):
+    out = bytearray()
+    while len(out) < limit:
+        byte = m.uc.mem_read(addr + len(out), 1)[0]
+        if byte == 0:
+            break
+        out.append(byte)
+    return out.decode('ascii', 'replace')
+
+
+def control_name(m, profile, code, kind='button'):
+    """-> the firmware's own name for a control code, or None past the end.
+
+    Read out of the running image rather than written down here, so it stays
+    right on a firmware version this project has never seen and so each
+    product describes its own panel. `kind` is 'button' or 'encoder'; they
+    are separate code spaces.
+    """
+    base = (profile.panel_button_names if kind == 'button'
+            else profile.panel_encoder_names)
+    if base is None or code < 0:
+        return None
+    ptr = _u32(m, base + 4 * code)
+    if ptr in (0, 0xFFFFFFFF):
+        return None
+    return _cstr(m, ptr)
+
+
+def control_names(m, profile, kind='button', limit=256):
+    """-> {code: name} for a whole table, stopping at its terminator."""
+    out = {}
+    for code in range(limit):
+        name = control_name(m, profile, code, kind)
+        if name is None:
+            break
+        out[code] = name
+    return out
+
+
+def code_for(channel, bit):
+    """-> the control code a (channel, bit) press reports, or None.
+
+    Channels 0..5 are `channel * 8 + bit + 1` on both products, measured with
+    tools/panelsweep.py by reading the records the firmware emits. Channel 6
+    is not linear and is not the same on the two products, so it returns None
+    rather than guessing -- sweep the build in hand, or just read the code out
+    of the emitted record.
+    """
+    if not 0 <= bit < 8:
+        raise ValueError('bit must be 0..7, got %r' % (bit,))
+    if not 0 <= channel <= 5:
+        return None
+    return channel * 8 + bit + 1

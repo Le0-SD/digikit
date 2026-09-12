@@ -330,6 +330,67 @@ class ScanAll:
         return tuple(load_addr + off for off in hits), '%d occurrence(s)' % len(hits)
 
 
+class StringTable:
+    """A `char *` table, located by the literal strings its entries point at.
+
+    A data table has no opcodes to sign, and this one is reached through a
+    C++ object field rather than an immediate operand, so there is nothing
+    for Xrefs, Operand or Sig to anchor to. What it does have is content:
+    entry n points at a known string. Finding an aligned run of big-endian
+    pointers whose targets ARE those strings identifies the table without
+    depending on where the compiler put it -- which is what keeps it working
+    on a firmware version neither known build has seen.
+
+    The strings are read back out of the image and compared, rather than
+    their addresses being required unique, because these products reuse
+    short labels: `TRIG` is both a page button and the stem of `TRIG 1`,
+    and `ENCODER A` appears in two different tables.
+
+    Only the NUL that TERMINATES an anchor is required, never one before it.
+    The compiler tail-merges string literals, so a short label is commonly
+    the suffix of a longer one -- `SRC` is the last three bytes of
+    `PAGE SRC` -- and demanding a leading NUL matches nothing at all.
+
+    Resolves to the address of entry 0. Must match exactly once.
+    """
+
+    def __init__(self, strings):
+        self.strings = tuple(strings)
+
+    def _cstr(self, img, load_addr, addr, limit=64):
+        off = addr - load_addr
+        if off < 0 or off >= len(img):
+            return None
+        end = img.find(b'\x00', off)
+        if end < 0 or end - off > limit:
+            return None
+        try:
+            return img[off:end].decode('ascii')
+        except UnicodeDecodeError:
+            return None
+
+    def resolve(self, img, load_addr, got):
+        first = self.strings[0].encode()
+        found = set()
+        for off in _find_all(img, first + b'\x00'):
+            ptr = load_addr + off
+            for base in _find_all(img, struct.pack('>I', ptr)):
+                if base % 4:
+                    continue
+                if base + 4 * len(self.strings) > len(img):
+                    continue
+                entries = [struct.unpack_from('>I', img, base + 4 * i)[0]
+                           for i in range(len(self.strings))]
+                if all(self._cstr(img, load_addr, e) == s
+                       for e, s in zip(entries, self.strings)):
+                    found.add(base)
+        if len(found) != 1:
+            return None, ('%d table(s) matching %d anchor string(s), need 1'
+                          % (len(found), len(self.strings)))
+        base = load_addr + found.pop()
+        return base, 'char* table at 0x%08x' % base
+
+
 def _find_all(img, needle):
     out, start = [], 0
     while True:
@@ -677,6 +738,24 @@ SYMBOLS = [
     ('uart8_ring_ptr', Offset('_uart8_globals', 0x10), False),
     ('uart8_consume_idx', Offset('_uart8_globals', 0x30), False),
     ('uart8_rx_callback', Offset('_uart8_globals', 0x40), False),
+
+    # The factory test mode's own names for the front-panel controls, which
+    # is the firmware telling us what each control code means rather than us
+    # inferring it from what the screen did. Both are `char *` tables indexed
+    # by control code and terminated by 0xFFFFFFFF, and the two products
+    # genuinely differ: Digitakt's button table ends at 50 (SAMPLING) while
+    # Digitone's continues to 54 (VOICE, ARP, PLUS, STACK, MINUS), which is
+    # why Digitakt reports nothing meaningful for channel 6 bits 2..7.
+    #
+    # Anchored on enough leading entries to separate them from the other two
+    # similar tables nearby -- one of which also starts with UNDEFINED, and
+    # another of which also contains the ENCODER A..H labels.
+    ('panel_button_names',
+     StringTable(('UNDEFINED', 'TRIG', 'SRC', 'FLTR', 'AMP', 'FX', 'MOD')),
+     False),
+    ('panel_encoder_names',
+     StringTable(('UNDEFINED', 'ENCODER A', 'ENCODER B', 'ENCODER C')),
+     False),
 
     # ----------------------------------------------------------------
     # Post-intro progress markers. These are what tells you whether the OS
