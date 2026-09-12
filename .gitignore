@@ -22,3 +22,4 @@ docs/refs/*.pdf
 docs/refs/rm.txt
 .coldtrace/
 tools/ghidra/SHARC/data/languages/*.sla
+tools/nbdocs-scrape.py
