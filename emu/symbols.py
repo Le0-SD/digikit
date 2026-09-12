@@ -641,6 +641,44 @@ SYMBOLS = [
     ('sd_data_sem', Offset('sd_flag', 0x44), False),
 
     # ----------------------------------------------------------------
+    # The front-panel serial link. There is no memory-mapped key matrix to
+    # find: tools/mmiotrace.py measured 60M post-intro instructions on each
+    # build and saw zero GPIO, zero DSPI and zero unclaimed MMIO. The panel
+    # is a separate microcontroller on UART8, and button and encoder events
+    # arrive the way MIDI would -- eDMA channel 34 into a 1024-byte ring,
+    # then vector 154 into the driver's receive callback.
+    #
+    # uart8_init is that driver's init routine, and it sits at the SAME
+    # address in both builds: it is BSP-layer code, not relocated
+    # application code, so it anchors as Fixed rather than by signature.
+    # 81 of its first 96 bytes are identical across the two images and the
+    # first 25 are a literal match; the verify window stops at 24 because
+    # byte 25 begins the first per-build abs32 operand.
+    #
+    # Everything else chains off it, so none of it needs its own scan. The
+    # instruction at +0x16 is `clr.l (abs).l` (42b9) and its operand at
+    # +0x18 is the base of the driver's contiguous globals block. The field
+    # offsets inside that block were read off both decompiles side by side
+    # and are identical:
+    #
+    #     +0x10  RX ring base    0x4FE1A000 Digitakt / 0x4E502000 Digitone
+    #     +0x30  consume index
+    #     +0x40  receive callback pointer
+    #
+    # emu/serial.py hardcoded Digitakt's 0x4094CD84 / 0x4094CDA4 /
+    # 0x4094CDB4 for these three. On Digitone they read 0xFFFFFFFF, so
+    # feeding that build through it would have written into unmapped memory
+    # rather than a ring.
+    # ----------------------------------------------------------------
+    ('uart8_init',
+     Fixed(0x4000243e,
+           verify='2f02740f41f9ec09404b1210202f000843f9ec07000042b9'), False),
+    ('_uart8_globals', Operand('uart8_init', at=0x18), False),
+    ('uart8_ring_ptr', Offset('_uart8_globals', 0x10), False),
+    ('uart8_consume_idx', Offset('_uart8_globals', 0x30), False),
+    ('uart8_rx_callback', Offset('_uart8_globals', 0x40), False),
+
+    # ----------------------------------------------------------------
     # Post-intro progress markers. These are what tells you whether the OS
     # actually took over, and emu/gui.py reports them on its status line --
     # it named all three by Digitakt address, so on Digitone the line read
