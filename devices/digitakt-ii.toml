@@ -1,0 +1,123 @@
+# Digitakt II. How this panel was mapped: docs/HANDOVER-2026-09-13.md.
+#
+# This file deliberately contains NO control names and NO guest addresses.
+# Names come from the firmware's own factory-test tables, resolved at run time
+# through emu/symbols.py and read by emu/panelin.py's control_names(), so they
+# cannot drift out of sync with the image and a firmware version nobody has
+# seen still names itself. Addresses are derived by signature for the same
+# reason -- freezing either here would mean a new file per firmware release.
+#
+# What lives here is only what the image cannot tell us: which physical
+# product this is, and how its controls are arranged.
+
+[device]
+name = "Digitakt II"
+short = "dt2"
+
+# Identity is the hash. The filename is a hint for error messages only:
+# people rename firmware files, and emu/config.py resolving one BY NAME is
+# exactly how a tie between two firmwares silently picks the wrong product.
+[[firmware]]
+version = "1.15C"
+sha256 = "62d588456e47194bd56dfee9568fb9dd4521c4ff1e8b5427eb461355532e8c6c"
+filename = "Digitakt_II_OS1.15C.syx"
+
+[panel]
+# The wire carries (channel, bit); the firmware reports a control code.
+# Channels 0..5 are linear -- code = channel * 8 + bit + 1, codes 1..48 --
+# measured on this build with tools/panelsweep.py by reading the event
+# records the firmware emits.
+linear_channels = 6
+encoders = 9
+
+# Channel 6 is not linear, and is not the same on the two products. Digitakt's
+# name table ends at code 50, so bits 2..7 have nothing to report and are
+# absent here rather than guessed at.
+[panel.exceptions]
+49 = [6, 1]
+50 = [6, 0]
+
+# Groups are editorial: they say how to ARRANGE controls for display, nothing
+# more. The authoritative name of each code is the firmware's.
+[[panel.group]]
+name = "pages"
+kind = "button"
+codes = [1, 2, 3, 4, 5, 6]
+layout = "row"
+
+[[panel.group]]
+name = "modes"
+kind = "button"
+codes = [7, 8, 9]
+layout = "row"
+
+[[panel.group]]
+name = "confirm"
+kind = "button"
+codes = [10, 12]
+layout = "row"
+
+[[panel.group]]
+name = "arrows"
+kind = "button"
+codes = [11, 13, 14, 15]
+layout = "dpad"
+
+[[panel.group]]
+name = "modifiers"
+kind = "button"
+codes = [16, 17, 18]
+layout = "row"
+
+[[panel.group]]
+name = "transport"
+kind = "button"
+codes = [19, 20, 21]
+layout = "row"
+
+[[panel.group]]
+name = "select"
+kind = "button"
+codes = [22, 23, 24]
+layout = "row"
+
+[[panel.group]]
+name = "trigs"
+kind = "button"
+codes = [25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]
+layout = "grid"
+columns = 8
+
+[[panel.group]]
+name = "encoder_push"
+kind = "button"
+codes = [41, 42, 43, 44, 45, 46, 47, 48]
+layout = "grid"
+columns = 4
+
+[[panel.group]]
+name = "level_push"
+kind = "button"
+codes = [49]
+layout = "single"
+
+[[panel.group]]
+name = "product"
+kind = "button"
+codes = [50]
+layout = "single"
+
+# Encoder ROTATION is a separate code space from the encoder push buttons
+# above: rotation 1..8 are ENCODER A..H, rotation 9 is ENCODER LEVEL.
+[[panel.group]]
+name = "encoders"
+kind = "encoder"
+codes = [1, 2, 3, 4, 5, 6, 7, 8]
+layout = "grid"
+columns = 4
+
+[[panel.group]]
+name = "level"
+kind = "encoder"
+codes = [9]
+layout = "single"
