@@ -70,6 +70,33 @@ def feed(m, profile, data):
     return m.uc.reg_read(UC_M68K_REG_PC)
 
 
+def encode_buttons(channel, mask):
+    """-> the two wire bytes that set one group's button state.
+
+    Split out from `buttons` so a caller holding several queued events can
+    concatenate them and deliver the lot with a single `feed`: the firmware's
+    ISR drains the whole receive ring, so one raised vector covers every
+    message in it. Raising once per event instead would nest exception frames
+    for input the ring already holds.
+    """
+    if not 0 <= channel <= 0x0F:
+        raise ValueError('button channel must be 0..15, got %r' % (channel,))
+    if not 0 <= mask <= 0xFF:
+        raise ValueError('button mask must be a byte, got %r' % (mask,))
+    return bytes([(TAG_BUTTON << 4) | channel, mask])
+
+
+def encode_encoder(channel, delta):
+    """-> the two wire bytes that turn one encoder by `delta` detents."""
+    if not 0 <= channel < ENCODERS:
+        raise ValueError('encoder channel must be 0..%d, got %r'
+                         % (ENCODERS - 1, channel))
+    if not -128 <= delta <= 127:
+        raise ValueError('encoder delta must fit a signed byte, got %r'
+                         % (delta,))
+    return bytes([(TAG_ENCODER << 4) | channel, delta & 0xFF])
+
+
 def buttons(m, profile, channel, mask):
     """Set the state of one group of eight buttons. -> new PC.
 
@@ -79,11 +106,7 @@ def buttons(m, profile, channel, mask):
     `buttons(.., 0, 0x00)` -- there is no separate release message on the
     wire.
     """
-    if not 0 <= channel <= 0x0F:
-        raise ValueError('button channel must be 0..15, got %r' % (channel,))
-    if not 0 <= mask <= 0xFF:
-        raise ValueError('button mask must be a byte, got %r' % (mask,))
-    return feed(m, profile, bytes([(TAG_BUTTON << 4) | channel, mask]))
+    return feed(m, profile, encode_buttons(channel, mask))
 
 
 def press(m, profile, channel, bit, held=0):
@@ -107,14 +130,7 @@ def encoder(m, profile, channel, delta):
     +/-30, so a value outside a signed byte is refused here rather than
     wrapping silently into the opposite direction.
     """
-    if not 0 <= channel < ENCODERS:
-        raise ValueError('encoder channel must be 0..%d, got %r'
-                         % (ENCODERS - 1, channel))
-    if not -128 <= delta <= 127:
-        raise ValueError('encoder delta must fit a signed byte, got %r'
-                         % (delta,))
-    return feed(m, profile, bytes([(TAG_ENCODER << 4) | channel,
-                                   delta & 0xFF]))
+    return feed(m, profile, encode_encoder(channel, delta))
 
 
 def state(m, profile):
@@ -183,3 +199,70 @@ def code_for(channel, bit):
     if not 0 <= channel <= 5:
         return None
     return channel * 8 + bit + 1
+
+
+class Held:
+    """Which buttons are currently down, per wire channel.
+
+    The wire carries a whole channel's eight buttons as a single bitmask, so
+    pressing a second button in the same group means sending both bits set --
+    not a second press message. The modifier chords these devices are built
+    around (hold FUNC, tap a page button) only work if something tracks that,
+    and this is that something.
+
+    Takes a `device` (see emu/device.py) because which wire position a control
+    code sits at is per-product: channel 6 differs between Digitakt and
+    Digitone, and Digitakt has no wire position at all for some codes.
+    """
+
+    def __init__(self, device):
+        self.device = device
+        self.masks = {}
+
+    def _apply(self, code, down):
+        pos = self.device.wire_for(code)
+        if pos is None:
+            return None
+        channel, bit = pos
+        mask = self.masks.get(channel, 0)
+        mask = (mask | (1 << bit)) if down else (mask & ~(1 << bit))
+        self.masks[channel] = mask
+        return channel, mask
+
+    def press(self, code):
+        """-> (channel, mask) to send, or None if this product lacks the code."""
+        return self._apply(code, True)
+
+    def release(self, code):
+        """-> (channel, mask) to send, or None if this product lacks the code."""
+        return self._apply(code, False)
+
+    def is_down(self, code):
+        pos = self.device.wire_for(code)
+        if pos is None:
+            return False
+        channel, bit = pos
+        return bool(self.masks.get(channel, 0) & (1 << bit))
+
+    def down_codes(self):
+        """-> every code currently held, ascending."""
+        out = []
+        for channel, mask in self.masks.items():
+            for bit in range(8):
+                if mask & (1 << bit):
+                    code = self.device.code_at(channel, bit)
+                    if code is not None:
+                        out.append(code)
+        return sorted(out)
+
+    def release_all(self):
+        """-> the (channel, mask) messages that let go of everything.
+
+        Worth sending on restart, or whenever the UI loses track of the mouse:
+        the firmware believes whatever state it was last told, so a button
+        still down in this model is a button still held as far as it knows.
+        """
+        out = [(channel, 0)
+               for channel, mask in sorted(self.masks.items()) if mask]
+        self.masks = {}
+        return out

@@ -125,5 +125,72 @@ class PanelWireFormatTest(unittest.TestCase):
         self.assertEqual(panelin.ENCODERS, 9)
 
 
+class HeldTest(unittest.TestCase):
+    """Held-button bookkeeping, against the real shipped device files."""
+
+    def setUp(self):
+        import os
+        from emu import device
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        devices = device.load_all(os.path.join(repo, 'devices'))
+        self.by_name = {d.name: d for d in devices}
+        self.dn2 = self.by_name['Digitone II']
+        self.dt2 = self.by_name['Digitakt II']
+
+    def test_press_sets_one_bit(self):
+        held = panelin.Held(self.dn2)
+        self.assertEqual(held.press(1), (0, 0x01))
+
+    def test_two_buttons_in_one_channel_share_a_mask(self):
+        # The whole point: a chord is one message with two bits set, not two
+        # separate press messages.
+        held = panelin.Held(self.dn2)
+        held.press(1)
+        self.assertEqual(held.press(2), (0, 0x03))
+        self.assertEqual(sorted(held.down_codes()), [1, 2])
+
+    def test_release_clears_only_its_own_bit(self):
+        held = panelin.Held(self.dn2)
+        held.press(1)
+        held.press(2)
+        self.assertEqual(held.release(1), (0, 0x02))
+        self.assertEqual(held.down_codes(), [2])
+
+    def test_buttons_in_different_channels_do_not_interfere(self):
+        held = panelin.Held(self.dn2)
+        self.assertEqual(held.press(1), (0, 0x01))
+        self.assertEqual(held.press(9), (1, 0x01))
+        self.assertEqual(sorted(held.down_codes()), [1, 9])
+
+    def test_func_chord(self):
+        # FUNC is code 17 -> channel 2 bit 0; a page button is code 1.
+        held = panelin.Held(self.dn2)
+        self.assertEqual(held.press(17), (2, 0x01))
+        self.assertEqual(held.press(1), (0, 0x01))
+        self.assertTrue(held.is_down(17))
+        self.assertTrue(held.is_down(1))
+
+    def test_code_this_product_lacks_is_declined(self):
+        # Digitone has code 54; Digitakt's panel stops at 50.
+        self.assertIsNotNone(panelin.Held(self.dn2).press(54))
+        self.assertIsNone(panelin.Held(self.dt2).press(54))
+
+    def test_release_all_lets_go_of_every_channel(self):
+        held = panelin.Held(self.dn2)
+        held.press(1)
+        held.press(17)
+        self.assertEqual(held.release_all(), [(0, 0), (2, 0)])
+        self.assertEqual(held.down_codes(), [])
+
+    def test_release_all_is_empty_when_nothing_is_down(self):
+        held = panelin.Held(self.dn2)
+        held.press(1)
+        held.release(1)
+        self.assertEqual(held.release_all(), [])
+
+    def test_is_down_is_false_for_an_absent_code(self):
+        self.assertFalse(panelin.Held(self.dt2).is_down(54))
+
+
 if __name__ == '__main__':
     unittest.main()
