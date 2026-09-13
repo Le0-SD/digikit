@@ -4,21 +4,24 @@
 Section 7 is the SHARC DSP image. The ColdFire MAIN OS makes no audio; it
 RPCs parameter changes to this DSP, so anything sound-related lives here.
 
-The blob is NOT a pure boot-stream: only the first 11,248 bytes parse as ADI
-boot-stream blocks, and that prologue is byte-identical between Digitakt II
-1.15C and Digitone II 1.10E, so it is a shared second-stage loader, not
-product code. The product-specific material is everything after it, in a
-format this tool does not decode.
+The blob is a pure ADI boot-stream: with the FILL bit correctly identified
+(see below), the entire file parses as a single block chain -- 104 blocks
+for Digitakt II 1.15C and 96 for Digitone II 1.10E, consuming 100% of both
+files. The final block carries BFLAG_FINAL and byte_count 0, and its
+target_address is the image entry point (0x1c1338 for Digitakt, 0x1c12e2
+for Digitone).
 
 The blob begins with an ADI boot-stream: a 16-byte, little-endian, four
 32-bit-field (block_code, target_address, byte_count, argument) header per
 block. A header is valid iff the byte-wise XOR of all 16 header bytes is
 zero -- that is the format's header checksum and the reliable way to find
-block boundaries. block_code bit 12 is FILL: when set, no payload follows
-the header (the block is a zero/constant fill of byte_count bytes);
-otherwise exactly byte_count payload bytes follow. Other block_code bits are
-NOT decoded here -- their ADI semantics have not been verified, so this
-tool only reports them as bitN rather than inventing meanings.
+block boundaries. block_code bit 8 is BFLAG_FILL (0x100): when set, no
+payload follows the header (the block is a zero/constant fill of
+byte_count bytes) -- a FILL block has no payload in the stream; otherwise
+exactly byte_count payload bytes follow. Bit 12 is BFLAG_IGNORE, not FILL.
+Other block_code bits are decoded per the standard ADI BFLAG set (see
+BFLAGS below); any bit not in that set is reported as bitN rather than
+inventing a meaning.
 
 Measured region split, as examples, not universal rules: Digitakt's tail
 (everything after the 11,248-byte prologue) is roughly 56 KB of float-like
@@ -57,7 +60,35 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 HEADER_LEN = 16
-FILL_BIT = 12
+BFLAGS = {
+    "SAFE": 4,
+    "AUX": 5,
+    "FILL": 8,
+    "QUICKBOOT": 9,
+    "CALLBACK": 10,
+    "INIT": 11,
+    "IGNORE": 12,
+    "INDIRECT": 13,
+    "FIRST": 14,
+    "FINAL": 15,
+}
+FILL_BIT = BFLAGS["FILL"]
+SW_ALIAS_BASE = 0x28000000
+
+
+def sw_to_byte(addr):
+    """Short-word (execution) address -> loader byte address."""
+    return 2 * addr + SW_ALIAS_BASE
+
+
+def byte_to_sw(addr):
+    """Loader byte address -> short-word (execution) address. Returns None if addr is below SW_ALIAS_BASE or is odd."""
+    if addr < SW_ALIAS_BASE:
+        return None
+    delta = addr - SW_ALIAS_BASE
+    if delta % 2:
+        return None
+    return delta // 2
 
 # Measured on this firmware's own aPLib-compressed container streams, which
 # is the only honest local definition of "compressed": sections 2/3/7 of
@@ -79,11 +110,14 @@ ENTROPY_RAW_CEILING = 7.5
 HDRCHK_SHIFT = 24
 
 
+_BIT_NAMES = {bit: name for name, bit in BFLAGS.items()}
+
+
 def _flags(block_code):
     flags = []
     for bit in range(HDRCHK_SHIFT):
         if block_code & (1 << bit):
-            flags.append("FILL" if bit == FILL_BIT else "bit%d" % bit)
+            flags.append(_BIT_NAMES.get(bit, "bit%d" % bit))
     return flags
 
 
@@ -129,6 +163,33 @@ def parse_blocks(data):
         offset = payload_offset + payload_len
         index += 1
     return blocks
+
+
+def offset_for_address(blocks, addr, space="sw"):
+    """File offset holding the byte at `addr`, or None if no loaded block
+    covers it. space="sw" treats addr as a short-word address and converts
+    via sw_to_byte first; space="byte" uses it directly. FILL blocks are
+    never a match -- they occupy address space but have no bytes in the
+    file."""
+    byte_addr = sw_to_byte(addr) if space == "sw" else addr
+    for b in blocks:
+        if b["fill"]:
+            continue
+        if b["target_address"] <= byte_addr < b["target_address"] + b["payload_len"]:
+            return b["payload_offset"] + (byte_addr - b["target_address"])
+    return None
+
+
+def address_for_offset(blocks, offset, space="sw"):
+    """Inverse: the address that file `offset` loads to, or None if the
+    offset is a header or lies outside every block payload."""
+    for b in blocks:
+        if b["fill"]:
+            continue
+        if b["payload_offset"] <= offset < b["payload_offset"] + b["payload_len"]:
+            byte_addr = b["target_address"] + (offset - b["payload_offset"])
+            return byte_to_sw(byte_addr) if space == "sw" else byte_addr
+    return None
 
 
 def entropy(data):
@@ -290,6 +351,11 @@ def main():
     ap.add_argument("--dump-blocks", help="write each block's payload here")
     ap.add_argument("--align", action="store_true",
                     help="run alignment() over regions and block payloads")
+    ap.add_argument("--addr", action="append", default=[],
+                    help="address to resolve to a file offset (hex 0x... or "
+                         "decimal); repeatable")
+    ap.add_argument("--addr-space", choices=("sw", "byte"), default="sw",
+                    help="how to interpret --addr values (default: sw)")
     args = ap.parse_args()
 
     data = open(args.blob, "rb").read()
@@ -374,6 +440,26 @@ def main():
                 for stride in sorted(k for k in a if k != "total"))
             print("%-20s len=%-8d n=%-6d %s" % (
                 item["label"], item["length"], a["total"], hist_str))
+
+    if args.addr:
+        print("\n--- addr ---")
+        for addr_str in args.addr:
+            addr = int(addr_str, 0)
+            offset = offset_for_address(blocks, addr, space=args.addr_space)
+            print("addr=0x%x (%s)" % (addr, args.addr_space))
+            if offset is None:
+                print("  not covered by any loaded block")
+                continue
+            block = None
+            for b in blocks:
+                if not b["fill"] and \
+                        b["payload_offset"] <= offset < b["payload_offset"] + b["payload_len"]:
+                    block = b
+                    break
+            print("  offset=0x%x  block=blk%02d" % (
+                offset, block["index"] if block else -1))
+            chunk = data[offset:offset + 32]
+            print("  " + " ".join("%02x" % byte for byte in chunk))
 
     return 0
 
