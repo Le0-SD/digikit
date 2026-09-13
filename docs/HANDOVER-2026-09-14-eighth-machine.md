@@ -12,7 +12,7 @@ separate table". Read those, not this file, for facts.
 selected, and makes a sound that the seven stock machines do not.**
 
 That is a ladder, and it is worth being explicit about which rung the work is
-on, because the four patches below only reach rung 2:
+on, because the five patches below only reach rung 2:
 
 1. **Listed** — an eighth row appears in MACHINE SEL with its own name.
 2. **Selectable** — selecting it does not crash, and the track plays. At this
@@ -30,96 +30,73 @@ on, because the four patches below only reach rung 2:
    deepest item in the whole project. A machine that reuses an existing DSP
    mode with different parameters avoids it entirely.
 
-So: the four patches below get to rung 2. Rung 3 is the next real research
+So: the five patches below get to rung 2. Rung 3 is the next real research
 question and is not started. Rung 4 is out of scope for a first machine.
 
 ## Where it stands
 
 An eighth machine is dispatched and named in the emulator, proven by direct
 in-guest call for all nine dispatch inputs. It is not yet visible on screen.
-All four patches that should reach rung 2 are now implemented and pass
-headlessly, but **the patched image still fails to boot under the GUI** —
-see "The open failure" below.
+All five patches are implemented, and **with all five applied the image boots**
+under the GUI's emulator configuration: 6 tasks, `DTIM3` firing, no exception,
+to 400M instructions. The type-7 boot failure was a fifth bound, the machine
+list's sort comparator; see `docs/FINDINGS.md`, "The thrower is
+`std::map<int,int>::at`". Nobody has looked at the list on screen yet.
 
 | # | patch | what it does | state |
 |---|---|---|---|
 | 1 | source list | relocate table D to the cave with an eighth entry; repoint the `pea` immediates at `0x40052000`/`0x4005200a` | implemented |
 | 2 | dispatch | trampoline `FUN_400caf48` for `type == 7`; descriptor and COW string reps in the cave | implemented, boots clean on its own |
-| 3 | grouping | `FUN_4005d7b8`: `7206b2806604` -> `7207b2806504` at `0x4005d7ca`, making the exact-6 test a `<= 7` range test so type 7 gets group `1` instead of `0` | implemented, effect unverified |
+| 3 | grouping | `FUN_4005d7b8`: `7206b2806604` -> `7207b2806504` at `0x4005d7ca`, making the exact-6 test a `<= 7` range test so type 7 gets group `1` instead of `0` | implemented; not a boot blocker, rendering effect unobserved |
 | 4 | display name | copy the 7-row `0x401fbc50` name table to the cave with an eighth row; repoint `FUN_400dcc50`'s bound (`0x400dcc51`) and `lea` immediate (`0x400dcc62`) | implemented, table verified correct |
+| 5 | rank | cave shim on the sort comparator's one-time map insert (`jsr` at `0x40051872`), supplying eight `(type, position)` pairs instead of seven | implemented; `list+rank` and all five boot |
 
 Two more are known but not blocking: the filter-list bounds (`pea` at
 `0x40052296`/`0x400522a0`), only needed if the new machine should be a filter
 target; and `FUN_4005e022`'s `param_1[0x73] + 1 < 8` auto-scroll gate, which
 is cosmetic.
 
-## The open failure
+## The boot failure — resolved
 
-With all four halves applied, `emu/gui.py` freezes at the end of the boot
-animation: 2 tasks instead of 6, `DTIM3 0`, `mainloop 0`, and the main task in
-the terminal loop at `0x4012d2fa`. The fault log reports **0 distinct pages
-touched**. Same signature as the `list`-only failure.
-
-**What that trap actually is: `std::terminate` after an uncaught C++
-exception.** The GUI's "hung on a weak pointer" label is an old guess. The
-stack scan names `FUN_40178424`, part of the exception unwinder, which aborts
-when no handler is found. The thrower is most likely `std::out_of_range` from
-an `at()` on a seven-element container — see `docs/FINDINGS.md` for the two
-candidate range-checkers and their machine-territory callers. That reframing
-is the most useful thing this thread produced about the failure, and it is
-where the next session should start.
-
-What the bisect has established so far:
-
-| halves applied | result |
-|---|---|
-| none | boots, 6 tasks, renders |
-| `dispatch` | boots, 6 tasks, renders past 340M |
-| `list` | **fails** |
-| `list` with `--eighth 6` (eight rows, no new machine type) | boots |
-| `list+group` | **fails** — so patch 3 is not sufficient |
-| all four | **fails** |
-
-So eight entries is fine; introducing machine *type 7* is what breaks it.
-Patch 3 was the hypothesis for why, and `list+group` disproves it — the
-grouping helper is not the only thing that rejects type 7.
-
-Also untested in isolation: `group`, `name`, and `list+group+name`. The GUI's
-`--patch-machine` accepts `+`-separated combinations for exactly this.
-
-What has been ruled out, so it is not re-investigated:
-
-- **The cave.** The `dispatch` half writes the trampoline, descriptor and
-  string reps into the same region and boots clean.
-- **The name table copy.** Read back from guest memory after patching, all
-  eight rows are correct: `Oneshot/ONE`, `Werp/WRP`, `Stretch/STRE`,
-  `Repitch/RPI`, `Grid/GRD`, `MIDI/MIDI`, `Slice/SLC` (plus its third
-  pointer), `Placeholder/PLC`.
-- **The pre-existing `weak_ptr` hang.** Both arms of every A/B ran with
-  `--weakptr`; only the patched arm fails.
-- **A wild pointer.** Zero memory faults in the failing run.
+It was `std::out_of_range` from `map::at(7)` in `FUN_400517c4`, the comparator
+`FUN_40051fbc` uses to `stable_sort` the machine list. Patch 5 fixes it. The
+full account, including two corrections to what this handover used to say,
+is in `docs/FINDINGS.md`. Not carried here.
 
 ## How to reproduce
 
 The machine-select screen renders, and modifier chords work, with:
 
-    uv run python -m emu.gui --weakptr --patch-machine=dispatch snapshots/boot400M.snap
+    uv run python -m emu.gui --weakptr --patch-machine snapshots/boot400M.snap
 
-Click FUNC (it latches, staying sunken), then SRC. The list stays open.
+Click FUNC (it latches, staying sunken), then SRC. In the GUI the list stays
+open and scrolls to PLACEHOLDER; a scripted headless replay closes it, for
+reasons still open (see FINDINGS.md). Every delivered feed is printed as
+`[gui] input --feed ...`, replayable with `tools/guirun.py --feed`.
 `clear` in the latch box releases held modifiers.
 
-- `--patch-machine` takes `list`, `dispatch`, or bare for both, with an
-  optional `:N` suffix setting the eighth list entry's value (e.g.
-  `--patch-machine=list:6`).
+- `--patch-machine` bare applies all five parts; `=list+rank` style
+  combinations apply exactly those, and an optional `:N` suffix sets the
+  eighth list entry's value (e.g. `--patch-machine=list:6`). Unknown part
+  names are refused rather than silently ignored.
 - `--panel-dwell N` sets the emulated dwell between panel state changes in
   chunks, default 16 (~50 ms). `0` restores the old coalescing and reproduces
   the flicker the dwell fixed.
 - `--weakptr` is required on this snapshot or the main task traps before the
   UI comes up.
 
-Headless equivalents: `tools/machinepatch.py --milestone b [--parts
-list|dispatch|both] [--eighth N]`, which also unit-tests the dispatch by
-calling it in-guest.
+Headless, in the GUI's exact configuration (same build flags, timers, intro
+handover and hook set), with code hooks and a stack scan at a chosen address:
+
+    uv run python tools/guirun.py snapshots/boot400M.snap --weakptr \
+        --patch-machine=list+rank --at 0x401d5680=cxa_throw \
+        --stack-at 0x401d5680 --limit 400000000
+
+It reproduces GUI-only failures that `tools/machinepatch.py` and
+`tools/uidrive.py` do not, and runs 400M instructions in under a minute. Two
+agent-run gotchas: the shell is zsh, so a `$FLAGS` variable arrives as one
+argument (and a bare `--patch-machine` will swallow it); and there is no
+`timeout` binary, so bound runs with `--limit`.
 
 ## Retractions from this thread
 
@@ -134,26 +111,32 @@ calling it in-guest.
    come from a separate static table. Corrected in FINDINGS.md.
 4. **"The UI task is never scheduled" was wrong** — it was true only of
    headless resume runs. Under `emu/gui.py` the UI runs normally.
+5. **Group `0` does not break boot, and the two "range-checkers" named for
+   the terminal loop were message strings, not functions.** The failure was
+   the sort comparator's `map::at`. Both corrected in `docs/FINDINGS.md`.
 
 ## Suggested order
 
-1. **Sweep for remaining bounds before implementing.** Three of the four
-   patches above were discovered only when something broke. `FUN_400caf48`
-   and `FUN_400dcc50` are both accessors of the same shape — a `moveq #6`
-   bound followed by a base address — and between them have eleven callers.
-   Grep the image for that instruction shape to find any sibling accessors in
-   one pass, rather than discovering them one crash at a time.
-2. **Find why type 7 still breaks boot.** Patches 3 and 4 are written; the
-   question is what else rejects the new machine type. Start with the
-   `list+group` run named in "The open failure" — it is one command and it
-   splits the remaining search in half. The `[gui] FAULT` lines and the
-   terminal-loop fault summary are now printed unconditionally, so a failing
-   run reports more than it used to.
-3. Decode the descriptor's nine parameter IDs — rung 3, and the first thing
+1. **Look at it.** Run the GUI with bare `--patch-machine`, open MACHINE SEL
+   (FUNC then SRC), and see whether an eighth row draws, what it is called, and
+   where its separator falls — that is patch 3's and patch 4's first real
+   test. `emu/gui.py` needs Tk, which the agent environment lacks, so this one
+   is a human run.
+2. **Select it** — rung 2. Scroll to the eighth row and select it; the track
+   should then behave as MANUAL SLICE. If that throws, `tools/guirun.py
+   --at 0x401d5680 --stack-at 0x401d5680` names the thrower in one run.
+3. **Sweep for remaining bounds.** Five patches, and four of them were found
+   only when something broke. `FUN_400caf48` and `FUN_400dcc50` are accessors
+   of the same shape — a `moveq #6` bound followed by a base address — and
+   between them have eleven callers; the comparator was a different shape
+   entirely, a static `std::map` built from immediates. Grep the image for
+   both shapes, and for other functions referencing `"map::at"`, before the
+   next crash finds them.
+4. Decode the descriptor's nine parameter IDs — rung 3, and the first thing
    that makes the machine actually different rather than a renamed clone.
-4. Convert the whole thing to a real image patch through `tools/patchimg.py`
+5. Convert the whole thing to a real image patch through `tools/patchimg.py`
    and `dt2/build.py`, and put it through `tools/roundtrip.py`.
-5. Only then hardware — and the standing advice from the previous handover
+6. Only then hardware — and the standing advice from the previous handover
    still holds: prove recovery mode while the device is healthy, then flash
    an unmodified rebuild before anything patched.
 
@@ -164,6 +147,7 @@ calling it in-guest.
     tools/refscan.py      exhaustive static scan for absolute references into a range
     tools/machinepatch.py install the eighth machine live; --parts bisects it
     tools/uidrive.py      script panel input and watch for UI-side signals
+    tools/guirun.py       the GUI's emulator configuration, headless: --at hooks, --stack-at scans, --input clicks, --feed replay, --png-at captures
     tools/ghidraq.py      gained a `range LO HI` subcommand
 
 `emu/gui.py` gained `--patch-machine`, `--panel-dwell`, latching modifiers,

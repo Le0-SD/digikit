@@ -338,38 +338,108 @@ That explains the otherwise-odd combination of symptoms — an abort with **zero
 memory faults**, triggered only by a specific value. A bounds check that
 throws is not a wild read.
 
-The likely thrower is `std::out_of_range` from an `at()` on a seven-element
-container. The image carries `vector::_M_range_check` at `0x40225586` and
-`map::at` at `0x40213a8f`, and of the twelve functions referencing them, two
-sit in machine territory: **[O]**
+**The thrower is `std::map<int,int>::at` in the list's sort comparator — not
+either `vector::at`.** Found with `tools/guirun.py`, a headless twin of the
+GUI's emulator configuration that reproduces the failure exactly (terminal
+loop at ~63M, 2 tasks, `DTIM3 0`), by hooking the throw path instead of
+guessing at containers. On a `list`-only run: **[V]**
 
-| range-checker | called from | neighbourhood |
-|---|---|---|
-| `FUN_4019bf70` (`vector::at`) | `FUN_40060042`, `FUN_400603a6` | `MachineSelectionView` is `FUN_400607b2`, the list builders `FUN_40060504`/`FUN_4006069c` |
-| `FUN_401ac0fe` (`vector::at`) | `FUN_400cb4b4` | the dispatch is `FUN_400caf48` |
+| hook | hits |
+|---|---|
+| `__cxa_throw` `0x401d5680` | 1, typeinfo `0x40210018` |
+| `__throw_out_of_range` `0x401d105c` | 1, message `0x40213a8f` = `"map::at"` |
+| `FUN_4019bf70`, `FUN_401ac0fe` (the two `vector::at` candidates) | 0, 0 |
 
-Neither is confirmed to be on the failing path yet. Hooking both and seeing
-which fires is the next step, and it should name the container that needs an
-eighth element.
+A correction to what this replaces: `0x40225586` and `0x40213a8f` are the
+*message strings* `"vector::_M_range_check"` and `"map::at"`, not functions —
+`0x40213a8f` is odd, and ColdFire code is word-aligned. Both `vector::at`
+candidates `pea 0x40225586` then `jsr 0x401d105c`, which is
+`__throw_out_of_range(const char*)`: it allocates the exception and calls
+`__cxa_throw` at `0x401d5680`. Hooking those two catches every such throw,
+whatever the container. **[C]**
+
+The throwing `at()` is `FUN_40198030`, a `std::map<int,V>::at` (RB-tree walk,
+signed-int key at `node+0x10`, value at `node+0x14`) with exactly one caller,
+`FUN_400517c4`. A stack scan at the throw gives the chain `FUN_400517c4` <- the
+insertion-sort and merge helpers at `0x40051968`..`0x40051e4c` <- `FUN_40051fbc`
+at `0x4005207e`, the `jsr` to `__stable_sort_adaptive` right after
+`get_temporary_buffer`. **[V]**
+
+So `FUN_40051fbc` does not just copy table D into the list vector. It then
+`std::stable_sort`s it, with `FUN_400517c4` as the comparator. That comparator
+holds a function-local static `std::map<int,int>` at `0x40984cbc` (guard byte
+`0x40984ce8`; `__cxa_guard_acquire`/`release` are `0x401cf7ea`/`0x401cf846`),
+filled once by the range insert `FUN_40198948` from seven longword pairs on its
+own frame, `[-0x38(a6), a6)`. Read from the instruction bytes, not the
+decompiler: **[V]**
+
+| key (machine type) | 0 | 1 | 2 | 3 | 6 | 4 | 5 |
+|---|---|---|---|---|---|---|---|
+| value (display position) | 0 | 1 | 2 | 3 | 4 | 5 | 6 |
+
+That is the inverse of table D. The comparator returns `map.at(a) < map.at(b)`
+in D0's low byte (`sgt.b`, then `neg.l`). With type 7 in the list, the first
+comparison involving it calls `map.at(7)`. There is no key 7, so it throws,
+nothing catches it, and that is the whole failure.
+
+Ghidra records no references to `0x40984cbc` or `0x40984cc0`, even though both
+are absolute `pea`/`lea` operands in `FUN_400517c4`, so `xrefs` on the map
+finds nothing; `callers 0x40198948` finds its one writer. **[V]**
+
+This also retires the grouping hypothesis further down. On the failing run,
+`FUN_4005d7b8` has **zero** hits before the throw: the sort runs before any
+row is grouped. **[V]**
+
+**The fix is patch 5, `rank`: extend the map's initialiser, not its lookup.**
+The insert's call site is a 6-byte `jsr $40198948.l` at `0x40051872`.
+Repointing its operand at a 22-byte cave shim leaves the comparator, guard,
+map, lookups and throw-on-unknown exactly as they were. The shim overwrites the
+`[begin, end)` stack arguments with an eight-pair cave table and tail-jumps to
+the real insert. The table is `(type, position)` over the list itself, which
+reproduces the stock seven pairs and adds `(7, 7)`. Disassembled back from the
+emitted bytes: **[V]**
+
+```
+40051872  jsr    $403040fc.l          ; was jsr $40198948.l
+403040fc  move.l #$4030411c, $8(a7)   ; begin -> cave table
+40304104  move.l #$4030415c, $c(a7)   ; end   -> table + 64
+4030410c  jmp    $40198948.l          ; the real range insert
+```
+
+Its precondition refuses to patch if the guard byte is already set, because
+the static would never be rebuilt. All runs are `tools/guirun.py --weakptr`
+from `snapshots/boot400M.snap` to 400M instructions: **[V]**
+
+| parts | result |
+|---|---|
+| none (control) | boots: 6 tasks, `DTIM3` 2038, no throw |
+| `list` | terminal loop at ~63M, one `out_of_range` |
+| `list+rank` | boots: 6 tasks, `DTIM3` 2034, no throw |
+| `list+dispatch+group+name+rank` | boots: 6 tasks, `DTIM3` 2028, no throw |
+
+Its arguments show that type 7 really passes through the comparator rather
+than being skipped. On `list+rank` the comparator runs 16 times against the
+control's 13; the first ten comparisons are identical in both, and the 11th
+and 12th are `(7, 6)` and `(7, 5)`. **[V]**
 
 Narrowing further with `--patch-machine=list:6`, which builds an eight-entry
 list whose last entry duplicates MANUAL SLICE instead of introducing a new
 machine type: **it boots normally.** So eight entries is fine, and **the
 value 7 specifically is what breaks it.** **[V]**
 
-That points at `FUN_4005d7b8`, the grouping helper `MachineListView` uses to
+That pointed at `FUN_4005d7b8`, the grouping helper `MachineListView` uses to
 place separators. It is not a table lookup but inline branch logic:
 `{0,1,2,3,4,6} -> 1`, `{5} -> 2`, and anything `>= 7 -> 0` (via `x &
 0xffffff00`, arithmetically zero for 7..255). So machine 7 lands in group
-id `0`, which nothing else uses. An earlier pass called that cosmetic — a
-spurious separator. It is not: something on the group-0 path is never
-constructed, and the row build then traps. Exactly what, is open. **[O]**
+id `0`, which nothing else uses. **[V]**
 
-The practical consequence for an eighth machine: it is not enough to extend
-the list and dispatch. `FUN_4005d7b8` has to give the new type a group id
-that the rest of the UI recognises — most likely `1`, the group the five
-sample-based machines share — and that is another small patch, in inline
-branch logic rather than a table.
+An earlier version of this section concluded that group `0` is what breaks
+boot. **That was wrong.** The value-7 failure is the sort comparator's
+`map::at`, described above, which runs before the grouping helper is ever
+called, and `list+rank` boots with type 7 still in group `0`. Whether group
+`0` renders wrongly (a spurious separator, a missing row) is unobserved,
+because no run has drawn the list yet. Patch 3 stays in the set as the
+likely rendering fix, not as a boot fix. **[C][O]**
 
 Worth recording as a near-miss: the trampoline's two branch displacements were
 wrong on the first attempt — `bne.b` landed on the `rts` rather than the block
@@ -497,6 +567,60 @@ are built but never drawn without navigation. **[V]**
 Still open: what the literal IDs (`0xca`-`0xfe`) mean, and how `machine_type`
 reaches the six callers. **[O]**
 
+### The eighth row on screen, and a replay that disagrees with the GUI **[V][O]**
+
+**Rung 1 is observed.** In `emu/gui.py` with all five parts (`--patch-machine`,
+no `--weakptr`), MACHINE SEL stays open and scrolls to an eighth row drawn as
+`PLACEHOLDER` — the display-name table's `Placeholder`, upper-cased at draw
+time. It sits below MIDI with a dotted separator between them, so patch 3 does
+put type 7 in a different group from MIDI; whether that is group `1` is not
+visible from one screen. Seen by a person, 2026-09-14, at 248.6M
+instructions. **[V]**
+
+**A scripted replay does not reproduce it.** `tools/guirun.py --input`
+(FUNC latched, then SRC through the GUI's own inbox and dwell pacing) opens
+MACHINE SEL and then, 2-4M instructions later and with SRC still held, drops
+back to the SRC page with a `ONE: ---` header (the track's machine and sample)
+for about five seconds. The outcome is the same in every variation tried: **[V]**
+
+| variation | list drawn | list gone |
+|---|---|---|
+| unpatched, `--weakptr`, SRC held 170-196M | 178M | 180M |
+| all five, `--weakptr`, SRC held 170-196M | 176M | 178M |
+| unpatched, no `--weakptr` | not caught at 2M spacing | `ONE: ---` by 180M |
+| all five, no `--weakptr` | 176M | 178M |
+| all five, SRC pressed late (250M) | 258M | 262M |
+| all five, second SRC press (230M) | 240M | 242M |
+
+No exception is thrown in any of them. So neither the patch, `--weakptr`, nor
+press timing explains the difference, and an earlier version of this section
+that called the auto-close "what a person sees in the GUI" was wrong. **[C]**
+
+What the GUI session delivered that the replay does not is open. To settle
+it, `emu/gui.py` now prints every panel feed it delivers as
+`[gui] input --feed <instrs>:<hex>`, and `tools/guirun.py --feed` replays
+those bytes raw at the same chunk boundary. A recorded session that keeps the
+list open, replayed headlessly, either reproduces (and can then be bisected
+event by event) or exposes a difference between `guirun.py` and the GUI. **[O]**
+
+**The replay is faithful; the two GUI sessions are not the same run.** A GUI
+session whose MACHINE SEL flashed was recorded (`[gui] input --feed`: FUNC
+latch plus SRC tap four times, at 202M, 262M, 410M and 493M, plus one bare
+SRC tap and one FX tap) and replayed with `tools/guirun.py --feed`. Every
+feed landed on its recorded chunk, the replay's DTIM3/mainloop pairs match the
+GUI's status lines at every 20M from 80M to 280M (`89/88`, `211/201`, ...
+`1296/1272`), and the list flashes on screen at the same point, drawn at 210M
+and gone by 212M. So `guirun.py` reproduces the GUI, and an idle boot is
+deterministic between them. **[V]**
+
+The earlier session in which the list stayed open had already diverged by
+80M, before any recorded input: mainloop `98` against DTIM3 `87`, then `225`
+against `212` at 100M, while the flashing session and every headless run have
+mainloop *behind* DTIM3. It was run before feeds were printed, so what it
+received is unknown; since an idle boot is deterministic, input during boot is
+the likely difference. So whether the list stays open depends on state
+established early, not on when FUNC+SRC is pressed. **[V][O]**
+
 ### The display names are a separate table **[V]**
 
 Seeing the machine-select screen render for the first time showed three of the
@@ -549,17 +673,22 @@ referenced by `lea.l $401fbca4.l, a0` at `0x400dcb26`. The 194 zero bytes there
 are that table's contents, not slack. So the name table has to be relocated to
 the cave as well, with `FUN_400dcc50`'s `lea` immediate repointed. **[V]**
 
-The complete recipe for a visible eighth machine, then, is four patches:
+The complete recipe for a visible eighth machine, then, is five patches, all
+in `tools/machinepatch.py` and selectable part by part with `--patch-machine`:
 
 1. **list** — relocate table D to the cave with an eighth entry, repoint the
    two `pea` immediates. Done and proven.
 2. **dispatch** — trampoline `FUN_400caf48` for `type == 7`, descriptor and
    `std::string` reps in the cave. Done and proven.
-3. **grouping** — `FUN_4005d7b8` must give type 7 a group the UI recognises;
-   as it stands type 7 falls to group `0` and boot breaks. Not done.
+3. **grouping** — `FUN_4005d7b8`'s exact-6 test becomes a `<= 7` range test,
+   so type 7 gets group `1`. Implemented. Not a boot blocker; its rendering
+   effect is unobserved.
 4. **display name** — relocate the `0x401fbc50` table to the cave with an
    eighth row, repoint the `lea` at `0x400dcc50`, and raise its `moveq #6`
-   bound. Not done.
+   bound. Implemented, and the table reads back correct; not yet seen drawn.
+5. **rank** — give the list's sort comparator a key for type 7, through a cave
+   shim on its map's one-time insert at `0x40051872`. Implemented. This was the
+   boot blocker, and all five together boot.
 
 ## Emulation
 

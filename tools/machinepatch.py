@@ -46,7 +46,17 @@ uses. `--parts group` patches its exact-equality bound test into a range
 test so 7 lands in the same group as 6. `--parts name` installs an eighth
 row in the display-name table (`FUN_400dcc50`) so the new machine gets its
 own "Placeholder"/"PLC" strings instead of falling back to an existing
-entry's. `--parts both` (the default) applies all four halves. `--eighth`
+entry's.
+
+`--parts rank` extends the sort comparator's ordering. `FUN_40051fbc`
+stable-sorts the list with `FUN_400517c4`, which ranks machine types
+through a function-local `std::map<int,int>` holding keys 0..6 only; with
+type 7 in the list, `map::at(7)` throws `std::out_of_range` and boot ends
+in `std::terminate`. The patch redirects the map's one-time range insert
+at `0x40051872` to a cave shim that supplies eight `(type, position)`
+pairs instead of seven.
+
+`--parts both` (the default) applies all five parts. `--eighth`
 exists to tell "eight entries is too many" apart from "the value 7 is the
 problem": run with `--parts list --eighth N` for some other N.
 
@@ -134,6 +144,15 @@ SHORTSTR_OFF = 0x290
 LONGSTR = b'Placeholder\x00'
 SHORTSTR = b'PLC\x00'
 
+RANK_CALL = 0x40051872
+RANK_CALL_WANT = bytes.fromhex('4eb940198948')
+RANK_INSERT = 0x40198948
+RANK_GUARD = 0x40984ce8
+RANK_SHIM_OFF = 0x2a0
+RANK_TABLE_OFF = 0x2c0
+
+PARTS = ('list', 'dispatch', 'group', 'name', 'rank')
+
 
 def build_trampoline(cave_b):
     desc = cave_b + DESC_OFF
@@ -166,8 +185,36 @@ def build_rep(name):
     return struct.pack('>IIi', len(name), len(name), -1) + chars
 
 
-def patch_b(m, cave_b, parts=('list', 'dispatch', 'group', 'name'),
+def build_rank_table(eighth):
+    """(type, display position) pairs, the same shape as FUN_400517c4's own
+    seven-pair initialiser -- which is exactly this over ORIGINAL_TABLE."""
+    return b''.join(struct.pack('>II', t, i)
+                    for i, t in enumerate(ORIGINAL_TABLE + (eighth,)))
+
+
+def build_rank_shim(cave_b, table_len):
+    """Replace the insert's [begin, end) stack arguments, then tail-jump to it.
+
+    Entered by the repointed jsr at RANK_CALL, so 4(a7) is the map, 8(a7)
+    begin and 0xc(a7) end; the caller's `lea $20(a7), a7` discards both
+    afterwards, so overwriting them is safe.
+    """
+    table = cave_b + RANK_TABLE_OFF
+    return (
+        bytes.fromhex('2f7c') + struct.pack('>I', table) + bytes.fromhex('0008')
+        + bytes.fromhex('2f7c') + struct.pack('>I', table + table_len)
+        + bytes.fromhex('000c')
+        + bytes.fromhex('4ef9') + struct.pack('>I', RANK_INSERT)
+    )
+
+
+def patch_b(m, cave_b, parts=PARTS,
             eighth=DEFAULT_EIGHTH):
+    unknown = [p for p in parts if p not in PARTS]
+    if unknown or not parts:
+        raise SystemExit('machinepatch: unknown part(s) %s; known parts are %s'
+                         % (', '.join(repr(p) for p in unknown) or '(none given)',
+                            '+'.join(PARTS)))
     lines = []
 
     if 'dispatch' in parts:
@@ -200,6 +247,19 @@ def patch_b(m, cave_b, parts=('list', 'dispatch', 'group', 'name'),
             raise SystemExit(
                 'machinepatch: %#010x holds %s, expected %s'
                 % (NAME_LEA_ADDR, cur.hex(), NAME_LEA_WANT.hex()))
+    if 'rank' in parts:
+        cur = bytes(m.uc.mem_read(RANK_CALL, len(RANK_CALL_WANT)))
+        if cur != RANK_CALL_WANT:
+            raise SystemExit(
+                'machinepatch: %#010x holds %s, expected %s'
+                % (RANK_CALL, cur.hex(), RANK_CALL_WANT.hex()))
+        # The map is a function-local static: once its guard is set the
+        # insert never runs again, and repointing it would change nothing.
+        guard = bytes(m.uc.mem_read(RANK_GUARD, 1))
+        if guard != b'\x00':
+            raise SystemExit(
+                'machinepatch: rank map already built (guard %#010x = %s); '
+                'patch before FUN_40051fbc runs' % (RANK_GUARD, guard.hex()))
 
     m.ensure(cave_b)
 
@@ -279,6 +339,23 @@ def patch_b(m, cave_b, parts=('list', 'dispatch', 'group', 'name'),
         new = struct.pack('>I', table_addr)
         m.uc.mem_write(NAME_LEA_ADDR + 2, new)
         lines.append('%#010x  %s -> %s' % (NAME_LEA_ADDR + 2, old.hex(), new.hex()))
+
+    if 'rank' in parts:
+        table = build_rank_table(eighth)
+        old = bytes(m.uc.mem_read(cave_b + RANK_TABLE_OFF, len(table)))
+        m.uc.mem_write(cave_b + RANK_TABLE_OFF, table)
+        lines.append('%#010x  %s -> %s' % (cave_b + RANK_TABLE_OFF, old.hex(), table.hex()))
+
+        shim = build_rank_shim(cave_b, len(table))
+        old = bytes(m.uc.mem_read(cave_b + RANK_SHIM_OFF, len(shim)))
+        m.uc.mem_write(cave_b + RANK_SHIM_OFF, shim)
+        lines.append('%#010x  %s -> %s' % (cave_b + RANK_SHIM_OFF, old.hex(), shim.hex()))
+
+        # The jsr's operand only, not its opcode.
+        old = bytes(m.uc.mem_read(RANK_CALL + 2, 4))
+        new = struct.pack('>I', cave_b + RANK_SHIM_OFF)
+        m.uc.mem_write(RANK_CALL + 2, new)
+        lines.append('%#010x  %s -> %s' % (RANK_CALL + 2, old.hex(), new.hex()))
 
     if 'dispatch' in parts:
         old = bytes(m.uc.mem_read(DISPATCH, 6))
@@ -593,12 +670,13 @@ def main(argv=None):
                      help='cave address for --milestone b (default: '
                           '0x40303e5c)')
     ap.add_argument('--parts',
-                     choices=('list', 'dispatch', 'group', 'name', 'both'),
+                     choices=('list', 'dispatch', 'group', 'name', 'rank', 'both'),
                      default='both',
-                     help='which half of --milestone b to apply: the list '
+                     help='which part of --milestone b to apply: the list '
                           'relocation, the dispatch trampoline, the group-id '
-                          'range fix, the display-name table, or both/all '
-                          'four (default: both)')
+                          'range fix, the display-name table, the sort '
+                          'comparator ranking, or both/all five (default: '
+                          'both)')
     ap.add_argument('--eighth', type=lambda s: int(s, 0), default=DEFAULT_EIGHTH,
                      help='value to write as the 8th entry of the relocated '
                           'machine list for --milestone b (default: 7). '
@@ -626,7 +704,7 @@ def main(argv=None):
     ap.add_argument('--no-esdhc', dest='esdhc', action='store_false')
     ap.add_argument('--json', help='write the full report here')
     args = ap.parse_args(argv)
-    args.parts = (('list', 'dispatch', 'group', 'name')
+    args.parts = (PARTS
                   if args.parts == 'both' else (args.parts,))
 
     report = run(args) if args.milestone == 'a' else run_b(args)

@@ -23,9 +23,9 @@ the same point the timers are released.
     uv run python -m emu.gui [snapshot]
 
 --patch-machine installs the experimental eighth machine (PLACEHOLDER) into
-the running emulator's machine list. Bare, it applies all four halves of the
-patch (list, dispatch, group, name); --patch-machine=list, =dispatch,
-=group, or =name applies just one, and a +-separated combination
+the running emulator's machine list. Bare, it applies all five parts of the
+patch (list, dispatch, group, name, rank); --patch-machine=list, =dispatch,
+=group, =name, or =rank applies just one, and a +-separated combination
 (--patch-machine=list+dispatch) applies exactly those, for bisecting a boot
 failure. An optional :N suffix on the parts value (--patch-machine=list:6)
 sets the 8th list entry's value, default 7, to distinguish "eight entries is
@@ -266,10 +266,16 @@ class Emulator(threading.Thread):
         self._chunks_since_delivery = 0
         self._delivered_before = True
         try:
-            return panelin.feed(m, profile, bytes(out))
+            new_pc = panelin.feed(m, profile, bytes(out))
         except Exception as exc:                       # noqa: BLE001
             self.stats['status'] = 'panel input failed: %s' % exc
             return pc
+        # Replayable: paste these into tools/guirun.py to reproduce the session.
+        # stats['instrs'] is the count at this chunk boundary, before the next
+        # spin, which is exactly where guirun delivers a --feed.
+        print('[gui] input --feed %d:%s' % (self.stats['instrs'], bytes(out).hex()),
+              flush=True)
+        return new_pc
 
     def run(self):
         def on_pixel(x, y, val, bmp):
@@ -1068,17 +1074,18 @@ if __name__ == '__main__':
     fast = '--exact' not in argv
     realtime = '--unthrottled' not in argv
     # --patch-machine installs the experimental eighth machine (PLACEHOLDER)
-    # into the machine list. Bare, it applies all four halves (list, dispatch,
-    # group, name); --patch-machine=list, =dispatch, =group, or =name applies
-    # just the one half, and a +-separated combination
+    # into the machine list. Bare, it applies all five parts (list, dispatch,
+    # group, name, rank); --patch-machine=list, =dispatch, =group, =name, or
+    # =rank applies just that part, and a +-separated combination
     # (--patch-machine=list+dispatch) applies exactly those, for bisecting.
     # An optional :N suffix on the parts value (e.g. --patch-machine=list:6)
     # sets the 8th list entry's value, default 7.
+    # Unknown part names are refused by machinepatch.patch_b.
     patch_machine = False
     patch_eighth = 7
     for a in argv:
         if a == '--patch-machine':
-            patch_machine = ('list', 'dispatch', 'group', 'name')
+            patch_machine = ('list', 'dispatch', 'group', 'name', 'rank')
         elif a.startswith('--patch-machine='):
             value = a.split('=', 1)[1]
             if ':' in value:
