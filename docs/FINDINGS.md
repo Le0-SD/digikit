@@ -317,6 +317,60 @@ but never drawn without navigation — and Digitakt's post-intro screen renders
 blank anyway. The eighth row rendering as a second MANUAL SLICE (index 7 falls
 back to entry 6) is an expectation, not an observation. **[O]**
 
+Driving the UI to prove it does not work yet, and the reason is upstream of
+this patch. `tools/uidrive.py` installs the Milestone B patch, scripts panel
+input, and watches three pixel-free signals: executions of `FUN_4005e022`,
+reads of the cave descriptor and its name reps, and calls to the COW copy
+`FUN_401d3aba` sourced from the cave. Across an idle window and ten scripted
+navigation checkpoints, **all three stay at zero**, in both the patched run
+and an unpatched control. The framebuffer stays blank throughout. **[V]**
+
+The panel input itself is fine — every injection produces a shape-valid
+`queue_send` record with the right code. The PC, sampled at every checkpoint,
+is pinned at `0x40002a18`: `FUN_40002a18`, which sets a PIT2 bit and calls
+`FUN_4000148c(0x47d9ade0)`. That is the **idle task**. Nothing else is
+runnable, so panel events are classified and queued and then never consumed,
+because the UI task consuming them is not being scheduled. This is the same
+family as the scheduler and device-event blockers recorded earlier in this
+file, not something the patch introduced — the control run behaves
+identically. **[V]**
+
+Note `FUN_400607b2` (`MachineSelectionView`) *does* fire, exactly once, ~60M
+instructions into a resumed run, in patched and control runs alike. So the
+view is constructed and its list vectors are built; only the row-building
+`MachineListView` never runs. **[V]**
+
+### Driving panel chords: modifiers must latch **[V]**
+
+A chord is not a press followed by another press. `emu/panelin.py`'s `held`
+argument is a mask of other buttons *in the same channel*, and the modifier
+keys are not in the same channel as the page buttons, so `held` cannot express
+a chord at all:
+
+```
+code = channel*8 + bit + 1
+FUNC = 17 -> channel 2, bit 0      SRC  =  2 -> channel 0, bit 1
+YES  = 10 -> channel 1, bit 1      NO   = 12 -> channel 1, bit 3
+UP   = 11 -> channel 1, bit 2      DOWN = 14 -> channel 1, bit 5
+```
+
+The wire carries each channel's whole 8-button state as one byte, so a
+cross-channel chord is expressed by asserting one channel and *leaving it
+asserted* while another changes — never by a press/release pair:
+
+```
+buttons(m, profile, 2, 0x01)   ; FUNC down, and leave it
+buttons(m, profile, 0, 0x02)   ; SRC down, FUNC still held
+buttons(m, profile, 0, 0x00)   ; SRC up
+buttons(m, profile, 2, 0x00)   ; FUNC up, last
+```
+
+The firmware's own records confirm the difference: a plain tap gives flag
+`0x01` on press and `0x10` on release, while the same button inside a latched
+chord gives `0x03` and `0x12`, and the modifier's own release reads `0x00`.
+Press/release pairs produce two isolated taps that no chord handler will ever
+see. **[V]**
+
 The descriptor's two name pointers are **`std::string`, not `char*`** — the
 pre-C++11 libstdc++ copy-on-write representation, with a 12-byte header
 immediately *before* the character data: **[V]**
