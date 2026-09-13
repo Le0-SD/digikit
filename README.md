@@ -216,7 +216,23 @@ Read `docs/FINDINGS.md` before flashing anything.
 
 ## Licence and attribution
 
-Original work here is MIT. Not affiliated with or endorsed by Elektron.
-Container format knowledge derives from `mischa85/elektron-firmware-tool` (MIT);
-architecture and memory-map facts marked *Documented* in FINDINGS.md derive from
-`lalzart/digitakt-ii-firmware-research-public`.
+**GPL-2.0-or-later.** See [LICENSE](LICENSE).
+
+This said MIT until 2026-09-13, and could not:
+`patches/unicorn-2.1.4-m68k-hook-ccr-sync.patch` modifies
+`qemu/target/m68k/translate.c` and `qemu/target/m68k/unicorn.c` — QEMU source
+vendored inside Unicorn — so it is a derivative of that code and carries its
+terms. The dependency is not incidental either: `emu.unicorn_compat` refuses to
+run against stock Unicorn, so nothing here works except against the patched
+build. GPL-2.0-or-later is the licence that costs nothing to be right about.
+
+The licence covers the code in this repository and nothing else. **No Elektron
+firmware is included and none ever should be** — it is copyright Elektron, and
+the `.syx` you run is yours to supply. Nothing here grants any right to
+Elektron's software, and nothing here is legal advice.
+
+Not affiliated with or endorsed by Elektron. Container format knowledge derives
+from `mischa85/elektron-firmware-tool` (MIT); architecture and memory-map facts
+marked *Documented* in FINDINGS.md derive from
+`lalzart/digitakt-ii-firmware-research-public`. MIT is GPL-compatible, so both
+carry forward under this licence.

@@ -2,6 +2,9 @@
 name = "digitakt2"
 version = "0.1.0"
 description = "Digitakt II OS 1.15C: container tooling, ColdFire disassembly, and a Unicorn emulator"
+# GPL because patches/ carries a diff against QEMU source vendored inside
+# Unicorn, and emu.unicorn_compat refuses to run without it. See README.
+license = "GPL-2.0-or-later"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "unicorn==2.1.4",
