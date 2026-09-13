@@ -7,6 +7,7 @@
     uv run python tools/ghidraq.py PROGRAM func 0x40001622
     uv run python tools/ghidraq.py PROGRAM callers 0x40001622
     uv run python tools/ghidraq.py PROGRAM symbols 'rpc.*'
+    uv run python tools/ghidraq.py PROGRAM range 0x402f9c14 0x40307f60
 
 PROGRAM is the program's path inside the project ("section_3_MAIN_OS.bin"
 for Digitakt II, "dn2_MAIN_OS.bin" for Digitone II; leading slash optional).
@@ -43,7 +44,7 @@ DEFAULT_PROJECT = os.path.expanduser('~/ghidra-projects/dt2')
 DEFAULT_PROJECT_NAME = 'dt2'
 DEFAULT_GHIDRA = '/opt/homebrew/Cellar/ghidra/12.1.3/libexec'
 DECOMPILE_TIMEOUT = 60
-SUBCOMMANDS = ('strings', 'symbols', 'xrefs', 'func', 'callers', 'decompile', 'read')
+SUBCOMMANDS = ('strings', 'symbols', 'xrefs', 'func', 'callers', 'decompile', 'read', 'range')
 
 
 def _addr(program, value):
@@ -190,9 +191,93 @@ def q_read(program, args, out):
     out('read', results)
 
 
+def q_range(program, args, out):
+    """Everything Ghidra knows about one or more address ranges: LO HI [LO HI ...].
+
+    For each [LO, HI) range: memory block membership (and whether it is an
+    uninitialised/bit block), defined data (address, type, label), defined
+    instruction byte-count, symbols, and every address inside the range that
+    is the *destination* of at least one reference, each with its referrers
+    (from-address, type, containing function). This is the Ghidra-side
+    counterpart to a static immediate scan (tools/refscan.py): it reports
+    what Ghidra's own analysis -- which can follow some things a no-semantics
+    disassembly sweep cannot, like relocations -- resolved as touching the
+    range, not just what a fresh linear sweep can see.
+    """
+    if len(args) % 2 != 0:
+        raise ValueError('range wants pairs of LO HI, got an odd number of args: %r' % (args,))
+    listing = program.getListing()
+    fm = program.getFunctionManager()
+    af = program.getAddressFactory()
+    space = af.getDefaultAddressSpace()
+    refmgr = program.getReferenceManager()
+    memory = program.getMemory()
+    results = []
+    for i in range(0, len(args), 2):
+        lo, hi = int(args[i], 16), int(args[i + 1], 16)
+        lo_addr, hi_addr = space.getAddress(lo), space.getAddress(hi - 1)
+        addr_set = program.getAddressFactory().getAddressSet(lo_addr, hi_addr)
+
+        blocks = []
+        for blk in memory.getBlocks():
+            if blk.getStart().getOffset() <= hi - 1 and blk.getEnd().getOffset() >= lo:
+                blocks.append({'name': blk.getName(),
+                               'start': '0x%x' % blk.getStart().getOffset(),
+                               'end': '0x%x' % blk.getEnd().getOffset(),
+                               'initialized': blk.isInitialized(),
+                               'type': str(blk.getType())})
+
+        data = []
+        it = listing.getDefinedData(addr_set, True)
+        while it.hasNext():
+            d = it.next()
+            data.append({'addr': '0x%x' % d.getAddress().getOffset(),
+                        'type': d.getDataType().getName(),
+                        'len': d.getLength(),
+                        'label': d.getLabel()})
+
+        insn_bytes = 0
+        insn_count = 0
+        it = listing.getInstructions(addr_set, True)
+        while it.hasNext():
+            ins = it.next()
+            insn_bytes += ins.getLength()
+            insn_count += 1
+
+        symbols = []
+        it = program.getSymbolTable().getSymbolIterator(lo_addr, True)
+        while it.hasNext():
+            sym = it.next()
+            if sym.getAddress().getOffset() >= hi:
+                break
+            symbols.append({'addr': '0x%x' % sym.getAddress().getOffset(),
+                            'name': sym.getName(), 'type': str(sym.getSymbolType())})
+
+        referenced = []
+        dit = refmgr.getReferenceDestinationIterator(addr_set, True)
+        while dit.hasNext():
+            dest = dit.next()
+            refs = []
+            for r in refmgr.getReferencesTo(dest):
+                frm = r.getFromAddress()
+                fn = fm.getFunctionContaining(frm)
+                refs.append({'from': '0x%x' % frm.getOffset(),
+                            'type': str(r.getReferenceType()),
+                            'in_function': fn.getName() if fn else None})
+            referenced.append({'addr': '0x%x' % dest.getOffset(), 'refs': refs})
+
+        results.append({
+            'lo': '0x%x' % lo, 'hi': '0x%x' % hi, 'size': hi - lo,
+            'blocks': blocks, 'defined_data': data,
+            'instruction_bytes': insn_bytes, 'instruction_count': insn_count,
+            'symbols': symbols, 'referenced_addresses': referenced,
+        })
+    out('range', results)
+
+
 HANDLERS = {'strings': q_strings, 'symbols': q_symbols, 'xrefs': q_xrefs,
             'func': q_func, 'callers': q_callers, 'decompile': q_decompile,
-            'read': q_read}
+            'read': q_read, 'range': q_range}
 
 
 def _print_text(kind, payload):
@@ -238,6 +323,23 @@ def _print_text(kind, payload):
                 row = h[off * 2:off * 2 + 32]
                 print('  %08x  %-32s  %s' % (int(item['addr'], 16) + off, row,
                                              item['ascii'][off:off + 16]))
+        elif kind == 'range':
+            print('%s-%s (%d bytes)' % (item['lo'], item['hi'], item['size']))
+            for b in item['blocks']:
+                print('  block %-16s %s-%s  initialized=%s  type=%s'
+                     % (b['name'], b['start'], b['end'], b['initialized'], b['type']))
+            print('  %d defined data item(s), %d instruction(s) (%d bytes), %d symbol(s)'
+                 % (len(item['defined_data']), item['instruction_count'],
+                    item['instruction_bytes'], len(item['symbols'])))
+            for d in item['defined_data']:
+                print('    data   %s  %-16s len=%-4d %s' % (d['addr'], d['type'], d['len'], d['label'] or ''))
+            for s in item['symbols']:
+                print('    symbol %s  %-10s %s' % (s['addr'], s['type'], s['name']))
+            print('  %d referenced address(es) inside the range:' % len(item['referenced_addresses']))
+            for r in item['referenced_addresses']:
+                print('    %s  <- %d ref(s)' % (r['addr'], len(r['refs'])))
+                for ref in r['refs']:
+                    print('        from %s  %-14s %s' % (ref['from'], ref['type'], ref['in_function'] or '(no function)'))
 
 
 def main(argv):
