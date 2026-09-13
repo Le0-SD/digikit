@@ -48,7 +48,7 @@ from tkinter import ttk
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unicorn import UcError
-from unicorn.m68k_const import UC_M68K_REG_PC, UC_M68K_REG_SR
+from unicorn.m68k_const import UC_M68K_REG_A7, UC_M68K_REG_PC, UC_M68K_REG_SR
 from emu.longrun import build, spin
 from emu.dtim import Dtims, Timers
 from emu import config, device as devices, panel, panelin, symbols
@@ -185,6 +185,7 @@ class Emulator(threading.Thread):
         self.device_error = None    # why there is no control surface, if so
         self._faulted_pages = set()  # pages already reported by _fault_sink
         self._fault_summary_printed = False  # print the report once, not per chunk
+        self._backtrace_printed = False  # print the stack scan once, not per chunk
 
     def _identify_device(self, m, profile):
         """Work out which product this is and read its control names.
@@ -556,6 +557,31 @@ class Emulator(threading.Thread):
         self._frame_t = now
         self.version += 1
 
+    def _stack_backtrace(self, m, depth=64):
+        """Scan upward from A7 for values that look like main OS code addresses.
+
+        This is not a real unwound backtrace -- it is a raw scan of `depth`
+        longwords above the current stack pointer, reporting every one that
+        falls inside the main OS code span. Some of those will be stale data
+        left over from earlier calls rather than live return addresses, but
+        with 34 call sites funneling into the same 2-byte trap, even a noisy
+        list of candidates is more than the bare PC tells us.
+
+        Does NOT read SR -- reg_read(SR) between emu_start calls clobbers
+        condition codes and has deadlocked a guest mutex before.
+        """
+        candidates = []
+        a7 = m.uc.reg_read(UC_M68K_REG_A7)
+        for i in range(depth):
+            offset = i * 4
+            try:
+                word = struct.unpack('>I', m.uc.mem_read(a7 + offset, 4))[0]
+            except Exception:
+                break
+            if 0x40000400 <= word <= 0x40307f60:
+                candidates.append((offset, word))
+        return candidates
+
     def _report(self):
         """One stdout line per ~20M instructions of OS progress.
 
@@ -588,6 +614,20 @@ class Emulator(threading.Thread):
                           'count=%d %s'
                           % (rec['page'], rec['first_addr'], rec['first_pc'],
                              rec['count'], kinds), flush=True)
+            if not self._backtrace_printed:
+                self._backtrace_printed = True
+                try:
+                    a7 = self._uc.reg_read(UC_M68K_REG_A7)
+                    frames = self._stack_backtrace(self._m)[:24]
+                    print('[gui] stack at terminal loop (A7=0x%08x, '
+                          'candidate return addresses from a raw stack '
+                          'scan, not a real unwound backtrace -- some will '
+                          'be stale data):' % a7, flush=True)
+                    for offset, addr in frames:
+                        print('[gui]   +0x%03x  0x%08x' % (offset, addr),
+                              flush=True)
+                except Exception:
+                    pass
         print('[gui] %5.0fM instr  PIT0/2/3 %d/%d/%d  DTIM3 %d  '
               'mainloop %d  jobs %d  tasks %d  %s %d%s'
               % (s['instrs'] / 1e6, s['pit'][0], s['pit'][1], s['pit'][2],
