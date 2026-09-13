@@ -134,6 +134,30 @@ def find_depacker(img, stream2):
     raise SystemExit('No depacker found in the updater image.')
 
 
+def resolve_depacker(img, stream):
+    """DEPACK, or the address a scan finds when this build moved the routine.
+
+    DEPACK was derived on Digitakt II 1.15C and holds on Digitone II 1.10E. On
+    Digitone II 1.11 the routine sits at 0x80005720, and the constant fails
+    with
+
+        ValueError: implausible output length 0
+
+    which reads as a corrupt firmware rather than a moved symbol, and stops
+    extraction on a build the rest of the project handles.
+
+    `find_depacker` was written for exactly this and only needed wiring in. The
+    scan runs only when the constant fails, and gets `stream` -- the first
+    packed section, normally section 2 and a few kilobytes -- so the probe
+    decode that decides it is cheap.
+    """
+    try:
+        depack(img, stream)
+    except Exception:
+        return find_depacker(img, stream)
+    return DEPACK
+
+
 def extract(syx, outdir, progress=None):
     """Decompress every section of `syx` into `outdir`.
 
@@ -147,13 +171,18 @@ def extract(syx, outdir, progress=None):
     img = updater_image(c, secs)
     os.makedirs(outdir, exist_ok=True)
     written = []
+    at = None
     for sid, off, clen, dest in secs:
         kind, payload = classify(bytes(c[off:off + clen]))
         name = 'section_%d_%s.bin' % (sid, NAMES.get(sid, 'SECTION'))
         if progress:
             progress(sid, kind, name)
         if kind == 'packed':
-            payload = depack(img, payload)
+            # Resolved once, from the first packed section, so a build that
+            # moved the routine extracts instead of erroring.
+            if at is None:
+                at = resolve_depacker(img, payload)
+            payload = depack(img, payload, at=at)
         # Drop any earlier extraction of this section whatever it was named,
         # so a tool-made directory cannot leave a duplicate behind.
         for stale in glob.glob(os.path.join(outdir, 'section_%d_*.bin' % sid)):
