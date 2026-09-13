@@ -129,6 +129,58 @@ static initialiser `FUN_401ac1be` (reached from the global-constructor table at
 literals 45,46,47,48 and a trailing 49 — concrete evidence they are
 parameterised instances of one framework, not six algorithms.
 
+**The machine dispatch is solved.** Found with `tools/mmiotrace.py`
+range-scoped over the descriptor table on a Digitakt boot resumed from
+`snapshots/boot400M.snap`: 432 reads, all from a single PC, `0x4001767a`.
+Static analysis had found zero readers.
+
+The consumer is `FUN_4001762c(obj, field)` -> `*(descriptor + 8 + field*4)`,
+and the dispatch is 20 bytes at `0x400caf48`:
+
+    int FUN_400caf48(uint machine_type) {
+        if (machine_type < 7) return machine_type * 0x2c + 0x42923644;
+        return 0x4292374c;          // == entry 6
+    }
+
+So: base `0x42923644`, stride `0x2c` (44 bytes), **7 entries**, and an
+out-of-range type falls back to entry 6 rather than crashing. Six callers of
+`FUN_400caf48`, all resolvable. Each descriptor is two string pointers, nine
+literal ID fields and a trailing tag of 10.
+
+Dumped live with `tools/memdump.py` (the table is bss — it exists only at
+runtime), the seven entries are the Digitakt II machine list in order:
+
+    0 SAMPLE/SAMP   1 WERP/WERP   2 STRETCH   3 REPITCH
+    4 SLICED SMP/SLIC   5 MIDI   6 MANUAL SLICE/MLIC
+
+Entry 5 (MIDI) is the one irregular record: all nine ID fields zero and no
+tag. Entries 3 and 6 carry six IDs rather than seven.
+
+**What this means for adding a machine.** The previous plan — "a 12th
+descriptor entry" — was wrong on the count and on the method. There are seven,
+not eleven, and the array **cannot be extended in place**: `0x42923778`
+onwards is immediately occupied by another live 0x2c-stride array (NONE /
+TRIG / RTRG parameter pages), and `0x42923540`-`0x42923643` before it is the
+six-entry filter list. No slack on either side.
+
+The cheap patch is therefore not to relocate the array but to add one case to
+`FUN_400caf48`, whose base and bound are both immediates in a 20-byte
+function:
+
+    if (type < 7)  return type * 0x2c + 0x42923644;   // untouched
+    if (type == 7) return <44-byte descriptor in the cave>;
+    return 0x4292374c;
+
+That leaves all seven existing entries exactly where they are and needs only
+44 bytes plus two strings in the 58,188-byte cave at `0x402f9c14`. The
+fallback behaviour makes the failure mode forgiving: a machine type the
+patch does not handle yields MANUAL SLICE, not a crash.
+
+Still open for Goal B: what the literal IDs (`0xca`-`0xfe`) mean, how
+`machine_type` reaches `FUN_400caf48`'s callers, and where the UI gets the
+length of the machine list — the `< 7` bound here is the dispatch's, and the
+list UI may carry its own count that also needs patching.
+
 ## Dead ends — do not re-derive these
 
 - **The RPC dispatcher table's address is never loaded as an immediate.**
@@ -148,9 +200,9 @@ parameterised instances of one framework, not six algorithms.
   reset or PCM streaming. No machine-type comparison in any of them.
 
 The conclusion those three share: **static analysis cannot answer the machine
-dispatch question.** The next instrument is the emulator — hook reads of
-`0x42923540`-`0x429237f8` during a boot to the UI and see who reads them.
-`Machine.install_mmio_trace` and `tools/addrtrace.py` already exist.
+dispatch question.** That was correct, and the emulator answered it — see
+"The machine dispatch is solved" below. The three dead ends above stand; they
+were dead ends, not wrong.
 
 
 - ~~**The per-packet SysEx checksum (byte 125) resisted an exhaustive search.**~~
@@ -221,11 +273,31 @@ Everything in this section's previous version is resolved. What is left:
 2. **The final chunk's zero padding is still an inference.** No sample file
    has a partial final chunk, so there is nothing to confirm it against. Our
    rebuilds do produce one.
-3. **Image size, narrowed but not closed.** Store-only packing gives 5.07 MB
-   against the original 1.71 MB (2.97x). No *software* check refuses it (see
-   above). Physical DDR at `0x40000000` and NOR capacity from offset `0x80000`
-   are unestablished — a datasheet or a probe question, not a static-analysis
-   one. If either is short, that is what forces a real LZ77 packer.
+3. ~~**Image size**~~ — closed, and the "datasheet or probe question, not a
+   static-analysis one" line above was wrong. Both ceilings came out of the
+   firmware's own code (`tools/ddr_geometry.py`):
+
+   - **DDR: 64 MiB.** Decoded from the bootstrap's own DDRMC writes —
+     `DDR_CR04=0x00010101` (8 banks), `DDR_CR15=0x02000103` (13 row bits),
+     `DDR_CR16=0x02000407` (10 column bits), x8 datapath, 1 chip select.
+     Byte-identical init on both devices.
+   - **Flash: 16 MiB.** The bootstrap's RDID (`0x9F`) dispatch at
+     `FUN_800024ec` matches mfg `0x01` / id `0x2018` / ext `0x00` — an
+     S25FL127S-class part — and only that branch selects the 512-byte page
+     and 256 KB sector geometry the flash loop actually uses. One
+     inferential step weaker than the DDR result: the firmware recognises
+     the part, it never computes the capacity.
+
+   And the 5.07 MB figure was the wrong number to worry about. That is the
+   `.syx` file including 8-in-7 transport framing, which never lands in
+   memory. What is staged and flashed is the decoded container: **4.00 MB**
+   against a stock 1.35 MB. Headroom is 16.8x on DDR and 4.1x on flash. A
+   real LZ77 packer is not needed.
+
+   Not confirmed: that everything past the OS container to the end of the
+   chip is free. The 16 MiB ceiling and the `0x80000` start are firmware
+   facts; "the rest is unused" is an assumption — no partition table was
+   located.
 4. ~~`tools/patchimg.py` does not enforce "never touch sections 2 or 4"~~ —
    done. It now identifies the image by sha256 against the pristine
    extractions, with a content-signature fallback that survives an
@@ -283,6 +355,11 @@ that does not work rather than silence.
                           --quick skips MAIN OS.
     dt2/authcode.py       the HMAC trailer: key derivation, compute, verify,
                           seal. tools/content_hmac.py is its CLI.
+    tools/memdump.py      resume a snapshot, spin to post-intro handover, dump
+                          a guest memory range as hex + longwords. The only
+                          way to see bss tables, which exist at runtime only.
+    tools/ddr_geometry.py decode the DDR controller init out of a bootstrap
+                          image and print the SDRAM size.
 
 Ghidra project `~/ghidra-projects/dt2` holds `section_3_MAIN_OS.bin`,
 `dn2_MAIN_OS.bin` and now `dt2_SHARC`. Ghidra's decompiler fails with
@@ -302,11 +379,11 @@ first:
 2. **Flash an unmodified rebuild.** It should change nothing, and it is the
    only way to separate "my patch was wrong" from "my repacker was wrong"
    later. This is now a genuinely viable step rather than a blocked one.
-3. **Establish DDR and NOR capacity** — settles blocker 3 above, and can be
-   done before or alongside 2.
-4. **Emulator read-watch on `0x42923540`-`0x429237f8`** during a boot to the
-   UI, to name the machine descriptor consumer. This is the one that reopens
-   Goal B, and static analysis has been ruled out for it.
+3. ~~Establish DDR and NOR capacity~~ — done, see blocker 3 above.
+4. ~~Emulator read-watch to name the machine descriptor consumer~~ — done.
+   Goal B is reopened: see "The machine dispatch is solved". The next step
+   there is to find where the UI gets its machine-list length, then try the
+   one-case patch to `FUN_400caf48` in the emulator.
 
 A note on method, since this session produced three results the previous one
 had recorded as hard or impossible: all three came from **reading the
