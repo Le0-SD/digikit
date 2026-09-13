@@ -36,6 +36,15 @@ failure mode. It then unit-tests the patched dispatch directly, by calling
 `0x400caf48` in the live guest for arguments 0..8 and checking D0 against
 the expected descriptor address for each.
 
+Bisecting Milestone B's two halves independently: `--parts list` alone (the
+8-entry table, dispatch left unpatched) fails to boot; `--parts dispatch`
+alone boots fine. So the failure is caused by the list gaining an eighth
+entry, not by the trampoline, the descriptor, or the cave writes. It remains
+open whether *any* 8th entry breaks it, or specifically the value 7 -- which
+`FUN_4005d7b8` maps to group id 0, a group nothing else uses. `--eighth`
+exists to tell these apart: run with `--parts list --eighth N` for some
+other N and see whether the count alone is the problem, or the value 7 is.
+
 This tool patches **guest memory on a resumed snapshot only**. It does not
 modify any file, does not touch the firmware image on disk, and produces
 nothing flashable -- the patch evaporates when the emulator process exits.
@@ -82,6 +91,7 @@ TABLE_D_LO, TABLE_D_HI = 0x401e1958, 0x401e1973
 ORIGINAL_TABLE = (0, 1, 2, 3, 6, 4, 5)
 NEW_TABLE = ORIGINAL_TABLE + (7,)
 DEFAULT_CAVE = 0x402f9c14
+DEFAULT_EIGHTH = 7
 
 DISPATCH = 0x400caf48
 DISPATCH_WANT = bytes.fromhex('7206202f0004')
@@ -134,7 +144,7 @@ def build_rep(name):
     return struct.pack('>IIi', len(name), len(name), -1) + chars
 
 
-def patch_b(m, cave_b, parts=('list', 'dispatch')):
+def patch_b(m, cave_b, parts=('list', 'dispatch'), eighth=DEFAULT_EIGHTH):
     lines = []
 
     if 'dispatch' in parts:
@@ -175,7 +185,7 @@ def patch_b(m, cave_b, parts=('list', 'dispatch')):
         lines.append('%#010x  %s -> %s' % (cave_b + SNAME_OFF, old.hex(), srep.hex()))
 
     if 'list' in parts:
-        tbytes = struct.pack('>8I', *NEW_TABLE)
+        tbytes = struct.pack('>8I', *(ORIGINAL_TABLE + (eighth,)))
         old = bytes(m.uc.mem_read(cave_b + TABLE_B_OFF, len(tbytes)))
         m.uc.mem_write(cave_b + TABLE_B_OFF, tbytes)
         lines.append('%#010x  %s -> %s' % (cave_b + TABLE_B_OFF, old.hex(), tbytes.hex()))
@@ -365,7 +375,7 @@ def run_b(args):
 
     patch_lines = []
     if not args.no_patch:
-        patch_lines = patch_b(m, args.cave_b, parts=args.parts)
+        patch_lines = patch_b(m, args.cave_b, parts=args.parts, eighth=args.eighth)
 
     intro = intro_running(m, profile.intro_pit3_isr)
     pits = Timers(Pits(m, hold=intro), Dtims(m, channels=(3,), hold=intro))
@@ -477,6 +487,12 @@ def main(argv=None):
                      help='which half of --milestone b to apply: the list '
                           'relocation, the dispatch trampoline, or both '
                           '(default: both)')
+    ap.add_argument('--eighth', type=lambda s: int(s, 0), default=DEFAULT_EIGHTH,
+                     help='value to write as the 8th entry of the relocated '
+                          'machine list for --milestone b (default: 7). '
+                          'Use this to distinguish "eight entries is too '
+                          'many" from "the value 7 specifically is the '
+                          'problem".')
     ap.add_argument('--no-patch', action='store_true',
                      help='skip the patch, for a control run')
     ap.add_argument('--instrs', type=lambda s: int(s, 0), default=90_000_000,

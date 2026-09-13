@@ -25,8 +25,11 @@ the same point the timers are released.
 --patch-machine installs the experimental eighth machine (PLACEHOLDER) into
 the running emulator's machine list. Bare, it applies both halves of the
 patch; --patch-machine=list or --patch-machine=dispatch applies just one
-half, for bisecting a boot failure. This patches guest memory in the running
-emulator only -- it modifies no file on disk and is not a flashable patch.
+half, for bisecting a boot failure. An optional :N suffix on the parts value
+(--patch-machine=list:6) sets the 8th list entry's value, default 7, to
+distinguish "eight entries is too many" from "the value 7 is the problem".
+This patches guest memory in the running emulator only -- it modifies no
+file on disk and is not a flashable patch.
 
 tkinter only, no third-party GUI dependency. Note Homebrew's python@3.14 does
 not ship tkinter; uv's managed CPython does, which is why pyproject pins 3.12.
@@ -110,13 +113,15 @@ class Emulator(threading.Thread):
     daemon = True
 
     def __init__(self, snapshot, weakptr=False, slc=False, syx=None,
-                 fast=True, realtime=True, patch_machine=False):
+                 fast=True, realtime=True, patch_machine=False,
+                 patch_eighth=7):
         super().__init__()
         self.snapshot = snapshot
         self.weakptr = weakptr
         self.slc = slc
         self.syx = syx
         self.patch_machine = patch_machine
+        self.patch_eighth = patch_eighth
         # Interactive running, not measurement. `fast` drops the `count=`
         # argument to emu_start, which costs 7.6x on this machine, in exchange
         # for timers landing on a basic-block boundary rather than an exact
@@ -276,10 +281,12 @@ class Emulator(threading.Thread):
                 # it silently, leaving this window stuck on "loading
                 # snapshot". Convert it into something catchable.
                 try:
-                    patch_b(m, DEFAULT_CAVE_B, parts=self.patch_machine)
+                    patch_b(m, DEFAULT_CAVE_B, parts=self.patch_machine,
+                            eighth=self.patch_eighth)
                 except SystemExit as exc:
                     raise RuntimeError('machine patch refused: %s' % exc) from exc
-                self.stats['status'] = 'patched: ' + '+'.join(self.patch_machine)
+                self.stats['status'] = ('patched: ' + '+'.join(self.patch_machine)
+                                        + ' (8th=%d)' % self.patch_eighth)
             # build() already resolved (and required) this same profile
             # internally -- see emu/symbols.py -- so re-resolving here is a
             # cache hit, not a rescan. fb_front is OPTIONAL: if it did not
@@ -554,10 +561,16 @@ class Controls(tk.Frame):
     guest memory, because the worker is inside Unicorn for a whole BUDGET at
     a time. A mouse cannot hold one button down while clicking another, so
     buttons in a LATCHING_GROUPS group (e.g. FUNC) toggle instead of being
-    momentary: a click asserts the modifier and it stays asserted until
-    either a second click on it or the release of the next non-modifier
-    button consumes it -- which is what lets a click on FUNC followed by a
-    click on SRC reach SRC's secondary function.
+    momentary: a click asserts the modifier and it STAYS asserted -- through
+    as many other button clicks and encoder turns as needed -- until it is
+    clicked again or explicitly cleared with the "clear" button. Chords are
+    formed by latching the modifier, then clicking as many other buttons as
+    needed, which is what lets a click on FUNC followed by a click on SRC
+    reach SRC's secondary function. An earlier version
+    auto-released the modifier after the next non-modifier button's release,
+    but that put the modifier's release in the same input-drain window as
+    the chorded button's, and the firmware appeared to react to both going
+    up together; clearing is explicit now instead.
     """
 
     BG = '#15181d'
@@ -634,6 +647,16 @@ class Controls(tk.Frame):
                 self._buttons(box, group, labels)
             column += 1
             used += width
+        if column and used + 2 > self.ROW_BUDGET:
+            row, column = row + 1, 0
+        box = tk.LabelFrame(self, text='latch', bg=self.BG, fg='#5d6a7c',
+                            bd=1, labelanchor='nw', font=('SF Mono', 8))
+        box.grid(row=row, column=column, sticky='nw', padx=4, pady=3)
+        tk.Button(box, text='clear', bg=self.FACE, fg=self.TEXT,
+                  activebackground='#3a4654', activeforeground='#ffffff',
+                  relief='raised', bd=1, highlightthickness=0,
+                  font=('SF Mono', 8), padx=0, pady=0,
+                  command=self._consume_latched).pack(padx=1, pady=1)
 
     def _buttons(self, box, group, labels):
         columns = group.columns or len(group.codes)
@@ -664,8 +687,7 @@ class Controls(tk.Frame):
             widget.bind('<ButtonPress-1>',
                         lambda _e, c=code: self.send('press', c, 0))
             widget.bind('<ButtonRelease-1>',
-                        lambda _e, c=code: (self.send('release', c, 0),
-                                            self._consume_latched()))
+                        lambda _e, c=code: self.send('release', c, 0))
         return widget
 
     def _toggle_latch(self, code, widget):
@@ -712,7 +734,6 @@ class Controls(tk.Frame):
 
     def _encoder_turn(self, code, step):
         self.send('encoder', code, step)
-        self._consume_latched()
 
     def _wheel(self, event, code):
         step = 1 if event.delta > 0 else -1
@@ -745,7 +766,8 @@ class Panel(tk.Frame):
 
 class App(tk.Tk):
     def __init__(self, snapshot, weakptr=False, slc=False, scale=None,
-                 syx=None, fast=True, realtime=True, patch_machine=False):
+                 syx=None, fast=True, realtime=True, patch_machine=False,
+                 patch_eighth=7):
         super().__init__()
         self.title('Digi emulator')
         self.configure(bg='#15181d')
@@ -794,6 +816,7 @@ class App(tk.Tk):
         self.fast = fast
         self.realtime = realtime
         self.patch_machine = patch_machine
+        self.patch_eighth = patch_eighth
         self.shown = -1
         self.replay = None          # (frames, index, next_due) while replaying
         self.start()
@@ -804,7 +827,8 @@ class App(tk.Tk):
         self.emu = Emulator(self.snapshot, weakptr=self.weakptr,
                             slc=self.slc, syx=self.syx, fast=self.fast,
                             realtime=self.realtime,
-                            patch_machine=self.patch_machine)
+                            patch_machine=self.patch_machine,
+                            patch_eighth=self.patch_eighth)
         self.emu.start()
 
     def send_input(self, kind, code, arg):
@@ -958,12 +982,21 @@ if __name__ == '__main__':
     # --patch-machine installs the experimental eighth machine (PLACEHOLDER)
     # into the machine list. Bare, it applies both halves; --patch-machine=list
     # or --patch-machine=dispatch applies just the one half, for bisecting.
+    # An optional :N suffix on the parts value (e.g. --patch-machine=list:6)
+    # sets the 8th list entry's value, default 7.
     patch_machine = False
+    patch_eighth = 7
     for a in argv:
         if a == '--patch-machine':
             patch_machine = ('list', 'dispatch')
         elif a.startswith('--patch-machine='):
-            patch_machine = (a.split('=', 1)[1],)
+            value = a.split('=', 1)[1]
+            if ':' in value:
+                parts_str, eighth_str = value.split(':', 1)
+                patch_eighth = int(eighth_str, 0)
+            else:
+                parts_str = value
+            patch_machine = (parts_str,)
     scale = None
     if '--scale' in argv:
         i = argv.index('--scale')
@@ -981,4 +1014,5 @@ if __name__ == '__main__':
                          'build one with:  uv run python -m emu.checkpoint make '
                          '60000000,120000000,200000000,280000000,400000000' % snap)
     App(snap, weakptr=weakptr, slc=slc, scale=scale, syx=syx, fast=fast,
-        realtime=realtime, patch_machine=patch_machine).mainloop()
+        realtime=realtime, patch_machine=patch_machine,
+        patch_eighth=patch_eighth).mainloop()
