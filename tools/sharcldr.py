@@ -7,9 +7,12 @@ RPCs parameter changes to this DSP, so anything sound-related lives here.
 The blob is a pure ADI boot-stream: with the FILL bit correctly identified
 (see below), the entire file parses as a single block chain -- 104 blocks
 for Digitakt II 1.15C and 96 for Digitone II 1.10E, consuming 100% of both
-files. The final block carries BFLAG_FINAL and byte_count 0, and its
-target_address is the image entry point (0x1c1338 for Digitakt, 0x1c12e2
-for Digitone).
+files. Per Table 40-29, a BFLAG_FIRST block's target_address is the start
+address of the application it begins; the stream carries more than one
+(Digitakt has BFLAG_FIRST blocks at 0x120230 and 0x1c1338), so the last
+one is the final application's entry point (0x1c1338 for Digitakt, 0x1c12e2
+for Digitone). BFLAG_FINAL's target_address carries no documented meaning
+(Table 40-30).
 
 The blob begins with an ADI boot-stream: a 16-byte, little-endian, four
 32-bit-field (block_code, target_address, byte_count, argument) header per
@@ -18,10 +21,14 @@ zero -- that is the format's header checksum and the reliable way to find
 block boundaries. block_code bit 8 is BFLAG_FILL (0x100): when set, no
 payload follows the header (the block is a zero/constant fill of
 byte_count bytes) -- a FILL block has no payload in the stream; otherwise
-exactly byte_count payload bytes follow. Bit 12 is BFLAG_IGNORE, not FILL.
-Other block_code bits are decoded per the standard ADI BFLAG set (see
-BFLAGS below); any bit not in that set is reported as bitN rather than
-inventing a meaning.
+exactly byte_count payload bytes follow. Table 40-33 confirms a FILL
+block's `argument` field is the 32-bit fill value. Bit 12 is BFLAG_IGNORE,
+not FILL. Other block_code bits are decoded per the standard ADI BFLAG set
+(see BFLAGS below); any bit not in that set is reported as bitN rather than
+inventing a meaning. The bit assignments below are confirmed against
+Table 40-27 "Block Code Flags" of the ADSP-2156x hardware reference: bit 4
+is BFLAG_SAVE, bit 9 is Reserved (there is no BFLAG_QUICKBOOT), and bits
+24-31 (HDRSIGN) select the target core -- 0xAD/0xAC/0xAB for core 0/1/2.
 
 Measured region split, as examples, not universal rules: Digitakt's tail
 (everything after the 11,248-byte prologue) is roughly 56 KB of float-like
@@ -61,10 +68,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 HEADER_LEN = 16
 BFLAGS = {
-    "SAFE": 4,
+    "SAVE": 4,
     "AUX": 5,
     "FILL": 8,
-    "QUICKBOOT": 9,
     "CALLBACK": 10,
     "INIT": 11,
     "IGNORE": 12,
@@ -74,6 +80,15 @@ BFLAGS = {
 }
 FILL_BIT = BFLAGS["FILL"]
 SW_ALIAS_BASE = 0x28000000
+
+# block_code bits 24-31, per Table 40-27: which core the block is for.
+HDRSIGN = {0xAD: 0, 0xAC: 1, 0xAB: 2}
+
+
+def target_core(block_code):
+    """Core number the block targets, from block_code's top byte, or None
+    for an unrecognised signature."""
+    return HDRSIGN.get(block_code >> 24)
 
 
 def sw_to_byte(addr):
@@ -157,6 +172,7 @@ def parse_blocks(data):
             "argument": argument,
             "fill": fill,
             "flags": _flags(block_code),
+            "core": target_core(block_code),
             "payload_offset": payload_offset,
             "payload_len": payload_len,
         })
@@ -190,6 +206,18 @@ def address_for_offset(blocks, offset, space="sw"):
             byte_addr = b["target_address"] + (offset - b["payload_offset"])
             return byte_to_sw(byte_addr) if space == "sw" else byte_addr
     return None
+
+
+def entry_points(blocks):
+    """Target addresses of every BFLAG_FIRST block, in stream order.
+
+    Per Table 40-29, a FIRST block's target_address is the start address of
+    the application it begins; a multi-application boot stream carries
+    several. These are short-word (VISA PC) addresses, not loader byte
+    addresses -- the PRM (p.4-14) states the PC points to short-word
+    address space under VISA, which is why they differ in form from data
+    blocks' byte targets."""
+    return [b["target_address"] for b in blocks if "FIRST" in b["flags"]]
 
 
 def entropy(data):
@@ -421,9 +449,15 @@ def main():
 
     print("\n--- blocks ---")
     for b in blocks:
-        print("blk%02d  @%-6d  code=0x%08x  addr=0x%08x  cnt=%-6d  arg=0x%08x  %s" % (
+        print("blk%02d  @%-6d  code=0x%08x  addr=0x%08x  cnt=%-6d  arg=0x%08x  core=%s  %s" % (
             b["index"], b["offset"], b["block_code"], b["target_address"],
-            b["byte_count"], b["argument"], ",".join(b["flags"]) or "-"))
+            b["byte_count"], b["argument"],
+            b["core"] if b["core"] is not None else "?",
+            ",".join(b["flags"]) or "-"))
+
+    print("\n--- entry points (BFLAG_FIRST) ---")
+    for ep in entry_points(blocks):
+        print("sw=0x%x  byte=0x%x" % (ep, sw_to_byte(ep)))
 
     print("\n--- regions ---")
     for r in regions:

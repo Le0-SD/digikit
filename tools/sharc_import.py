@@ -50,15 +50,15 @@ def ghidra_addr(byte_address):
 def plan(data):
     """-> (blocks, entry_short_word_address). Blocks are sharcldr records.
 
-    A block with byte_count 0 carries no data; its target_address is an
-    execution address in the core's own SHORT-WORD space (0x1cxxxx/0x12xxxx),
-    not a loader byte address like a data block's. The last one is the
-    BFLAG_FINAL entry point."""
+    Per Table 40-29, a BFLAG_FIRST block's target_address is the start
+    address of the application it begins, in the core's own SHORT-WORD
+    space (0x1cxxxx/0x12xxxx), not a loader byte address like a data
+    block's. A multi-application boot stream carries several BFLAG_FIRST
+    blocks; the entry returned here is the LAST one, i.e. the final
+    application's start address."""
     blocks = L.parse_blocks(data)
-    entry = None
-    for b in blocks:
-        if b['byte_count'] == 0 and b['target_address']:
-            entry = b['target_address']
+    eps = L.entry_points(blocks)
+    entry = eps[-1] if eps else None
     return blocks, entry
 
 
@@ -170,6 +170,15 @@ def main(argv):
                 symtab.addExternalEntryPoint(ea)
                 seeds.append(ea)
                 print('entry point at %s' % ea)
+
+            for i, ep in enumerate(L.entry_points(blocks)):
+                if ep == entry:
+                    continue
+                ea = space.getAddress(2 * ep)   # BFLAG_FIRST targets are short-word
+                symtab.createLabel(ea, 'app_entry_%02d' % i, SourceType.IMPORTED)
+                symtab.addExternalEntryPoint(ea)
+                seeds.append(ea)
+                print('application entry point at %s' % ea)
 
             for spec in args.label_table:
                 addr_s, _, count_s = spec.partition(':')
