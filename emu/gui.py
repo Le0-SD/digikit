@@ -22,11 +22,27 @@ the same point the timers are released.
 
     uv run python -m emu.gui [snapshot]
 
+--patch-machine installs the experimental eighth machine (PLACEHOLDER) into
+the running emulator's machine list. Bare, it applies all five parts of the
+patch (list, dispatch, group, name, rank); --patch-machine=list, =dispatch,
+=group, =name, or =rank applies just one, and a +-separated combination
+(--patch-machine=list+dispatch) applies exactly those, for bisecting a boot
+failure. An optional :N suffix on the parts value (--patch-machine=list:6)
+sets the 8th list entry's value, default 7, to distinguish "eight entries is
+too many" from "the value 7 is the problem". This patches guest memory in
+the running emulator only -- it modifies no file on disk and is not a
+flashable patch.
+
+--machine=NAME:SHORT[:CLONE_OF[:POSITION]] overrides the new machine's
+names, cloned descriptor and display position (see
+tools/machinepatch.py's MachineSpec); without it the default spec
+(Placeholder/PLC, cloned from type 6) is used.
+
 tkinter only, no third-party GUI dependency. Note Homebrew's python@3.14 does
 not ship tkinter; uv's managed CPython does, which is why pyproject pins 3.12.
 """
+import collections
 import os
-import queue
 import struct
 import sys
 import threading
@@ -37,7 +53,7 @@ from tkinter import ttk
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from unicorn import UcError
-from unicorn.m68k_const import UC_M68K_REG_PC, UC_M68K_REG_SR
+from unicorn.m68k_const import UC_M68K_REG_A7, UC_M68K_REG_PC, UC_M68K_REG_SR
 from emu.longrun import build, spin
 from emu.dtim import Dtims, Timers
 from emu import config, device as devices, panel, panelin, symbols
@@ -54,6 +70,14 @@ from emu.screen import png
 # 60.0 Hz.
 FRAME_VECTOR = 208
 FRAME_HZ = 132_000_000 / ((0x2191 + 1) * 1024)     # 14.9996
+
+# Buttons that latch instead of behaving momentarily. A mouse cannot hold one
+# button while clicking another, so a modifier click toggles it and stays
+# asserted for the next press -- which is what makes FUNC+SRC reach SRC's
+# secondary function rather than its primary. Keyed off the device TOML's
+# group name; that grouping was previously editorial only, and this is the
+# first thing to read it semantically.
+LATCHING_GROUPS = frozenset({'modifiers'})
 
 W, H = 128, 64
 
@@ -89,6 +113,15 @@ BUDGET = 400_000          # instructions per pass, ~0.16s: pause/stop latency,
                           # how often it is called, so a smaller pass buys
                           # responsiveness almost for free.
 
+# Emulated dwell between panel state changes. _drain_input used to deliver
+# everything queued in one feed, so a press and its release reached the
+# firmware a few emulated milliseconds apart however slowly the user
+# clicked -- and a chord collapsed into an instant. A real press lasts
+# 50-200 ms. At BUDGET instructions per chunk and roughly one instruction
+# per cycle on a 132 MHz bus, a chunk is about 3 ms, so 16 chunks is around
+# 50 ms of dwell.
+PANEL_DWELL_CHUNKS = 16
+
 
 class Emulator(threading.Thread):
     """Runs the firmware and publishes a framebuffer. Owns no widgets."""
@@ -96,12 +129,22 @@ class Emulator(threading.Thread):
     daemon = True
 
     def __init__(self, snapshot, weakptr=False, slc=False, syx=None,
-                 fast=True, realtime=True):
+                 fast=True, realtime=True, patch_machine=False,
+                 patch_eighth=7, patch_machine_spec=None,
+                 panel_dwell=PANEL_DWELL_CHUNKS):
         super().__init__()
         self.snapshot = snapshot
         self.weakptr = weakptr
         self.slc = slc
         self.syx = syx
+        self.patch_machine = patch_machine
+        self.patch_eighth = patch_eighth
+        self.patch_machine_spec = patch_machine_spec
+        # See PANEL_DWELL_CHUNKS. 0 means no pacing: the old coalesce-and-
+        # deliver-once-per-chunk behaviour, for an A/B against this one.
+        self._dwell_chunks = panel_dwell
+        self._chunks_since_delivery = 0
+        self._delivered_before = False
         # Interactive running, not measurement. `fast` drops the `count=`
         # argument to emu_start, which costs 7.6x on this machine, in exchange
         # for timers landing on a basic-block boundary rather than an exact
@@ -141,12 +184,15 @@ class Emulator(threading.Thread):
         # worker sits inside emu_start for a whole BUDGET at a time. So
         # clicks arrive on this queue and are applied between chunks, the
         # same safe point pause already uses.
-        self.inbox = queue.Queue()
+        self.inbox = collections.deque()
         self.device = None          # which product, identified by firmware hash
         self.held = None            # panelin.Held, once the device is known
         self.button_names = {}      # control code -> the firmware's own name
         self.encoder_names = {}
         self.device_error = None    # why there is no control surface, if so
+        self._faulted_pages = set()  # pages already reported by _fault_sink
+        self._fault_summary_printed = False  # print the report once, not per chunk
+        self._backtrace_printed = False  # print the stack scan once, not per chunk
 
     def _identify_device(self, m, profile):
         """Work out which product this is and read its control names.
@@ -166,41 +212,77 @@ class Emulator(threading.Thread):
     def _drain_input(self, m, profile, pc):
         """Apply queued panel input at a chunk boundary. -> the new PC.
 
-        Everything queued is encoded into ONE byte stream and delivered with
-        a single feed, because the firmware's ISR drains the whole receive
-        ring: one raised vector covers every message in it. Raising once per
-        event would nest exception frames for input the ring already holds.
+        Everything delivered in one pass is encoded into ONE byte stream and
+        sent with a single feed, because the firmware's ISR drains the whole
+        receive ring: one raised vector covers every message in it. Raising
+        once per event would nest exception frames for input the ring
+        already holds.
+
+        A single feed used to mean a single drain of the WHOLE queue, once
+        per BUDGET chunk -- so a press and its release, however far apart the
+        user actually clicked, reached the firmware a few emulated
+        milliseconds apart, and a chord collapsed into an instant. See
+        PANEL_DWELL_CHUNKS. Now a press/release (a button STATE change) is
+        held back until _dwell_chunks have passed since the last one was
+        delivered, so it dwells for something like a real press. Encoder
+        events are relative and bursty by nature rather than a state that can
+        be held, so they are not paced: every queued encoder event is drained
+        in the same pass as the one button transition (or on its own, if no
+        button transition is pending). Nothing queued is ever dropped, only
+        delayed until its dwell elapses. --panel-dwell 0 disables all of
+        this and restores the old drain-everything-every-chunk behaviour.
 
         Returns the PC because delivering input raises a vector, which moves
         it. Dropping the result would strand the run at the old address.
         """
         if self.held is None:
             return pc
+        paced = self._dwell_chunks > 0
+        if paced and self._delivered_before and (
+                self._chunks_since_delivery < self._dwell_chunks):
+            self._chunks_since_delivery += 1
+            return pc
         out = bytearray()
-        while True:
-            try:
-                kind, code, arg = self.inbox.get_nowait()
-            except queue.Empty:
-                break
-            if kind in ('press', 'release'):
-                pos = (self.held.press(code) if kind == 'press'
-                       else self.held.release(code))
-                if pos is not None:
-                    out += panelin.encode_buttons(*pos)
-            elif kind == 'encoder':
+        took_button = False
+        deferred = []
+        while self.inbox:
+            kind, code, arg = self.inbox.popleft()
+            if kind == 'encoder':
                 channel = self.device.encoder_channel(code)
                 if channel is not None:
                     out += panelin.encode_encoder(channel, arg)
-            elif kind == 'release_all':
-                for pos in self.held.release_all():
-                    out += panelin.encode_buttons(*pos)
+            elif paced and took_button:
+                deferred.append((kind, code, arg))
+            else:
+                took_button = True
+                if kind == 'press':
+                    pos = self.held.press(code)
+                    if pos is not None:
+                        out += panelin.encode_buttons(*pos)
+                elif kind == 'release':
+                    pos = self.held.release(code)
+                    if pos is not None:
+                        out += panelin.encode_buttons(*pos)
+                elif kind == 'release_all':
+                    for pos in self.held.release_all():
+                        out += panelin.encode_buttons(*pos)
+        for item in reversed(deferred):
+            self.inbox.appendleft(item)
         if not out:
             return pc
+        self._chunks_since_delivery = 0
+        self._delivered_before = True
         try:
-            return panelin.feed(m, profile, bytes(out))
+            new_pc = panelin.feed(m, profile, bytes(out))
         except Exception as exc:                       # noqa: BLE001
             self.stats['status'] = 'panel input failed: %s' % exc
             return pc
+        # Replayable: paste these into tools/guirun.py to reproduce the session.
+        # stats['instrs'] is the count at this chunk boundary, before the next
+        # spin, which is exactly where guirun delivers a --feed.
+        print('[gui] input --feed %d:%s' % (self.stats['instrs'], bytes(out).hex()),
+              flush=True)
+        return new_pc
 
     def run(self):
         def on_pixel(x, y, val, bmp):
@@ -249,6 +331,25 @@ class Emulator(threading.Thread):
                                            dsp=True, on_pixel=on_pixel,
                                            weakptr=self.weakptr, slc=self.slc,
                                            **extra)
+            if self.patch_machine:
+                sys.path.insert(0, os.path.join(os.path.dirname(
+                    os.path.dirname(os.path.abspath(__file__))), 'tools'))
+                from machinepatch import (patch_b, DEFAULT_CAVE_B,
+                                          spec_from_arg, DEFAULT_SPEC)
+                # patch_b (and spec_from_arg) report a failed precondition
+                # with SystemExit, which derives from BaseException and so
+                # would slip past the handler below -- and a SystemExit on a
+                # worker thread kills it silently, leaving this window stuck
+                # on "loading snapshot". Convert it into something catchable.
+                try:
+                    spec = (spec_from_arg(self.patch_machine_spec)
+                            if self.patch_machine_spec else DEFAULT_SPEC)
+                    patch_b(m, DEFAULT_CAVE_B, parts=self.patch_machine,
+                            eighth=self.patch_eighth, spec=spec)
+                except SystemExit as exc:
+                    raise RuntimeError('machine patch refused: %s' % exc) from exc
+                self.stats['status'] = ('patched: ' + '+'.join(self.patch_machine)
+                                        + ' (8th=%d)' % self.patch_eighth)
             # build() already resolved (and required) this same profile
             # internally -- see emu/symbols.py -- so re-resolving here is a
             # cache hit, not a rescan. fb_front is OPTIONAL: if it did not
@@ -268,6 +369,24 @@ class Emulator(threading.Thread):
             return
 
         self._uc = m.uc
+        self._m = m
+
+        def fault_sink(rec):
+            # Called from inside a Unicorn hook on the worker thread: no
+            # locks, no Tk calls, no guest memory access, and nothing may
+            # raise into the run -- same defensiveness as Machine._fault.
+            try:
+                page = rec['page']
+                if page in self._faulted_pages:
+                    return
+                self._faulted_pages.add(page)
+                kinds = '+'.join(sorted(rec['kinds'])) if rec['kinds'] else '?'
+                print('[gui] FAULT page=0x%08x first=0x%08x pc=0x%08x %s'
+                      % (page, rec['first_addr'], rec['first_pc'], kinds),
+                      flush=True)
+            except Exception:
+                pass
+        m.fault_sink = fault_sink
         self._reported = 0
         # PIT0 time slice, PIT2 wheel, PIT3 display -- but not until the intro
         # has handed over. Delivering into a running intro stops it ever
@@ -402,6 +521,11 @@ class Emulator(threading.Thread):
                     pass
         else:
             self.stats['status'] = 'stopped'
+        n_seen = len(m.fault_pages)
+        n_kept = len(m.faults)
+        capped = ' (truncated at max_fault_records)' if n_kept < n_seen else ''
+        print('[gui] faults: %d distinct pages touched, %d records kept%s'
+              % (n_seen, n_kept, capped), flush=True)
 
     def _publish_panel(self, m):
         """Once the OS owns the panel, draw the firmware's framebuffer.
@@ -449,6 +573,31 @@ class Emulator(threading.Thread):
         self._frame_t = now
         self.version += 1
 
+    def _stack_backtrace(self, m, depth=64):
+        """Scan upward from A7 for values that look like main OS code addresses.
+
+        This is not a real unwound backtrace -- it is a raw scan of `depth`
+        longwords above the current stack pointer, reporting every one that
+        falls inside the main OS code span. Some of those will be stale data
+        left over from earlier calls rather than live return addresses, but
+        with 34 call sites funneling into the same 2-byte trap, even a noisy
+        list of candidates is more than the bare PC tells us.
+
+        Does NOT read SR -- reg_read(SR) between emu_start calls clobbers
+        condition codes and has deadlocked a guest mutex before.
+        """
+        candidates = []
+        a7 = m.uc.reg_read(UC_M68K_REG_A7)
+        for i in range(depth):
+            offset = i * 4
+            try:
+                word = struct.unpack('>I', m.uc.mem_read(a7 + offset, 4))[0]
+            except Exception:
+                break
+            if 0x40000400 <= word <= 0x40307f60:
+                candidates.append((offset, word))
+        return candidates
+
     def _report(self):
         """One stdout line per ~20M instructions of OS progress.
 
@@ -466,6 +615,35 @@ class Emulator(threading.Thread):
         if s['terminal']:
             note = ('   TERMINAL LOOP at 0x4012d2fa -- the main task is hung '
                     'on a weak pointer; re-run with --weakptr to step over it')
+            if not self._fault_summary_printed:
+                self._fault_summary_printed = True
+                m = self._m
+                recs = sorted(m.faults, key=lambda r: r['count'],
+                              reverse=True)[:20]
+                print('[gui] fault summary at terminal loop: %d distinct '
+                      'pages touched, top %d by count'
+                      % (len(m.fault_pages), len(recs)), flush=True)
+                for rec in recs:
+                    kinds = '+'.join('%s:%d' % (k, c)
+                                      for k, c in sorted(rec['kinds'].items()))
+                    print('[gui]   page=0x%08x first=0x%08x pc=0x%08x '
+                          'count=%d %s'
+                          % (rec['page'], rec['first_addr'], rec['first_pc'],
+                             rec['count'], kinds), flush=True)
+            if not self._backtrace_printed:
+                self._backtrace_printed = True
+                try:
+                    a7 = self._uc.reg_read(UC_M68K_REG_A7)
+                    frames = self._stack_backtrace(self._m)[:24]
+                    print('[gui] stack at terminal loop (A7=0x%08x, '
+                          'candidate return addresses from a raw stack '
+                          'scan, not a real unwound backtrace -- some will '
+                          'be stale data):' % a7, flush=True)
+                    for offset, addr in frames:
+                        print('[gui]   +0x%03x  0x%08x' % (offset, addr),
+                              flush=True)
+                except Exception:
+                    pass
         print('[gui] %5.0fM instr  PIT0/2/3 %d/%d/%d  DTIM3 %d  '
               'mainloop %d  jobs %d  tasks %d  %s %d%s'
               % (s['instrs'] / 1e6, s['pit'][0], s['pit'][1], s['pit'][2],
@@ -483,8 +661,18 @@ class Controls(tk.Frame):
 
     Every interaction goes onto the emulator's queue rather than touching
     guest memory, because the worker is inside Unicorn for a whole BUDGET at
-    a time. Press and release are bound separately so a chord -- hold FUNC,
-    tap a page button -- behaves the way it does on the hardware.
+    a time. A mouse cannot hold one button down while clicking another, so
+    buttons in a LATCHING_GROUPS group (e.g. FUNC) toggle instead of being
+    momentary: a click asserts the modifier and it STAYS asserted -- through
+    as many other button clicks and encoder turns as needed -- until it is
+    clicked again or explicitly cleared with the "clear" button. Chords are
+    formed by latching the modifier, then clicking as many other buttons as
+    needed, which is what lets a click on FUNC followed by a click on SRC
+    reach SRC's secondary function. An earlier version
+    auto-released the modifier after the next non-modifier button's release,
+    but that put the modifier's release in the same input-drain window as
+    the chorded button's, and the firmware appeared to react to both going
+    up together; clearing is explicit now instead.
     """
 
     BG = '#15181d'
@@ -497,6 +685,10 @@ class Controls(tk.Frame):
         self.button_names = button_names
         self.encoder_names = encoder_names
         self.send = send
+        self._latching = frozenset(
+            c for g in device.groups if g.name in LATCHING_GROUPS
+            for c in g.codes)
+        self._latched = {}          # code -> widget, currently latched
         self._build()
 
     # Character cells across before wrapping to a new row. Measured, not
@@ -557,6 +749,16 @@ class Controls(tk.Frame):
                 self._buttons(box, group, labels)
             column += 1
             used += width
+        if column and used + 2 > self.ROW_BUDGET:
+            row, column = row + 1, 0
+        box = tk.LabelFrame(self, text='latch', bg=self.BG, fg='#5d6a7c',
+                            bd=1, labelanchor='nw', font=('SF Mono', 8))
+        box.grid(row=row, column=column, sticky='nw', padx=4, pady=3)
+        tk.Button(box, text='clear', bg=self.FACE, fg=self.TEXT,
+                  activebackground='#3a4654', activeforeground='#ffffff',
+                  relief='raised', bd=1, highlightthickness=0,
+                  font=('SF Mono', 8), padx=0, pady=0,
+                  command=self._consume_latched).pack(padx=1, pady=1)
 
     def _buttons(self, box, group, labels):
         columns = group.columns or len(group.codes)
@@ -580,11 +782,31 @@ class Controls(tk.Frame):
                            width=max(2, len(text)), padx=0, pady=0)
         # Bound rather than given a `command`, which fires only on release:
         # the wire carries button STATE, so a held button must stay held.
-        widget.bind('<ButtonPress-1>',
-                    lambda _e, c=code: self.send('press', c, 0))
-        widget.bind('<ButtonRelease-1>',
-                    lambda _e, c=code: self.send('release', c, 0))
+        if code in self._latching:
+            widget.bind('<ButtonPress-1>',
+                        lambda _e, c=code, w=widget: self._toggle_latch(c, w))
+        else:
+            widget.bind('<ButtonPress-1>',
+                        lambda _e, c=code: self.send('press', c, 0))
+            widget.bind('<ButtonRelease-1>',
+                        lambda _e, c=code: self.send('release', c, 0))
         return widget
+
+    def _toggle_latch(self, code, widget):
+        if code in self._latched:
+            self.send('release', code, 0)
+            del self._latched[code]
+            widget.configure(relief='raised', bg=self.FACE)
+        else:
+            self.send('press', code, 0)
+            self._latched[code] = widget
+            widget.configure(relief='sunken', bg='#3a4654')
+
+    def _consume_latched(self):
+        for code, widget in self._latched.items():
+            self.send('release', code, 0)
+            widget.configure(relief='raised', bg=self.FACE)
+        self._latched.clear()
 
     def _encoders(self, box, group, labels):
         columns = group.columns or len(group.codes)
@@ -600,7 +822,7 @@ class Controls(tk.Frame):
                 tk.Button(strip, text=text, bg=self.FACE, fg=self.TEXT, bd=1,
                           font=('SF Mono', 8), width=2, padx=0, pady=0,
                           command=lambda c=code, s=step:
-                          self.send('encoder', c, s)).pack(side='left')
+                          self._encoder_turn(c, s)).pack(side='left')
             # Wheel over an encoder turns it. Tk reports the wheel differently
             # per platform -- a signed delta on macOS and Windows, buttons 4
             # and 5 on X11 -- so all three are bound.
@@ -608,15 +830,18 @@ class Controls(tk.Frame):
                 widget.bind('<MouseWheel>',
                             lambda e, c=code: self._wheel(e, c))
                 widget.bind('<Button-4>',
-                            lambda _e, c=code: self.send('encoder', c, 1))
+                            lambda _e, c=code: self._encoder_turn(c, 1))
                 widget.bind('<Button-5>',
-                            lambda _e, c=code: self.send('encoder', c, -1))
+                            lambda _e, c=code: self._encoder_turn(c, -1))
+
+    def _encoder_turn(self, code, step):
+        self.send('encoder', code, step)
 
     def _wheel(self, event, code):
         step = 1 if event.delta > 0 else -1
         if event.state & 0x0001:            # shift held: coarse
             step *= 10
-        self.send('encoder', code, step)
+        self._encoder_turn(code, step)
 
 
 class Panel(tk.Frame):
@@ -643,7 +868,9 @@ class Panel(tk.Frame):
 
 class App(tk.Tk):
     def __init__(self, snapshot, weakptr=False, slc=False, scale=None,
-                 syx=None, fast=True, realtime=True):
+                 syx=None, fast=True, realtime=True, patch_machine=False,
+                 patch_eighth=7, patch_machine_spec=None,
+                 panel_dwell=PANEL_DWELL_CHUNKS):
         super().__init__()
         self.title('Digi emulator')
         self.configure(bg='#15181d')
@@ -691,6 +918,10 @@ class App(tk.Tk):
         self.syx = syx
         self.fast = fast
         self.realtime = realtime
+        self.patch_machine = patch_machine
+        self.patch_eighth = patch_eighth
+        self.patch_machine_spec = patch_machine_spec
+        self.panel_dwell = panel_dwell
         self.shown = -1
         self.replay = None          # (frames, index, next_due) while replaying
         self.start()
@@ -700,13 +931,17 @@ class App(tk.Tk):
     def start(self):
         self.emu = Emulator(self.snapshot, weakptr=self.weakptr,
                             slc=self.slc, syx=self.syx, fast=self.fast,
-                            realtime=self.realtime)
+                            realtime=self.realtime,
+                            patch_machine=self.patch_machine,
+                            patch_eighth=self.patch_eighth,
+                            patch_machine_spec=self.patch_machine_spec,
+                            panel_dwell=self.panel_dwell)
         self.emu.start()
 
     def send_input(self, kind, code, arg):
         """Hand one panel event to the worker. Never touches guest memory."""
         if self.emu:
-            self.emu.inbox.put((kind, code, arg))
+            self.emu.inbox.append((kind, code, arg))
 
     def _ensure_controls(self):
         """Build the control surface once the worker has identified the device."""
@@ -851,10 +1086,42 @@ if __name__ == '__main__':
     # itself to the hardware's clock.
     fast = '--exact' not in argv
     realtime = '--unthrottled' not in argv
+    # --patch-machine installs the experimental eighth machine (PLACEHOLDER)
+    # into the machine list. Bare, it applies all five parts (list, dispatch,
+    # group, name, rank); --patch-machine=list, =dispatch, =group, =name, or
+    # =rank applies just that part, and a +-separated combination
+    # (--patch-machine=list+dispatch) applies exactly those, for bisecting.
+    # An optional :N suffix on the parts value (e.g. --patch-machine=list:6)
+    # sets the 8th list entry's value, default 7.
+    # Unknown part names are refused by machinepatch.patch_b.
+    patch_machine = False
+    patch_eighth = 7
+    patch_machine_spec = None
+    for a in argv:
+        if a == '--patch-machine':
+            patch_machine = ('list', 'dispatch', 'group', 'name', 'rank')
+        elif a.startswith('--patch-machine='):
+            value = a.split('=', 1)[1]
+            if ':' in value:
+                parts_str, eighth_str = value.split(':', 1)
+                patch_eighth = int(eighth_str, 0)
+            else:
+                parts_str = value
+            patch_machine = tuple(parts_str.split('+'))
+        elif a.startswith('--machine='):
+            patch_machine_spec = a.split('=', 1)[1]
     scale = None
     if '--scale' in argv:
         i = argv.index('--scale')
         scale = max(1, int(argv[i + 1]))
+        del argv[i:i + 2]
+    # --panel-dwell N overrides PANEL_DWELL_CHUNKS; 0 disables pacing and
+    # restores the old coalesce-everything-into-one-feed behaviour, for
+    # testing the two against each other.
+    panel_dwell = PANEL_DWELL_CHUNKS
+    if '--panel-dwell' in argv:
+        i = argv.index('--panel-dwell')
+        panel_dwell = max(0, int(argv[i + 1]))
         del argv[i:i + 2]
     syx = None
     if '--syx' in argv:
@@ -868,4 +1135,6 @@ if __name__ == '__main__':
                          'build one with:  uv run python -m emu.checkpoint make '
                          '60000000,120000000,200000000,280000000,400000000' % snap)
     App(snap, weakptr=weakptr, slc=slc, scale=scale, syx=syx, fast=fast,
-        realtime=realtime).mainloop()
+        realtime=realtime, patch_machine=patch_machine,
+        patch_eighth=patch_eighth, patch_machine_spec=patch_machine_spec,
+        panel_dwell=panel_dwell).mainloop()

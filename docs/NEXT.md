@@ -218,16 +218,19 @@ something you can actually flash.
 
 ### B1. Finish the acceptance oracle
 
-Two routines left, same pattern as the two that already work in `emu/oracle.py`:
+All three routines are now done, same pattern as the CRC and depacker
+oracles that already work in `emu/oracle.py`:
 
 | routine | address | what it checks |
 |---|---|---|
-| content checksum | `0x40003ca6` | word-sum, each 32-bit word XORed with its index, vs value at container `+0x04` |
-| HMAC-SHA256 | `0x80005e2a` | hashes image minus last 32 bytes, compares to trailer. SHA-256 H0 at `0x800058bc`, K-table at `0x80006ef8` |
+| content checksum | `0x80003ca6` (not `0x40003ca6`, a transcription slip in earlier notes) | `sum(i ^ word_i)` over 1-based big-endian u32 words of the whole container incl. the 32-byte trailer, vs preamble bytes 4-7 |
+| HMAC-SHA256 | `0x80005e2a`, key derived at `0x80005d90` | textbook HMAC-SHA256 over `container[:total_len-32]`, key = `CONST ^ sha256(STRING) ^ sha256(STRING[::-1])` |
+| per-packet SysEx checksum | `(K + sum(body[6+i] ^ (i+K), i=0..118)) & 0x7F` | byte 125 of each SysEx packet, K = byte 7 of the 16-byte framing message |
 
 Together with CRC + depacker these are the bootstrap's **entire** accept/reject
-decision for a MIDI-delivered image. An image that passes all four on the laptop
-is one the device will take.
+decision for a MIDI-delivered image. `tools/roundtrip.py` now verifies all
+three checksum/HMAC routines plus the framing message count against a
+rebuilt image.
 
 ### B2. Build the patcher
 

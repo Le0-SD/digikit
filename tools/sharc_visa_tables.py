@@ -144,10 +144,11 @@ WHAT IS AND ISN'T VERIFIED NOW:
   bits of its final word that are real in Type9a's corresponding word;
   Type4b sacrifices 1 bit of its dreg field, Type4d sacrifices 4).
   LENGTH_RULE_MULTIWORD below gives the exact, ordered, per-group
-  decision procedure the coordinator asked for in round 2, including
-  the one group (Type5a_move/Type5b_move) this transcription could NOT
-  resolve this way -- named precisely, not papered over, with both
-  possible explanations stated.
+  decision procedure the coordinator asked for in round 2. The one
+  group this transcription could not resolve this way at that time,
+  Type5a_move/Type5b_move, was resolved in revision 4 by a 400 DPI
+  re-read of the source figure; no multi-word group remains
+  unresolved.
 
   A SECOND, BROADER FINDING, from brute-force pairwise-checking the 29
   entries LENGTH_RULE actually ended up with (see
@@ -457,12 +458,15 @@ TYPES: List[Dict] = [
         "opcode_value": _combine(_field(47, 43, 0b01110), _field(30, 30, 0))[1],
         "fields": {
             "srcureghigh": (42, 38), "srcureglow1": (37, 37), "cond": (36, 32),
-            "srcureglow0": (23, 23), "dstureg": (29, 23), "compute_hi": (22, 16),
+            "srcureglow0": (31, 31), "dstureg": (29, 23), "compute_hi": (22, 16),
             "compute_lo": (15, 0),
         },
         "uncertain": False,
         "note": "row 1 gray = bits 47:43 = 0b01110 (confirmed). Row 2 gray = bit 30 only (value 0) "
-                "-- a single-bit gray cell, everything else in row 2 white.",
+                "-- a single-bit gray cell, everything else in row 2 white. Re-read at 400 DPI "
+                "(revision 4): bits 22:16 are compute[22:16], white/variable -- that is the "
+                "discriminator against the 32-bit Type5b_move, which grays those same bits to 0. "
+                "srcureglow[0:0] is at bit 31, not bit 23 as revision 2 recorded.",
     },
     {
         "name": "5a_swap", "bits": 48, "page": 338,
@@ -479,18 +483,21 @@ TYPES: List[Dict] = [
     },
     {
         "name": "5b_move", "bits": 32, "page": 340,
-        "opcode_mask": _combine(_field(31, 27, 0b01110))[0],
-        "opcode_value": _combine(_field(31, 27, 0b01110))[1],
+        "opcode_mask": _combine(_field(31, 27, 0b01110), _field(14, 14, 0), _field(6, 0, 0b0000000))[0],
+        "opcode_value": _combine(_field(31, 27, 0b01110), _field(14, 14, 0), _field(6, 0, 0b0000000))[1],
         "fields": {
             "srcureghigh": (26, 22), "srcureglow1": (21, 21), "cond": (20, 16),
-            "srcureglow0": (7, 7), "dstureg": (13, 7),
+            "srcureglow0": (15, 15), "dstureg": (13, 7),
         },
         "uncertain": False,
         "note": "row 1 (own 31:16, shifted -16) gray = 0b01110 at bits 31:27 -- same pattern as "
-                "Type5a_move's row 1. No row-2 gray cell was seen for this type in the crop "
-                "(unlike 1a/1b, this a/b pair may be distinguished by width alone if 5a_swap's "
-                "differing row-1 value rules out ambiguity across the whole Type-5 family; not "
-                "fully re-verified).",
+                "Type5a_move's row 1. Row 2 re-read at 400 DPI (revision 4): bit 30 gray = 0 (own "
+                "bit 14) AND bits 22:16 ALL gray = 0b0000000 (own bits 6:0). Revision 2's claim "
+                "that no row-2 gray cell existed here was a misreading of the crop; the eight "
+                "gray cells are unambiguous. Bits 22:16 are what distinguishes this from "
+                "Type5a_move, whose corresponding bits are a real compute[22:16] field -- see "
+                "GROUP_5A_5B_MOVE. srcureglow[0:0] is at source bit 31 (own bit 15), not own bit "
+                "7 as revision 2 recorded.",
     },
     {
         "name": "5b_swap", "bits": 32, "page": 342,
@@ -1122,15 +1129,13 @@ _FIRST_WORD_AMBIGUOUS = {"1a", "1b", "4a", "4b", "5a_move", "5b_move", "9a", "9b
 # (nothing else in this instruction set shares that combination); on a
 # mismatch it should conclude 48-bit Type1a and fetch a third word.
 #
-# HONESTLY NAMED GAP: GROUP_5A_5B_MOVE has no second-word test, because no
-# gray bit was found in Type5b_move's second (and only remaining) word at
-# all in this transcription -- see that group's "if_none_match". Either
-# this pair genuinely cannot be told apart from opcode bits alone (in
-# which case a decoder has no choice but to use other context, e.g. a
-# symbol table or alignment assumption, to break the tie), or this
-# transcription's crop of Type5b_move's word simply did not catch a real
-# gray cell that a future, more careful pass would find. Both
-# possibilities are stated; neither is asserted as fact.
+# GAP CLOSED (revision 4): GROUP_5A_5B_MOVE previously had no second-word
+# test, because no gray bit was found in Type5b_move's second (and only
+# remaining) word in this transcription. A 400 DPI re-read of that figure
+# found Type5b_move grays bit 30 and bits 22:16 in that word, and
+# possibility (b) from revision 2 -- that the crop simply missed a real
+# gray cell -- was the correct one. The group now has a real second-word
+# test, like the three groups above it.
 # ---------------------------------------------------------------------------
 
 LENGTH_RULE_MULTIWORD: List[Dict] = [
@@ -1204,23 +1209,29 @@ LENGTH_RULE_MULTIWORD: List[Dict] = [
         "group": "GROUP_5A_5B_MOVE",
         "members": ["5a_move", "5b_move"],
         "shared_word0": (_mask(15, 11), 0b01110 << 11),  # bits 47:43 (5a) / 31:27 (5b) = 0b01110
-        "steps": [],
-        "if_none_match_length": None,
-        "if_none_match": "UNRESOLVED -- see residual_ambiguity. This transcription found "
-            "exactly one gray bit for Type5a_move's second word (own bit 14, i.e. source bit "
-            "30, value 0) and NO gray bit at all for Type5b_move's second (and last) word. A "
-            "bit that is gray in the 48-bit form but has no corresponding gray bit in the "
-            "32-bit form gives a decoder nothing to test FOR the 32-bit form specifically.",
-        "residual_ambiguity": "Two possibilities, both stated because neither was resolved: "
-            "(a) this pair genuinely cannot be told apart from fixed bits alone, and the ISA "
-            "relies on something outside the opcode (e.g. a linear disassembler that already "
-            "knows the previous instruction's end address, or alignment padding) to know which "
-            "one it is looking at; or (b) Type5b_move's second word DOES have a gray bit this "
-            "transcription's crop simply missed (the crop for that specific figure was not "
-            "re-examined with the same scrutiny as the three groups above). A decoder that "
-            "hits this case with no other context should treat the instruction as AMBIGUOUS "
-            "and stop the linear walk rather than guess -- per this project's own rule, a wrong "
-            "length desyncs everything after it silently, which is worse than raising here.",
+        "steps": [
+            ("Type5b_move's second (and last) word grays bit 14 (its own source bit 30) and "
+             "bits 6:0 (its own source bits 22:16) = 0. The bits 6:0 test is the discriminating "
+             "one: Type5a_move's corresponding word leaves those same positions as a real, "
+             "arbitrary compute[22:16]. Bit 14 is gray in BOTH types, so it confirms rather "
+             "than discriminates, and is included because it is genuinely part of Type5b_move's "
+             "fixed pattern.",
+             1, _combine(_field(14, 14, 0), _field(6, 0, 0b0000000))[0],
+             _combine(_field(14, 14, 0), _field(6, 0, 0b0000000))[1], "5b_move"),
+        ],
+        "if_none_match_length": 48,
+        "if_none_match": "48-bit Type5a_move (its second word has only one required bit -- bit "
+            "30 = 0 -- so confirm that, then fetch a third word: compute[15:0], fully "
+            "arbitrary).",
+        "residual_ambiguity": "RESOLVED in revision 4. Revision 2 recorded no gray cell in "
+            "Type5b_move's second word and left this group undecidable; a 400 DPI re-read of "
+            "Figure 13-15 (PDF p340) shows bit 30 and bits 22:16 gray, eight cells in total. "
+            "Possibility (b) named in revision 2 -- that the crop simply missed a real gray "
+            "cell -- was the correct one. The residual ambiguity is now the same shape as "
+            "GROUP_1A_1B and GROUP_9A_9B: a genuine Type5a_move whose compute[22:16] happens to "
+            "be all zero would be misidentified as a 32-bit Type5b_move. Whether that compute "
+            "encoding is reserved/illegal for Type5a_move is not stated in the text pages read "
+            "for this transcription.",
     },
 ]
 
@@ -1324,8 +1335,9 @@ def decode_length_multiword(word0: int, word1: Optional[int] = None) -> Optional
     pattern is one of LENGTH_RULE_MULTIWORD's shared first words and a
     second word is needed -- fetch the next 16-bit word and call again
     with both. Returns the resolved length (16/32/48), or None if still
-    undetermined (either genuinely ambiguous, e.g. GROUP_5A_5B_MOVE, or no
-    known pattern matches at all).
+    undetermined. As of revision 4 every multi-word group resolves from
+    opcode bits alone, so None after a second word means no known pattern
+    matches at all rather than a group this file cannot decide.
     """
     word0 &= 0xFFFF
     for group in LENGTH_RULE_MULTIWORD:
@@ -1600,8 +1612,8 @@ def self_test() -> None:
         if group["if_none_match_length"] is not None:
             assert group["if_none_match_length"] in (16, 32, 48)
 
-    # GROUP_1A_1B and GROUP_9A_9B must actually resolve via
-    # decode_length_multiword(); GROUP_5A_5B_MOVE must honestly not.
+    # GROUP_1A_1B, GROUP_9A_9B, and GROUP_5A_5B_MOVE must all actually
+    # resolve via decode_length_multiword().
     g1a1b = next(g for g in LENGTH_RULE_MULTIWORD if g["group"] == "GROUP_1A_1B")
     w0_1a1b = g1a1b["shared_word0"][1]
     assert decode_length_multiword(w0_1a1b) is None, "should need a second word"
@@ -1615,7 +1627,8 @@ def self_test() -> None:
 
     g5 = next(g for g in LENGTH_RULE_MULTIWORD if g["group"] == "GROUP_5A_5B_MOVE")
     w0_5 = g5["shared_word0"][1]
-    assert decode_length_multiword(w0_5, 0) is None, "GROUP_5A_5B_MOVE must stay honestly unresolved"
+    assert decode_length_multiword(w0_5, 0) == 32, "Type5b_move's all-zero required bits should resolve to 32"
+    assert decode_length_multiword(w0_5, 1) == 48, "a set bit in bits 6:0 should fall back to Type5a_move's 48"
 
     # CONTROL_FLOW (Priority 3): every entry must reference a real TYPES
     # name, and any bit position it cites must be in range for that

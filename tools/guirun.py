@@ -1,0 +1,403 @@
+#!/usr/bin/env python3
+"""Headless reproduction of emu/gui.py's worker configuration.
+
+emu/gui.py imports tkinter at module top and cannot run without a display.
+This tool builds the exact same emulator configuration the GUI worker does
+-- same build() flags, same fault_sink, same Timers/Pits/Dtims hold/release,
+same intro handover, mainloop/job_pump/terminal hooks, same panel_diff latch
+hook -- but headlessly, so a boot failure that only shows under the GUI can
+be traced from a terminal. On top of that it adds arbitrary code hooks via
+`--at ADDR[=NAME]` and, when the firmware lands in its terminal loop, dumps
+the most recent hook hits plus a stack scan.
+
+    uv run python tools/guirun.py [snapshot] --at 0x4011d67a=sd_bringup
+    uv run python tools/guirun.py [snapshot] --stack-at 0x401d105c
+    uv run python tools/guirun.py --patch-machine --input 150M:press:17 --input 160M:press:2 --input 160M:release:2 --png-at 170M:out/list.png
+
+--patch-machine and --exact behave exactly as they do for emu/gui.py; see
+its module docstring. `--input` replays panel clicks through the same
+inbox, dwell pacing and `panelin.feed` the GUI uses; FUNC is code 17 and
+SRC is 2 on Digitakt II.
+
+`--feed WHEN:HEX` delivers raw panel bytes at an exact instruction count
+with no dwell; `emu/gui.py` prints every feed it delivers in exactly that
+form, so a GUI session can be replayed by pasting its `[gui] input --feed`
+arguments.
+"""
+import argparse
+import collections
+import os
+import struct
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
+
+from emu.longrun import build, spin
+from emu.dtim import Dtims, Timers
+from emu import config, panel, symbols
+from emu import device as devices, panelin
+from emu.pit import Pits, intro_running
+from unicorn.m68k_const import UC_M68K_REG_A7
+from machinepatch import patch_b, DEFAULT_CAVE_B, spec_from_arg, DEFAULT_SPEC
+
+BUDGET = 400_000   # same as emu/gui.py
+
+
+def parse_args(argv):
+    p = argparse.ArgumentParser(
+        description='Headless reproduction of emu/gui.py, for tracing boot '
+                     'failures that only show under the GUI.')
+    p.add_argument('snapshot', nargs='?', default='snapshots/boot400M.snap')
+    p.add_argument('--weakptr', action='store_true')
+    p.add_argument('--slc', action='store_true')
+    p.add_argument('--exact', action='store_true')
+    p.add_argument('--syx')
+    p.add_argument('--patch-machine', nargs='?',
+                    const='list+dispatch+group+name+rank', default=None)
+    p.add_argument('--machine', default=None,
+                    help='NAME:SHORT[:CLONE_OF[:POSITION]] for the new '
+                         'machine (see machinepatch.MachineSpec); default '
+                         'is Placeholder/PLC cloned from type 6')
+    p.add_argument('--at', action='append', default=[])
+    p.add_argument('--stack-at', action='append', default=[],
+                    type=lambda s: int(s, 0))
+    p.add_argument('--stack-depth', type=int, default=128)
+    p.add_argument('--limit', type=lambda s: int(s, 0), default=600_000_000)
+    p.add_argument('--ring', type=int, default=64)
+    p.add_argument('--input', action='append', default=[])
+    p.add_argument('--feed', action='append', default=[])
+    p.add_argument('--png-at', action='append', default=[])
+    # same as emu/gui.py's PANEL_DWELL_CHUNKS
+    p.add_argument('--panel-dwell', type=int, default=16)
+    return p.parse_args(argv)
+
+
+def parse_when(s):
+    if s and s[-1] in ('M', 'm'):
+        return int(float(s[:-1]) * 1_000_000)
+    return int(s, 0)
+
+
+def parse_input(spec):
+    when_str, kind, code_str = spec.split(':', 2)
+    return parse_when(when_str), kind, int(code_str, 0)
+
+
+def parse_feed(spec):
+    when_str, hex_str = spec.split(':', 1)
+    return parse_when(when_str), bytes.fromhex(hex_str)
+
+
+def parse_png_at(spec):
+    when_str, path = spec.split(':', 1)
+    return parse_when(when_str), path
+
+
+def parse_patch_machine(value):
+    if ':' in value:
+        parts_str, eighth_str = value.split(':', 1)
+        eighth = int(eighth_str, 0)
+    else:
+        parts_str = value
+        eighth = 7
+    return tuple(parts_str.split('+')), eighth
+
+
+def parse_at(spec):
+    if '=' in spec:
+        addr_str, name = spec.split('=', 1)
+    else:
+        addr_str, name = spec, None
+    addr = int(addr_str, 0)
+    if name is None:
+        name = '0x%08x' % addr
+    return addr, name
+
+
+def stack_scan(uc, depth):
+    """-> (a7, [(offset, word), ...]) for longwords above A7 that fall in the
+    MAIN OS code span."""
+    a7 = uc.reg_read(UC_M68K_REG_A7)
+    found = []
+    for i in range(depth):
+        offset = i * 4
+        try:
+            word = struct.unpack('>I', uc.mem_read(a7 + offset, 4))[0]
+        except Exception:
+            break
+        if 0x40000400 <= word <= 0x40307f60:
+            found.append((offset, word))
+    return a7, found
+
+
+def main():
+    args = parse_args(sys.argv[1:])
+    fast = not args.exact
+
+    extra = {'syx': args.syx} if args.syx else {}
+    m, ev, st, pc, inq, at = build(args.snapshot, unblock=True, softfloat=True,
+                                    bitmap=True, dsp=True, on_pixel=None,
+                                    weakptr=args.weakptr, slc=args.slc, **extra)
+
+    if args.patch_machine is not None:
+        parts, eighth = parse_patch_machine(args.patch_machine)
+        try:
+            spec = spec_from_arg(args.machine) if args.machine else DEFAULT_SPEC
+            diffs = patch_b(m, DEFAULT_CAVE_B, parts=parts, eighth=eighth, spec=spec)
+        except SystemExit as exc:
+            print('[guirun] machine patch refused: %s' % exc)
+            sys.exit(2)
+        print('[guirun] patched: %s (8th=%d, machine=%s/%s)'
+              % ('+'.join(parts), eighth, spec.name, spec.short))
+        if diffs:
+            for line in diffs:
+                print(line)
+
+    main_img = open(config.main_image(), 'rb').read()
+    profile = symbols.resolve(main_img)
+
+    if args.input:
+        try:
+            device, _fw = devices.identify(config.firmware(args.syx))
+            held = panelin.Held(device)
+        except Exception as exc:                        # noqa: BLE001
+            print('[guirun] cannot identify device for --input: %s' % exc)
+            sys.exit(2)
+    else:
+        held = None
+
+    inbox = collections.deque()
+    chunks_since_delivery = 0
+    delivered_before = False
+    pending_inputs = [parse_input(spec) for spec in args.input]
+
+    faulted_pages = set()
+
+    def fault_sink(rec):
+        # Called from inside a Unicorn hook: no locks, no guest memory
+        # access, and nothing may raise into the run -- same as gui.py.
+        try:
+            page = rec['page']
+            if page in faulted_pages:
+                return
+            faulted_pages.add(page)
+            kinds = '+'.join(sorted(rec['kinds'])) if rec['kinds'] else '?'
+            print('[guirun] FAULT page=0x%08x first=0x%08x pc=0x%08x %s'
+                  % (page, rec['first_addr'], rec['first_pc'], kinds),
+                  flush=True)
+        except Exception:
+            pass
+    m.fault_sink = fault_sink
+
+    intro = intro_running(m, profile.intro_pit3_isr)
+    pits = Timers(Pits(m, hold=intro), Dtims(m, channels=(3,), hold=intro))
+    if pits.held and profile.intro_done is not None:
+        def handover(uc, a, s_, d):
+            pits.release()
+            print('[guirun] intro handover at %dM' % (state['instrs'] // 1_000_000))
+        at(profile.intro_done, handover)
+
+    state = {'instrs': 0, 'mainloop': 0, 'jobs': 0, 'terminal': False, 'seq': 0}
+    if profile.mainloop is not None:
+        at(profile.mainloop, lambda uc, a, s, d: state.__setitem__(
+            'mainloop', state['mainloop'] + 1))
+    if profile.job_pump is not None:
+        at(profile.job_pump, lambda uc, a, s, d: state.__setitem__(
+            'jobs', state['jobs'] + 1))
+
+    def terminal_hit(uc, a, s, d):
+        if not state['terminal']:
+            state['terminal'] = True
+            print('[guirun] TERMINAL LOOP reached at ~%dM' % (state['instrs'] // 1_000_000))
+    at(0x4012d2fa, terminal_hit)
+
+    def drain_input(pc):
+        """Apply queued panel input at a chunk boundary. -> the new PC.
+
+        Ported line for line from emu/gui.py's Emulator._drain_input; see its
+        docstring there for the pacing rationale.
+        """
+        nonlocal chunks_since_delivery, delivered_before
+        if held is None:
+            return pc
+        paced = args.panel_dwell > 0
+        if paced and delivered_before and (
+                chunks_since_delivery < args.panel_dwell):
+            chunks_since_delivery += 1
+            return pc
+        out = bytearray()
+        took_button = False
+        deferred = []
+        while inbox:
+            kind, code, arg = inbox.popleft()
+            if kind == 'encoder':
+                channel = device.encoder_channel(code)
+                if channel is not None:
+                    out += panelin.encode_encoder(channel, arg)
+            elif paced and took_button:
+                deferred.append((kind, code, arg))
+            else:
+                took_button = True
+                if kind == 'press':
+                    pos = held.press(code)
+                    if pos is not None:
+                        out += panelin.encode_buttons(*pos)
+                elif kind == 'release':
+                    pos = held.release(code)
+                    if pos is not None:
+                        out += panelin.encode_buttons(*pos)
+                elif kind == 'release_all':
+                    for pos in held.release_all():
+                        out += panelin.encode_buttons(*pos)
+        for item in reversed(deferred):
+            inbox.appendleft(item)
+        if not out:
+            return pc
+        chunks_since_delivery = 0
+        delivered_before = True
+        try:
+            new_pc = panelin.feed(m, profile, bytes(out))
+        except Exception as exc:                        # noqa: BLE001
+            print('[guirun] panel input failed: %s' % exc)
+            return pc
+        print('[guirun] input ~%.1fM: %s' % (state['instrs'] / 1e6, bytes(out).hex()))
+        return new_pc
+
+    latched = {'buf': None}
+    if profile.panel_diff is not None and profile.fb_front is not None:
+        # Matches the GUI's panel_diff hook, and feeds --png-at: this stores
+        # the untorn frame instead of discarding it.
+        def latch_frame(uc, a, s_, d):
+            buf = panel.read(m, profile.fb_front)
+            if buf is not None:
+                latched['buf'] = buf
+        at(profile.panel_diff, latch_frame)
+
+    pending_pngs = [parse_png_at(spec) for spec in args.png_at]
+    pending_feeds = [parse_feed(s) for s in args.feed]
+
+    at_targets = [parse_at(spec) for spec in args.at]
+    hit_counts = collections.Counter()
+    hits = collections.deque(maxlen=args.ring)
+
+    def make_at_hook(addr, name):
+        def hook(uc, a, s, d):
+            hit_counts[addr] += 1
+            a7 = uc.reg_read(UC_M68K_REG_A7)
+
+            def read_long(offset):
+                try:
+                    return struct.unpack('>I', uc.mem_read(a7 + offset, 4))[0]
+                except Exception:
+                    return None
+            ret = read_long(0)
+            arg1 = read_long(4)
+            arg2 = read_long(8)
+            arg3 = read_long(12)
+            # Does NOT read SR -- reg_read(SR) between emu_start calls
+            # clobbers condition codes and has deadlocked a guest mutex
+            # before. See emu/gui.py's _stack_backtrace docstring.
+            hits.append((state['seq'], state['instrs'], addr, name, a7, ret,
+                         arg1, arg2, arg3))
+            state['seq'] += 1
+        return hook
+
+    for addr, name in at_targets:
+        at(addr, make_at_hook(addr, name))
+
+    stack_scans = {}
+
+    def make_stack_at_hook(addr):
+        def hook(uc, a, s, d):
+            if addr in stack_scans:
+                return
+            stack_scans[addr] = (state['seq'], state['instrs'],
+                                  stack_scan(uc, args.stack_depth))
+        return hook
+
+    for addr in args.stack_at:
+        at(addr, make_stack_at_hook(addr))
+
+    reported = -1
+    while state['instrs'] < args.limit:
+        due_feeds, pending_feeds[:] = (
+            [e for e in pending_feeds if e[0] <= state['instrs']],
+            [e for e in pending_feeds if e[0] > state['instrs']])
+        for when, data in due_feeds:
+            pc = panelin.feed(m, profile, data)
+            print('[guirun] input --feed %d:%s (asked %d)'
+                  % (state['instrs'], data.hex(), when))
+        ready, pending_inputs[:] = (
+            [e for e in pending_inputs if e[0] <= state['instrs']],
+            [e for e in pending_inputs if e[0] > state['instrs']])
+        for when, kind, code in ready:
+            inbox.append((kind, code, 0))
+        pc = drain_input(pc)
+        pc, executed, stop = spin(m, pc, BUDGET, pits=pits, fast=fast)
+        state['instrs'] += executed
+        due, pending_pngs[:] = (
+            [e for e in pending_pngs if e[0] <= state['instrs']],
+            [e for e in pending_pngs if e[0] > state['instrs']])
+        for when, path in due:
+            if latched['buf'] is None:
+                print('[guirun] png ~%dM: no latched frame yet (%s not written)'
+                      % (when // 1_000_000, path))
+            else:
+                panel.write_png(latched['buf'], path)
+                print('[guirun] png ~%dM -> %s' % (when // 1_000_000, path))
+        if stop != 'limit':
+            print('[guirun] HALTED: %s at pc=0x%08x' % (stop, pc))
+            break
+        step = state['instrs'] // 20_000_000
+        if step != reported:
+            reported = step
+            print('[guirun] %dM tasks=%d dtim3=%d mainloop=%d jobs=%d pc=0x%08x'
+                  % (state['instrs'] // 1_000_000, len(ev['tasks']),
+                     pits.fired.get('DTIM3', 0), state['mainloop'],
+                     state['jobs'], pc))
+        if state['terminal']:
+            pc, executed, stop = spin(m, pc, BUDGET, pits=pits, fast=fast)
+            state['instrs'] += executed
+            break
+
+    print('[guirun] end: instrs=%dM terminal=%s tasks=%d dtim3=%d mainloop=%d '
+          'jobs=%d pc=0x%08x'
+          % (state['instrs'] // 1_000_000, state['terminal'], len(ev['tasks']),
+             pits.fired.get('DTIM3', 0), state['mainloop'], state['jobs'], pc))
+    print('[guirun] faults: %d distinct pages touched' % len(m.fault_pages))
+
+    if at_targets:
+        for addr, name in at_targets:
+            print('  0x%08x  %s  hits=%d' % (addr, name, hit_counts[addr]))
+
+    if hits:
+        print('[guirun] last %d hook hits (oldest first):' % len(hits))
+        for seq, instrs, addr, name, a7, ret, arg1, arg2, arg3 in hits:
+            def fmt(v):
+                return '0x%08x' % v if v is not None else '--------'
+            print('  #%d ~%dM  %s  a7=0x%08x ret=%s args=%s %s %s'
+                  % (seq, instrs // 1_000_000, name, a7, fmt(ret), fmt(arg1),
+                     fmt(arg2), fmt(arg3)))
+
+    for addr in args.stack_at:
+        if addr in stack_scans:
+            seq, instrs, (a7, found) = stack_scans[addr]
+            print('[guirun] stack at first hit of 0x%08x (~%dM, after hook '
+                  'seq #%d, A7=0x%08x):'
+                  % (addr, instrs // 1_000_000, seq, a7))
+            for offset, word in found:
+                print('  +0x%03x  0x%08x' % (offset, word))
+        else:
+            print('[guirun] 0x%08x never reached; no stack scan' % addr)
+
+    if state['terminal']:
+        a7, found = stack_scan(m.uc, 64)
+        print('[guirun] stack at terminal loop (A7=0x%08x):' % a7)
+        for offset, word in found:
+            print('  +0x%03x  0x%08x' % (offset, word))
+
+
+if __name__ == '__main__':
+    main()
