@@ -86,7 +86,7 @@ DMAEN = 0x80                            # DTXMR bit 7
 # It costs fidelity, not correctness: every sleep still ends, in order, and
 # the interrupt still lands on the instruction its deadline fell on. Nothing
 # here has been tuned to hide it. Closing the gap needs sub-step resolution,
-# which means either a per-instruction hook (~1.8x, see longrun.run_until) or
+# which means either a per-instruction hook (7.6x, see longrun._FastStepper) or
 # stopping the run from inside the write hook -- and `emu_stop` under `spin`
 # makes the instruction accounting a lie, which HANDOVER section 4 spells out.
 #

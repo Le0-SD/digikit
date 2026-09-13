@@ -41,7 +41,7 @@ from unicorn.m68k_const import UC_M68K_REG_PC, UC_M68K_REG_SR
 from emu.longrun import build, spin
 from emu.dtim import Dtims, Timers
 from emu import config, device as devices, panel, panelin, symbols
-from emu.pit import Pits, intro_running
+from emu.pit import INSTR_PER_SEC, Pits, intro_running
 from emu.screen import png
 
 # The intro's frame rate is not a guess. PIT3 is configured at 0x400d3a7a with
@@ -75,10 +75,14 @@ ON = b'\xe8\xf6\xff'
 # post-intro progress the harness could already reach -- the display task sat
 # blocked on a semaphore only PIT3's handler ever posts.
 #
-# It costs about 1.8x: deadline stepping needs `count=` on emu_start, and that
-# makes Unicorn install an internal per-instruction hook (see longrun.spin).
+# It is expensive: deadline stepping needs `count=` on emu_start, and that
+# makes Unicorn count every instruction, which breaks TB chaining. Measured on
+# this machine with every hook installed, 2.0M instructions a second counted
+# against 15.5M uncounted -- 7.6x, not the ~1.8x this comment used to claim.
 # The cost is in `count` itself and not in how often emu_start is called, so
 # there is nothing to win by making BUDGET bigger than responsiveness wants.
+# The GUI defaults to spin(fast=True), which drops `count=` entirely; --exact
+# puts it back for comparison against bootcheck. See longrun._FastStepper.
 BUDGET = 400_000          # instructions per pass, ~0.16s: pause/stop latency,
                           # and how long a panel click waits to be delivered.
                           # The cost is in emu_start's `count` rather than in
@@ -91,12 +95,25 @@ class Emulator(threading.Thread):
 
     daemon = True
 
-    def __init__(self, snapshot, weakptr=False, slc=False, syx=None):
+    def __init__(self, snapshot, weakptr=False, slc=False, syx=None,
+                 fast=True, realtime=True):
         super().__init__()
         self.snapshot = snapshot
         self.weakptr = weakptr
         self.slc = slc
         self.syx = syx
+        # Interactive running, not measurement. `fast` drops the `count=`
+        # argument to emu_start, which costs 7.6x on this machine, in exchange
+        # for timers landing on a basic-block boundary rather than an exact
+        # instruction -- so it changes the instruction stream and must never be
+        # used for a determinism or pass/fail claim. See longrun._FastStepper.
+        # `realtime` then paces the worker back down: uncounted it runs several
+        # times faster than the hardware, and a sequencer at 3x tempo is worse
+        # than one at a third.
+        self.fast = fast
+        self.realtime = realtime
+        self._paced = 0
+        self._pace_t0 = None
         self.fb = bytearray(W * H)
         self.pause = threading.Event()
         self.stop_flag = threading.Event()
@@ -321,6 +338,7 @@ class Emulator(threading.Thread):
                   'arbitrary moment, which may tear', flush=True)
         self.ready.set()
         self.stats['status'] = 'running'
+        self._pace_t0 = time.time()
         while not self.stop_flag.is_set():
             if self.pause.is_set():
                 self.stats['status'] = 'paused'
@@ -342,7 +360,7 @@ class Emulator(threading.Thread):
             else:
                 self.stats['status'] = 'running'
             pc = self._drain_input(m, profile, pc)
-            pc, executed, stop = spin(m, pc, BUDGET, pits=pits)
+            pc, executed, stop = spin(m, pc, BUDGET, pits=pits, fast=self.fast)
             if stop != 'limit':
                 self.stats['status'] = 'halted: %s' % stop
                 # Also to stdout: the status label is invisible to anyone
@@ -353,6 +371,17 @@ class Emulator(threading.Thread):
                       % (stop, pc, total // 1_000_000), flush=True)
                 break
             self.stats['instrs'] += executed
+            if self.realtime:
+                # Sleep off whatever we are ahead of the hardware by. The
+                # budget is in instructions and INSTR_PER_SEC converts it, the
+                # same constant the timer models pace themselves with, so the
+                # emulated clock and the wall clock agree. Capped per sleep so
+                # pause and stop stay responsive.
+                ahead = (self._paced + executed) / INSTR_PER_SEC - (
+                    time.time() - self._pace_t0)
+                self._paced += executed
+                if ahead > 0.003:
+                    time.sleep(min(ahead, 0.05))
             self._publish_panel(m)
             fired = pits.fired
             self.stats['pit'] = (fired.get('PIT0', 0), fired.get('PIT2', 0),
@@ -613,7 +642,8 @@ class Panel(tk.Frame):
 
 
 class App(tk.Tk):
-    def __init__(self, snapshot, weakptr=False, slc=False, scale=None, syx=None):
+    def __init__(self, snapshot, weakptr=False, slc=False, scale=None,
+                 syx=None, fast=True, realtime=True):
         super().__init__()
         self.title('Digi emulator')
         self.configure(bg='#15181d')
@@ -659,6 +689,8 @@ class App(tk.Tk):
         self.weakptr = weakptr
         self.slc = slc
         self.syx = syx
+        self.fast = fast
+        self.realtime = realtime
         self.shown = -1
         self.replay = None          # (frames, index, next_due) while replaying
         self.start()
@@ -666,7 +698,9 @@ class App(tk.Tk):
         self.after(60, self.tick)
 
     def start(self):
-        self.emu = Emulator(self.snapshot, weakptr=self.weakptr, slc=self.slc, syx=self.syx)
+        self.emu = Emulator(self.snapshot, weakptr=self.weakptr,
+                            slc=self.slc, syx=self.syx, fast=self.fast,
+                            realtime=self.realtime)
         self.emu.start()
 
     def send_input(self, kind, code, arg):
@@ -810,6 +844,13 @@ if __name__ == '__main__':
     argv = sys.argv[1:]
     weakptr = '--weakptr' in argv
     slc = '--slc' in argv
+    # --exact restores `count=` stepping: slower by about 7.6x, but every
+    # timer lands on the instruction it was due at. Use it when comparing a
+    # run against bootcheck, never for ordinary interactive use.
+    # --unthrottled lets the worker run as fast as it can instead of pacing
+    # itself to the hardware's clock.
+    fast = '--exact' not in argv
+    realtime = '--unthrottled' not in argv
     scale = None
     if '--scale' in argv:
         i = argv.index('--scale')
@@ -826,4 +867,5 @@ if __name__ == '__main__':
         raise SystemExit('no such snapshot: %s\n'
                          'build one with:  uv run python -m emu.checkpoint make '
                          '60000000,120000000,200000000,280000000,400000000' % snap)
-    App(snap, weakptr=weakptr, slc=slc, scale=scale, syx=syx).mainloop()
+    App(snap, weakptr=weakptr, slc=slc, scale=scale, syx=syx, fast=fast,
+        realtime=realtime).mainloop()

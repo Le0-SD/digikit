@@ -187,9 +187,11 @@ from-entry task-creation timeline exactly.
 - **Speed: 3.1x, and the ceiling is understood.** 93% of emulated instructions
   were soft-float; `emu/softfloat.py` and `emu/hle.py` run those and
   setPixel/getPixel natively, bit-exact and verified against the firmware's own
-  routines. Unicorn's m68k core does ~2.2M instr/sec here and no hook in this
-  project costs anything measurable, so further gains have to come from
-  executing fewer instructions, not from tuning the harness. Both HLEs are
+  routines. No hook in this project costs anything measurable. The claim that
+  followed -- that Unicorn's m68k core does ~2.2M instr/sec here, so further
+  gains must come from executing fewer instructions -- was **wrong, corrected
+  2026-09-13**: ~2.2M is the cost of `count=`, not of the core, which does
+  15.5M instr/sec uncounted on the same machine. See `longrun._FastStepper`. Both HLEs are
   off by default because they change instruction counts; `FAST=1` for the
   longrun CLI. `install_mmio` was global too and is now scoped (1.33x on the
   fully-emulated path, ~3% on the HLE path). On the HLE path the bottleneck is

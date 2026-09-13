@@ -17,7 +17,8 @@ import collections
 import hashlib
 from typing import Any
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from unicorn import UcError, UC_HOOK_CODE, UC_HOOK_MEM_READ, UC_HOOK_MEM_WRITE
+from unicorn import (UcError, UC_HOOK_BLOCK, UC_HOOK_CODE, UC_HOOK_MEM_READ,
+                     UC_HOOK_MEM_WRITE)
 from unicorn.m68k_const import (UC_M68K_REG_A7, UC_M68K_REG_PC, UC_M68K_REG_SR,
                                 UC_M68K_REG_D0, UC_M68K_REG_D2, UC_M68K_REG_A0)
 import emu.dspboot as db
@@ -524,7 +525,10 @@ def run_until(m, pc, timeout_ms=250):
     makes Unicorn install an internal per-instruction hook to decrement the
     budget, and that defeats its fast dispatch path. Measured over the same 40
     rendered frames: 8.03s with `count=250_000` against 4.45s with no count,
-    a 1.8x difference for identical work.
+    a 1.8x difference for identical work. Measured again in 2026-09-13 on the
+    settled main OS rather than the intro, the same comparison is **7.6x**
+    (2.0M instructions a second against 15.5M) -- the penalty grows with the
+    amount of translated code in play, so treat 1.8x as a floor, not a figure.
 
     The cost is in `count` itself, not in how often emu_start is called --
     over the same 100 frames, count=20k (1308 calls), count=500k (53 calls)
@@ -565,7 +569,84 @@ def run_until(m, pc, timeout_ms=250):
     return pc, stop
 
 
-def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None):
+class _FastStepper:
+    """Bound a run without `count=`, by accumulating translated block sizes.
+
+    `count=` is what makes emu_start stop on an exact instruction, and
+    Unicorn implements it by counting every instruction, which breaks TB
+    chaining. Measured on this firmware, same machine, same hooks, same stop
+    mechanism: 2.0M instructions a second counted against 15.5M uncounted, a
+    7.6x tax. That is where the emulator's speed went -- a cProfile of the
+    running configuration puts 99.5% of wall time inside emu_start and under
+    0.5% in every Python callback in this project combined.
+
+    A block hook can bound a run instead, and it leaves the fast dispatch
+    path intact. Two things it cannot do exactly:
+
+      * A block's `size` is BYTES, not instructions, so the count is an
+        estimate divided by a bytes-per-instruction ratio. That ratio is not
+        a constant of the ISA -- measured on this image it moves between 3.05
+        and 3.79 depending on which code is running -- so it is re-measured
+        from a genuinely counted step every `recalibrate` steps. One counted
+        step in sixteen costs about 6% of the count= tax.
+      * The run stops at the first block boundary at or after the target, so
+        a timer fires up to one basic block late (about eight instructions
+        here) rather than on the exact instruction it was due.
+
+    So this changes the instruction stream, and therefore the boot digest.
+    It is opt-in, never the default, and nothing making a determinism or
+    pass/fail claim should use it. See spin's `fast` argument.
+    """
+
+    def __init__(self, m, recalibrate=16, ratio=3.8):
+        self.m = m
+        self.ratio = ratio
+        self.recalibrate = recalibrate
+        self.steps = 0
+        self.bytes = 0
+        self.left = 0
+        m.uc.hook_add(UC_HOOK_BLOCK, self._on_block)
+
+    def _on_block(self, uc, addr, size, data):
+        # Checked BEFORE counting, so the block that exhausts the step still
+        # runs and is still counted, and the one after it is neither.
+        if self.left <= 0:
+            uc.emu_stop()
+            return
+        self.bytes += size
+        self.left -= size
+
+    def run(self, pc, step):
+        """Execute about `step` instructions from `pc`. -> instructions run."""
+        self.steps += 1
+        self.bytes = 0
+        if self.steps % self.recalibrate == 0:
+            # A counted step, purely to re-measure the ratio. `left` is set
+            # out of reach so the block hook only observes.
+            self.left = 1 << 62
+            self.m.uc.emu_start(pc, 0, count=step)
+            if self.bytes > 0:
+                measured = self.bytes / float(step)
+                # Smoothed: one step can straddle an unrepresentative stretch
+                # of code, and a ratio that chases every sample makes the
+                # emulated clock jitter.
+                self.ratio += 0.25 * (measured - self.ratio)
+            return step
+        self.left = int(step * self.ratio)
+        self.m.uc.emu_start(pc, 0)
+        return max(1, int(self.bytes / self.ratio))
+
+
+def _fast_stepper(m):
+    stepper = getattr(m, '_fast_stepper_obj', None)
+    if stepper is None:
+        stepper = _FastStepper(m)
+        m._fast_stepper_obj = stepper
+    return stepper
+
+
+def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None,
+         fast=False):
     """Run in chunks. -> (pc, executed, stop_reason).
 
     Pass `pits` (an emu.pit.Pits) to run to each timer deadline exactly
@@ -608,9 +689,19 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None):
     idle spins, which build() does, is the faithful mechanism. Left available
     only for deliberate "shake it and see" experiments.
 
-    Every chunk boundary costs a `count=` argument to emu_start, which is
-    ~1.8x slower than running uncounted -- see run_until. Use spin only when
-    something genuinely has to happen per fixed number of instructions.
+    Every chunk boundary costs a `count=` argument to emu_start. That is far
+    more expensive than it looks: measured on this machine with every hook
+    installed, counted execution runs at 2.0M instructions a second against
+    15.5M uncounted, a 7.6x tax, and a cProfile of the running configuration
+    puts 99.5% of wall time inside emu_start. An older note here put the cost
+    at ~1.8x; that was wrong.
+
+    `fast=True` buys that back with `_FastStepper`, which bounds each step
+    with a block hook instead. It is opt-in because it costs exactness: the
+    instruction count becomes an estimate, and a timer fires up to one basic
+    block late rather than on the instruction it was due. That changes the
+    instruction stream and so the boot digest. Use it for interactive running
+    -- the GUI does -- and never for a determinism or pass/fail claim.
     """
     deferred = getattr(m, '_checkpoint_deferred_restore', None)
     if deferred is not None:
@@ -628,7 +719,12 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None):
         step = (pits.step(base + done, None) if pits is not None
                 else min(chunk, instrs - done))
         m.halt_vec = None
-        try: m.uc.emu_start(pc, 0, count=step)
+        try:
+            if fast:
+                executed = _fast_stepper(m).run(pc, step)
+            else:
+                m.uc.emu_start(pc, 0, count=step)
+                executed = step
         except UcError as e: stop = str(e); break
         pc = m.uc.reg_read(UC_M68K_REG_PC)
         if m.halt_vec is not None:
@@ -637,7 +733,10 @@ def spin(m, pc, instrs, chunk=500_000, on_chunk=None, tick=False, pits=None):
         if pc == 0:
             stop = 'pc zero'
             break
-        done += step
+        # What actually ran, which in fast mode is an estimate and is not
+        # exactly `step`. In counted mode the two are identical, so the
+        # default path's accounting is unchanged.
+        done += executed
         if pits is not None:
             pits.now = base + done
             pits.service(base + done)

@@ -921,8 +921,21 @@ Also worth noting for whoever picks this up: the console protocol words are
 The GUI ran at ~1.3 firmware frames/sec. Profiling found the cause is not the
 harness at all -- a minimal machine (scoped ISA patches + mmio + exceptions)
 runs at 2.16M instr/sec and the full hooked machine at 2.19M, so **every hook
-in this project is free**. Chunk size makes no difference either. ~2.2M
-instr/sec is simply what Unicorn's m68k core does here.
+in this project is free**. Chunk size makes no difference either.
+
+> **Corrected 2026-09-13.** This section used to end "~2.2M instr/sec is
+> simply what Unicorn's m68k core does here." That is wrong, and it steered
+> later decisions. ~2.2M is what the core does *when `count=` is passed to
+> emu_start*, which Unicorn implements by counting every instruction and
+> which breaks TB chaining. The same machine with the identical hook set and
+> the identical stop mechanism runs at **15.5M instr/sec uncounted -- a 7.6x
+> tax**, and a cProfile of the running configuration puts **99.5% of wall
+> time inside emu_start** with every Python callback in this project under
+> 0.5% combined. The hooks really are free; the ceiling was never the core.
+> `longrun.spin(fast=True)` buys it back for interactive use, at the cost of
+> timers landing on a block boundary rather than an exact instruction. The
+> paragraph below -- "the only way to go faster is to execute fewer
+> instructions" -- followed from the wrong premise.
 
 So the only way to go faster is to execute fewer instructions. An exact PC
 histogram over the intro says where they go:
