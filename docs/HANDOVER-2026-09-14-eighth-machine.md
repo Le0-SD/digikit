@@ -58,8 +58,16 @@ is cosmetic.
 With all four halves applied, `emu/gui.py` freezes at the end of the boot
 animation: 2 tasks instead of 6, `DTIM3 0`, `mainloop 0`, and the main task in
 the terminal loop at `0x4012d2fa`. The fault log reports **0 distinct pages
-touched**, so it is not a wild pointer — the `weak_ptr` trap is an object that
-was never constructed. This is the same signature as the `list`-only failure.
+touched**. Same signature as the `list`-only failure.
+
+**What that trap actually is: `std::terminate` after an uncaught C++
+exception.** The GUI's "hung on a weak pointer" label is an old guess. The
+stack scan names `FUN_40178424`, part of the exception unwinder, which aborts
+when no handler is found. The thrower is most likely `std::out_of_range` from
+an `at()` on a seven-element container — see `docs/FINDINGS.md` for the two
+candidate range-checkers and their machine-territory callers. That reframing
+is the most useful thing this thread produced about the failure, and it is
+where the next session should start.
 
 What the bisect has established so far:
 
@@ -69,17 +77,12 @@ What the bisect has established so far:
 | `dispatch` | boots, 6 tasks, renders past 340M |
 | `list` | **fails** |
 | `list` with `--eighth 6` (eight rows, no new machine type) | boots |
+| `list+group` | **fails** — so patch 3 is not sufficient |
 | all four | **fails** |
 
-So eight entries is fine; introducing machine *type 7* is what breaks it, and
-patch 3 was the hypothesis for why. That hypothesis is **not yet tested in
-isolation** — the decisive run has not been made:
-
-    uv run python -m emu.gui --weakptr --patch-machine=list+group snapshots/boot400M.snap
-
-If that boots, patch 3 works and the remaining break is in patch 4 (or in the
-combination). If it still fails, patch 3 is not sufficient and `FUN_4005d7b8`
-is not the only thing that rejects type 7.
+So eight entries is fine; introducing machine *type 7* is what breaks it.
+Patch 3 was the hypothesis for why, and `list+group` disproves it — the
+grouping helper is not the only thing that rejects type 7.
 
 Also untested in isolation: `group`, `name`, and `list+group+name`. The GUI's
 `--patch-machine` accepts `+`-separated combinations for exactly this.

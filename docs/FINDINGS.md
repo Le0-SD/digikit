@@ -324,6 +324,34 @@ ran with `--weakptr`, and only the patched one fails. The fault log reports
 **0 distinct pages touched**, so it is not a wild pointer either; the
 `weak_ptr` trap is an object that was never constructed.
 
+**The terminal loop is not a weak-pointer failure. It is `std::terminate`.**
+`0x4012d2fa` is a 2-byte trap with 34 call sites; the GUI's long-standing
+"hung on a weak pointer" label is a guess that predates this. A stack scan at
+the moment it trips gives one candidate return address, `0x40178484`, which is
+the instruction after a `jsr` at `0x4017847e` inside `FUN_40178424`. That
+function is part of the **C++ exception unwinder** — `FUN_401772cc`, whose
+non-zero return sends it to the trap, parses `.eh_frame`, checking for the
+`"eh"` augmentation string and walking CIE/FDE records. So the sequence is: an
+exception is thrown, no handler is found, `std::terminate` is called. **[V]**
+
+That explains the otherwise-odd combination of symptoms — an abort with **zero
+memory faults**, triggered only by a specific value. A bounds check that
+throws is not a wild read.
+
+The likely thrower is `std::out_of_range` from an `at()` on a seven-element
+container. The image carries `vector::_M_range_check` at `0x40225586` and
+`map::at` at `0x40213a8f`, and of the twelve functions referencing them, two
+sit in machine territory: **[O]**
+
+| range-checker | called from | neighbourhood |
+|---|---|---|
+| `FUN_4019bf70` (`vector::at`) | `FUN_40060042`, `FUN_400603a6` | `MachineSelectionView` is `FUN_400607b2`, the list builders `FUN_40060504`/`FUN_4006069c` |
+| `FUN_401ac0fe` (`vector::at`) | `FUN_400cb4b4` | the dispatch is `FUN_400caf48` |
+
+Neither is confirmed to be on the failing path yet. Hooking both and seeing
+which fires is the next step, and it should name the container that needs an
+eighth element.
+
 Narrowing further with `--patch-machine=list:6`, which builds an eight-entry
 list whose last entry duplicates MANUAL SLICE instead of introducing a new
 machine type: **it boots normally.** So eight entries is fine, and **the
