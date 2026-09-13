@@ -22,6 +22,10 @@ the same point the timers are released.
 
     uv run python -m emu.gui [snapshot]
 
+--patch-machine installs the experimental eighth machine (PLACEHOLDER) into
+the running emulator's machine list. This patches guest memory in the running
+emulator only -- it modifies no file on disk and is not a flashable patch.
+
 tkinter only, no third-party GUI dependency. Note Homebrew's python@3.14 does
 not ship tkinter; uv's managed CPython does, which is why pyproject pins 3.12.
 """
@@ -104,12 +108,13 @@ class Emulator(threading.Thread):
     daemon = True
 
     def __init__(self, snapshot, weakptr=False, slc=False, syx=None,
-                 fast=True, realtime=True):
+                 fast=True, realtime=True, patch_machine=False):
         super().__init__()
         self.snapshot = snapshot
         self.weakptr = weakptr
         self.slc = slc
         self.syx = syx
+        self.patch_machine = patch_machine
         # Interactive running, not measurement. `fast` drops the `count=`
         # argument to emu_start, which costs 7.6x on this machine, in exchange
         # for timers landing on a basic-block boundary rather than an exact
@@ -257,6 +262,20 @@ class Emulator(threading.Thread):
                                            dsp=True, on_pixel=on_pixel,
                                            weakptr=self.weakptr, slc=self.slc,
                                            **extra)
+            if self.patch_machine:
+                sys.path.insert(0, os.path.join(os.path.dirname(
+                    os.path.dirname(os.path.abspath(__file__))), 'tools'))
+                from machinepatch import patch_b, DEFAULT_CAVE_B
+                # patch_b reports a failed byte precondition with SystemExit,
+                # which derives from BaseException and so would slip past the
+                # handler below -- and a SystemExit on a worker thread kills
+                # it silently, leaving this window stuck on "loading
+                # snapshot". Convert it into something catchable.
+                try:
+                    patch_b(m, DEFAULT_CAVE_B)
+                except SystemExit as exc:
+                    raise RuntimeError('machine patch refused: %s' % exc) from exc
+                self.stats['status'] = 'patched: eighth machine installed'
             # build() already resolved (and required) this same profile
             # internally -- see emu/symbols.py -- so re-resolving here is a
             # cache hit, not a rescan. fb_front is OPTIONAL: if it did not
@@ -684,7 +703,7 @@ class Panel(tk.Frame):
 
 class App(tk.Tk):
     def __init__(self, snapshot, weakptr=False, slc=False, scale=None,
-                 syx=None, fast=True, realtime=True):
+                 syx=None, fast=True, realtime=True, patch_machine=False):
         super().__init__()
         self.title('Digi emulator')
         self.configure(bg='#15181d')
@@ -732,6 +751,7 @@ class App(tk.Tk):
         self.syx = syx
         self.fast = fast
         self.realtime = realtime
+        self.patch_machine = patch_machine
         self.shown = -1
         self.replay = None          # (frames, index, next_due) while replaying
         self.start()
@@ -741,7 +761,8 @@ class App(tk.Tk):
     def start(self):
         self.emu = Emulator(self.snapshot, weakptr=self.weakptr,
                             slc=self.slc, syx=self.syx, fast=self.fast,
-                            realtime=self.realtime)
+                            realtime=self.realtime,
+                            patch_machine=self.patch_machine)
         self.emu.start()
 
     def send_input(self, kind, code, arg):
@@ -892,6 +913,9 @@ if __name__ == '__main__':
     # itself to the hardware's clock.
     fast = '--exact' not in argv
     realtime = '--unthrottled' not in argv
+    # --patch-machine installs the experimental eighth machine (PLACEHOLDER)
+    # into the machine list.
+    patch_machine = '--patch-machine' in argv
     scale = None
     if '--scale' in argv:
         i = argv.index('--scale')
@@ -909,4 +933,4 @@ if __name__ == '__main__':
                          'build one with:  uv run python -m emu.checkpoint make '
                          '60000000,120000000,200000000,280000000,400000000' % snap)
     App(snap, weakptr=weakptr, slc=slc, scale=scale, syx=syx, fast=fast,
-        realtime=realtime).mainloop()
+        realtime=realtime, patch_machine=patch_machine).mainloop()
