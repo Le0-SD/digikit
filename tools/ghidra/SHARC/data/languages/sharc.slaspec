@@ -20,6 +20,12 @@ define register offset=0x10 size=4 [ R0  R1  R2  R3  R4  R5  R6  R7
                                      R8  R9  R10 R11 R12 R13 R14 R15 ];
 define register offset=0x50 size=4 [ I0 I1 I2 I3 I4 I5 I6 I7 ];
 define register offset=0x70 size=4 [ M0 M1 M2 M3 M4 M5 M6 M7 ];
+# PCSTK: the hardware PC stack a return pops; nothing models that stack,
+# so a return reads PCSTK and its value is always unknown.
+# CC: a placeholder condition flag that nothing ever writes, so Ghidra
+# treats a branch on it as genuinely conditional and explores both paths.
+define register offset=0x90 size=4 [ PCSTK ];
+define register offset=0x94 size=1 [ CC ];
 
 define token w0 (16)
     w0_all = (0,15)
@@ -39,6 +45,8 @@ define token w0 (16)
     w0_13 = (13,13)
     w0_14 = (14,14)
     w0_15 = (15,15)
+    w0_cond40 = (0,4)
+    w0_cond51 = (1,5)
 ;
 define token w1 (16)
     w1_all = (0,15)
@@ -58,6 +66,10 @@ define token w1 (16)
     w1_13 = (13,13)
     w1_14 = (14,14)
     w1_15 = (15,15)
+    w1_pmi10 = (14,15)
+    w1_pmi10lo = (14,15)
+    w1_pmi10hi = (14,15)
+    w1_pmm = (11,13)
 ;
 define token w2 (16)
     w2_all = (0,15)
@@ -78,11 +90,44 @@ define token w2 (16)
     w2_14 = (14,14)
     w2_15 = (15,15)
 ;
+attach variables [ w1_pmi10lo ] [ I0 I1 I2 I3 ];
+attach variables [ w1_pmi10hi ] [ I4 I5 I6 I7 ];
 
 # 24-bit absolute target, high 8 bits in w1 and low 16 in w2,
 # doubled to turn a short-word address into this space's byte address.
 Dest24: reloc is w1_15=0 & w1_14=0 & w1_13=0 & w1_12=0 & w1_11=0 & w1_10=0 & w1_9=0 & w1_8=0 & w1_all ; w2_all
     [ reloc = ((w1_all & 0xff) << 17) + (w2_all << 1); ] { export *:4 reloc; }
+
+A8abs: reloc is w1_9=0 & w1_11=0 & w1_12=0 & w1_13=0 & w1_14=0 & w1_15=0 & w1_all ; w2_all
+    [ reloc = ((w1_all & 0xff) << 17) + (w2_all << 1); ] { export *:4 reloc; }
+A8rel: reloc is w1_9=0 & w1_11=0 & w1_12=0 & w1_13=0 & w1_14=0 & w1_15=0 & w1_all ; w2_all
+    [ reloc = inst_start + (((((( w1_all & 0xff) << 16) + w2_all) ^ 0x800000) - 0x800000) * 2); ] { export *:4 reloc; }
+:jump A8abs is w0_0=0 & w0_9=1 & w0_10=1 & w0_11=0 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=0 & w0_cond51=31 ; A8abs { goto A8abs; }
+:if.jump A8abs is w0_0=0 & w0_9=1 & w0_10=1 & w0_11=0 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=0 ; A8abs { if (CC == 0) goto inst_next; goto A8abs; }
+:call A8abs is w0_0=0 & w0_9=1 & w0_10=1 & w0_11=0 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=1 & w0_cond51=31 ; A8abs { call A8abs; }
+:if.call A8abs is w0_0=0 & w0_9=1 & w0_10=1 & w0_11=0 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=1 ; A8abs { if (CC == 0) goto inst_next; call A8abs; }
+:jump A8rel is w0_0=0 & w0_9=1 & w0_10=1 & w0_11=0 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=1 & w0_7=0 & w0_cond51=31 ; A8rel { goto A8rel; }
+:if.jump A8rel is w0_0=0 & w0_9=1 & w0_10=1 & w0_11=0 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=1 & w0_7=0 ; A8rel { if (CC == 0) goto inst_next; goto A8rel; }
+:call A8rel is w0_0=0 & w0_9=1 & w0_10=1 & w0_11=0 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=1 & w0_7=1 & w0_cond51=31 ; A8rel { call A8rel; }
+:if.call A8rel is w0_0=0 & w0_9=1 & w0_10=1 & w0_11=0 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=1 & w0_7=1 ; A8rel { if (CC == 0) goto inst_next; call A8rel; }
+:jumpind w1_pmi10lo is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=0 & w0_5=0 & w0_cond40=31 ; w1_7=0 & w1_pmi10lo ; w2_all { goto [w1_pmi10lo]; }
+:if.jumpind w1_pmi10lo is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=0 & w0_5=0 ; w1_7=0 & w1_pmi10lo ; w2_all { if (CC == 0) goto inst_next; goto [w1_pmi10lo]; }
+:jumpind w1_pmi10hi is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=0 & w0_5=1 & w0_cond40=31 ; w1_7=0 & w1_pmi10hi ; w2_all { goto [w1_pmi10hi]; }
+:if.jumpind w1_pmi10hi is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=0 & w0_5=1 ; w1_7=0 & w1_pmi10hi ; w2_all { if (CC == 0) goto inst_next; goto [w1_pmi10hi]; }
+:callind w1_pmi10lo is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=1 & w0_5=0 & w0_cond40=31 ; w1_7=0 & w1_pmi10lo ; w2_all { call [w1_pmi10lo]; }
+:if.callind w1_pmi10lo is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=1 & w0_5=0 ; w1_7=0 & w1_pmi10lo ; w2_all { if (CC == 0) goto inst_next; call [w1_pmi10lo]; }
+:callind w1_pmi10hi is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=1 & w0_5=1 & w0_cond40=31 ; w1_7=0 & w1_pmi10hi ; w2_all { call [w1_pmi10hi]; }
+:if.callind w1_pmi10hi is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=1 & w0_5=1 ; w1_7=0 & w1_pmi10hi ; w2_all { if (CC == 0) goto inst_next; call [w1_pmi10hi]; }
+:jumpind w1_pmi10lo is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=0 & w0_5=0 & w0_cond40=31 ; w1_0=0 & w1_1=0 & w1_2=0 & w1_3=0 & w1_4=0 & w1_5=0 & w1_6=0 & w1_7=0 & w1_9=0 & w1_pmi10lo { goto [w1_pmi10lo]; }
+:if.jumpind w1_pmi10lo is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=0 & w0_5=0 ; w1_0=0 & w1_1=0 & w1_2=0 & w1_3=0 & w1_4=0 & w1_5=0 & w1_6=0 & w1_7=0 & w1_9=0 & w1_pmi10lo { if (CC == 0) goto inst_next; goto [w1_pmi10lo]; }
+:jumpind w1_pmi10hi is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=0 & w0_5=1 & w0_cond40=31 ; w1_0=0 & w1_1=0 & w1_2=0 & w1_3=0 & w1_4=0 & w1_5=0 & w1_6=0 & w1_7=0 & w1_9=0 & w1_pmi10hi { goto [w1_pmi10hi]; }
+:if.jumpind w1_pmi10hi is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=0 & w0_5=1 ; w1_0=0 & w1_1=0 & w1_2=0 & w1_3=0 & w1_4=0 & w1_5=0 & w1_6=0 & w1_7=0 & w1_9=0 & w1_pmi10hi { if (CC == 0) goto inst_next; goto [w1_pmi10hi]; }
+:callind w1_pmi10lo is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=1 & w0_5=0 & w0_cond40=31 ; w1_0=0 & w1_1=0 & w1_2=0 & w1_3=0 & w1_4=0 & w1_5=0 & w1_6=0 & w1_7=0 & w1_9=0 & w1_pmi10lo { call [w1_pmi10lo]; }
+:if.callind w1_pmi10lo is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=1 & w0_5=0 ; w1_0=0 & w1_1=0 & w1_2=0 & w1_3=0 & w1_4=0 & w1_5=0 & w1_6=0 & w1_7=0 & w1_9=0 & w1_pmi10lo { if (CC == 0) goto inst_next; call [w1_pmi10lo]; }
+:callind w1_pmi10hi is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=1 & w0_5=1 & w0_cond40=31 ; w1_0=0 & w1_1=0 & w1_2=0 & w1_3=0 & w1_4=0 & w1_5=0 & w1_6=0 & w1_7=0 & w1_9=0 & w1_pmi10hi { call [w1_pmi10hi]; }
+:if.callind w1_pmi10hi is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_8=0 & w0_7=1 & w0_5=1 ; w1_0=0 & w1_1=0 & w1_2=0 & w1_3=0 & w1_4=0 & w1_5=0 & w1_6=0 & w1_7=0 & w1_9=0 & w1_pmi10hi { if (CC == 0) goto inst_next; call [w1_pmi10hi]; }
+:rts is w0_0=0 & w0_6=0 & w0_7=0 & w0_9=1 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 & w0_cond40=30 ; w1_7=0 & w1_11=0 & w1_12=0 & w1_13=0 & w1_14=0 & w1_15=0 ; w2_all { return [PCSTK]; }
+:if.rts is w0_0=0 & w0_6=0 & w0_7=0 & w0_9=1 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 ; w1_7=0 & w1_11=0 & w1_12=0 & w1_13=0 & w1_14=0 & w1_15=0 ; w2_all { if (CC == 0) goto inst_next; return [PCSTK]; }
 
 :t1a w1_all, w2_all is w0_13=1 & w0_14=0 & w0_15=0 ; w1_all ; w2_all { }
 :t1b  is w0_13=1 & w0_14=0 & w0_15=0 ; w1_0=1 & w1_1=1 & w1_2=1 & w1_3=1 & w1_4=1 & w1_5=1 & w1_6=0 & w1_14=1 & w1_15=1 { }
@@ -103,11 +148,7 @@ Dest24: reloc is w1_15=0 & w1_14=0 & w1_13=0 & w1_12=0 & w1_11=0 & w1_10=0 & w1_
 :t7a w2_all is w0_7=1 & w0_11=0 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 ; w1_7=1 & w1_13=0 ; w2_all { }
 :t7b  is w0_10=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 ; w1_3=1 & w1_4=1 & w1_5=1 { }
 :t7d w2_all is w0_7=1 & w0_9=1 & w0_11=0 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 ; w1_7=1 & w1_13=0 ; w2_all { }
-:t8a w2_all is w0_0=0 & w0_9=1 & w0_10=1 & w0_11=0 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 ; w1_9=0 & w1_11=0 & w1_12=0 & w1_13=0 & w1_14=0 & w1_15=0 ; w2_all { }
-:t9a w2_all is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 ; w1_7=0 ; w2_all { }
-:t9b  is w0_9=0 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 ; w1_0=0 & w1_1=0 & w1_2=0 & w1_3=0 & w1_4=0 & w1_5=0 & w1_6=0 & w1_7=0 & w1_9=0 { }
 :t10a w1_all, w2_all is w0_14=1 & w0_15=1 ; w1_all ; w2_all { }
-:t11a w2_all is w0_0=0 & w0_6=0 & w0_7=0 & w0_9=1 & w0_10=0 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 ; w1_7=0 & w1_11=0 & w1_12=0 & w1_13=0 & w1_14=0 & w1_15=0 ; w2_all { }
 :t12a.imm w1_all, w2_all is w0_10=1 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 ; w1_all ; w2_all { }
 :t12a.ureg w1_all, w2_all is w0_8=1 & w0_10=1 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 ; w1_all ; w2_all { }
 :t13a w1_all, w2_all is w0_0=0 & w0_9=1 & w0_10=1 & w0_11=1 & w0_12=0 & w0_13=0 & w0_14=0 & w0_15=0 ; w1_all ; w2_all { }
