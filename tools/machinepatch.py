@@ -25,6 +25,17 @@ same descriptor). Expect the new row to render as a second MANUAL SLICE.
 That is the correct, unsurprising result for Milestone A: this proves the
 list-relocation plumbing works, not that a new machine type exists yet.
 
+Milestone B (`--milestone b`) goes further: it installs an eighth machine
+*descriptor*, reached via a cave trampoline that replaces `FUN_400caf48`
+(the ColdFire machine dispatch at `0x400caf48`). Types 0..6 resolve exactly
+as before (delegated back to the original `0x42923644` array), type 7
+resolves to a new 44-byte descriptor built in the cave (fields copied from
+entry 6, MANUAL SLICE, but with distinct name-string reps), and anything
+out of range still falls back to entry 6, matching the original's forgiving
+failure mode. It then unit-tests the patched dispatch directly, by calling
+`0x400caf48` in the live guest for arguments 0..8 and checking D0 against
+the expected descriptor address for each.
+
 This tool patches **guest memory on a resumed snapshot only**. It does not
 modify any file, does not touch the firmware image on disk, and produces
 nothing flashable -- the patch evaporates when the emulator process exits.
@@ -52,11 +63,14 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from unicorn.m68k_const import UC_M68K_REG_A0, UC_M68K_REG_D0, UC_M68K_REG_PC
+
 from addrtrace import load_main_image
 from mmiotrace import CountingSink
 
 from emu import symbols
 from emu.dtim import Dtims, Timers
+from emu.harness import PAGE
 from emu.longrun import build, spin
 from emu.pit import Pits, intro_running
 
@@ -68,6 +82,143 @@ TABLE_D_LO, TABLE_D_HI = 0x401e1958, 0x401e1973
 ORIGINAL_TABLE = (0, 1, 2, 3, 6, 4, 5)
 NEW_TABLE = ORIGINAL_TABLE + (7,)
 DEFAULT_CAVE = 0x402f9c14
+
+DISPATCH = 0x400caf48
+DISPATCH_WANT = bytes.fromhex('7206202f0004')
+DESCRIPTOR_BASE = 0x42923644
+DESCRIPTOR_STRIDE = 0x2c
+FALLBACK_DESCRIPTOR = 0x4292374c
+DESCRIPTOR_FIELDS = (0xf8, 0xf9, 0, 0xfb, 0xfc, 0xfd, 0, 0xfe, 0x0a)
+DEFAULT_CAVE_B = 0x40303e5c
+TRAMP_OFF = 0x000
+DESC_OFF = 0x100
+LNAME_OFF = 0x140
+LCHARS_OFF = 0x14c
+SNAME_OFF = 0x160
+SCHARS_OFF = 0x16c
+TABLE_B_OFF = 0x180
+LONG_NAME = 'PLACEHOLDER'
+SHORT_NAME = 'PLHD'
+SCRATCH_PAGE = 0x1ff00000
+DISPATCH_SENTINEL = 0xdeadbee0
+
+
+def build_trampoline(cave_b):
+    desc = cave_b + DESC_OFF
+    return (
+        bytes.fromhex('202f0004')
+        + bytes.fromhex('7207')
+        + bytes.fromhex('b280')
+        + bytes.fromhex('6608')
+        + bytes.fromhex('203c') + struct.pack('>I', desc)
+        + bytes.fromhex('4e75')
+        + bytes.fromhex('7206')
+        + bytes.fromhex('b280')
+        + bytes.fromhex('6510')
+        + bytes.fromhex('123c002c')
+        + bytes.fromhex('4c010800')
+        + bytes.fromhex('0680') + struct.pack('>I', DESCRIPTOR_BASE)
+        + bytes.fromhex('4e75')
+        + bytes.fromhex('203c') + struct.pack('>I', FALLBACK_DESCRIPTOR)
+        + bytes.fromhex('4e75')
+    )
+
+
+def build_descriptor(cave_b):
+    return struct.pack('>11I', cave_b + LCHARS_OFF, cave_b + SCHARS_OFF,
+                        *DESCRIPTOR_FIELDS)
+
+
+def build_rep(name):
+    chars = name.encode('ascii') + b'\x00'
+    return struct.pack('>IIi', len(name), len(name), -1) + chars
+
+
+def patch_b(m, cave_b):
+    lines = []
+    cur = bytes(m.uc.mem_read(DISPATCH, 6))
+    if cur != DISPATCH_WANT:
+        raise SystemExit(
+            'machinepatch: %#010x holds %s, expected %s'
+            % (DISPATCH, cur.hex(), DISPATCH_WANT.hex()))
+    for site, want in ((END_SITE, END_WANT), (START_SITE, START_WANT)):
+        cur = bytes(m.uc.mem_read(site, 6))
+        if cur != want:
+            raise SystemExit(
+                'machinepatch: %#010x holds %s, expected %s'
+                % (site, cur.hex(), want.hex()))
+
+    m.ensure(cave_b)
+
+    tramp = build_trampoline(cave_b)
+    old = bytes(m.uc.mem_read(cave_b + TRAMP_OFF, len(tramp)))
+    m.uc.mem_write(cave_b + TRAMP_OFF, tramp)
+    lines.append('%#010x  %s -> %s' % (cave_b + TRAMP_OFF, old.hex(), tramp.hex()))
+
+    desc = build_descriptor(cave_b)
+    old = bytes(m.uc.mem_read(cave_b + DESC_OFF, len(desc)))
+    m.uc.mem_write(cave_b + DESC_OFF, desc)
+    lines.append('%#010x  %s -> %s' % (cave_b + DESC_OFF, old.hex(), desc.hex()))
+
+    lrep = build_rep(LONG_NAME)
+    old = bytes(m.uc.mem_read(cave_b + LNAME_OFF, len(lrep)))
+    m.uc.mem_write(cave_b + LNAME_OFF, lrep)
+    lines.append('%#010x  %s -> %s' % (cave_b + LNAME_OFF, old.hex(), lrep.hex()))
+
+    srep = build_rep(SHORT_NAME)
+    old = bytes(m.uc.mem_read(cave_b + SNAME_OFF, len(srep)))
+    m.uc.mem_write(cave_b + SNAME_OFF, srep)
+    lines.append('%#010x  %s -> %s' % (cave_b + SNAME_OFF, old.hex(), srep.hex()))
+
+    tbytes = struct.pack('>8I', *NEW_TABLE)
+    old = bytes(m.uc.mem_read(cave_b + TABLE_B_OFF, len(tbytes)))
+    m.uc.mem_write(cave_b + TABLE_B_OFF, tbytes)
+    lines.append('%#010x  %s -> %s' % (cave_b + TABLE_B_OFF, old.hex(), tbytes.hex()))
+
+    for site, new_ptr in ((START_SITE, cave_b + TABLE_B_OFF),
+                           (END_SITE, cave_b + TABLE_B_OFF + len(tbytes))):
+        old = bytes(m.uc.mem_read(site + 2, 4))
+        new = struct.pack('>I', new_ptr)
+        m.uc.mem_write(site + 2, new)
+        lines.append('%#010x  %s -> %s' % (site + 2, old.hex(), new.hex()))
+
+    old = bytes(m.uc.mem_read(DISPATCH, 6))
+    new = b'\x4e\xf9' + struct.pack('>I', cave_b)
+    m.uc.mem_write(DISPATCH, new)
+    lines.append('%#010x  %s -> %s' % (DISPATCH, old.hex(), new.hex()))
+
+    return lines
+
+
+def call_dispatch(m, arg, scratch_sp, sentinel):
+    uc = m.uc
+    saved_d = [uc.reg_read(UC_M68K_REG_D0 + i) for i in range(8)]
+    saved_a = [uc.reg_read(UC_M68K_REG_A0 + i) for i in range(8)]
+    saved_pc = uc.reg_read(UC_M68K_REG_PC)
+
+    uc.mem_write(scratch_sp, struct.pack('>I', sentinel))
+    uc.mem_write(scratch_sp + 4, struct.pack('>I', arg))
+    uc.reg_write(UC_M68K_REG_A0 + 7, scratch_sp)
+
+    uc.emu_start(DISPATCH, sentinel)
+    d0 = uc.reg_read(UC_M68K_REG_D0) & 0xffffffff
+
+    for i in range(8):
+        uc.reg_write(UC_M68K_REG_D0 + i, saved_d[i])
+        uc.reg_write(UC_M68K_REG_A0 + i, saved_a[i])
+    uc.reg_write(UC_M68K_REG_PC, saved_pc)
+    return d0
+
+
+def read_rep(m, addr):
+    length, cap, refcount = struct.unpack('>IIi', bytes(m.uc.mem_read(addr, 12)))
+    chars = bytes(m.uc.mem_read(addr + 12, length))
+    return {
+        'length': length,
+        'capacity': cap,
+        'refcount': refcount,
+        'text': chars.decode('latin1'),
+    }
 
 
 def patch(m, cave_addr):
@@ -197,6 +348,103 @@ def _counts(sink, lo, hi):
         yield key, total
 
 
+def run_b(args):
+    main_img, _ = load_main_image(args.syx)
+    profile = symbols.resolve(main_img)
+
+    m, ev, st, pc, inq, at = build(
+        args.snapshot, syx=args.syx, unblock=True, softfloat=True,
+        bitmap=True, dsp=True, slc=args.slc,
+        sdgate=args.sdgate, esdhc=args.esdhc)
+
+    patch_lines = []
+    if not args.no_patch:
+        patch_lines = patch_b(m, args.cave_b)
+
+    intro = intro_running(m, profile.intro_pit3_isr)
+    pits = Timers(Pits(m, hold=intro), Dtims(m, channels=(3,), hold=intro))
+    phase = {'post_intro': not intro}
+
+    if intro and profile.intro_done is not None:
+        def handover(uc, a, size, data):
+            pits.release()
+            phase['post_intro'] = True
+        at(profile.intro_done, handover)
+
+    done, pc_, stop = 0, pc, 'limit'
+    t0 = time.time()
+    target = args.instrs
+    while True:
+        pc_, executed, stop = spin(m, pc_, max(target - done, args.chunk),
+                                    pits=pits)
+        done += executed
+        if stop != 'limit':
+            break
+        if done >= target and phase['post_intro']:
+            break
+        if done >= target and not phase['post_intro']:
+            if done >= args.max_instrs:
+                break
+            target = min(target + args.chunk, args.max_instrs)
+
+    mode = 'control' if args.no_patch else 'patched'
+    table = []
+    descriptor = None
+    long_name = None
+    short_name = None
+
+    if mode == 'patched':
+        m.ensure(SCRATCH_PAGE)
+        scratch_sp = SCRATCH_PAGE + PAGE - 0x100
+        expected = {a: DESCRIPTOR_BASE + a * DESCRIPTOR_STRIDE for a in range(7)}
+        expected[7] = args.cave_b + DESC_OFF
+        expected[8] = FALLBACK_DESCRIPTOR
+        for a in range(9):
+            got = call_dispatch(m, a, scratch_sp, DISPATCH_SENTINEL)
+            table.append({
+                'arg': a,
+                'expected': '0x%08x' % expected[a],
+                'actual': '0x%08x' % got,
+                'match': got == expected[a],
+            })
+
+        desc_raw = bytes(m.uc.mem_read(args.cave_b + DESC_OFF, 44))
+        descriptor = ['0x%08x' % w for w in struct.unpack('>11I', desc_raw)]
+        long_name = read_rep(m, args.cave_b + LNAME_OFF)
+        short_name = read_rep(m, args.cave_b + SNAME_OFF)
+
+        dispatch_ok = all(row['match'] for row in table)
+        if dispatch_ok and phase['post_intro']:
+            verdict = 'PASS: all nine dispatch results match, reached post-intro'
+        else:
+            fails = []
+            if not dispatch_ok:
+                fails.append('dispatch mismatch on arg(s) %s'
+                              % [row['arg'] for row in table if not row['match']])
+            if not phase['post_intro']:
+                fails.append('did not reach post-intro')
+            verdict = 'FAIL: ' + '; '.join(fails)
+    else:
+        verdict = 'control: no patch applied, dispatch not exercised'
+
+    return {
+        'syx': args.syx,
+        'snapshot': args.snapshot,
+        'mode': mode,
+        'cave_b': '0x%08x' % args.cave_b,
+        'patch_lines': patch_lines,
+        'dispatch_table': table,
+        'descriptor': descriptor,
+        'long_name': long_name,
+        'short_name': short_name,
+        'reached_post_intro': phase['post_intro'],
+        'instrs': done,
+        'stop': stop,
+        'elapsed_s': round(time.time() - t0, 1),
+        'verdict': verdict,
+    }
+
+
 def print_report(report):
     print(json.dumps(report, indent=2))
 
@@ -209,6 +457,14 @@ def main(argv=None):
     ap.add_argument('--cave', type=lambda s: int(s, 0), default=DEFAULT_CAVE,
                      help='MAIN OS cave address to write the relocated table '
                           'into (default: 0x402f9c14)')
+    ap.add_argument('--milestone', choices=('a', 'b'), default='a',
+                     help='a: relocate the source table (default). '
+                          'b: install an eighth machine descriptor via a '
+                          'cave trampoline and unit-test the dispatch.')
+    ap.add_argument('--cave-b', dest='cave_b', type=lambda s: int(s, 0),
+                     default=DEFAULT_CAVE_B,
+                     help='cave address for --milestone b (default: '
+                          '0x40303e5c)')
     ap.add_argument('--no-patch', action='store_true',
                      help='skip the patch, for a control run')
     ap.add_argument('--instrs', type=lambda s: int(s, 0), default=90_000_000,
@@ -231,7 +487,7 @@ def main(argv=None):
     ap.add_argument('--json', help='write the full report here')
     args = ap.parse_args(argv)
 
-    report = run(args)
+    report = run(args) if args.milestone == 'a' else run_b(args)
     if args.json:
         os.makedirs(os.path.dirname(os.path.abspath(args.json)) or '.',
                      exist_ok=True)

@@ -7,6 +7,39 @@ Evidence classes used below:
 **[V]** verified by running it here · **[D]** documented by prior research, not
 re-checked · **[O]** open / nobody has established this.
 
+## Scope, and the 2.01 firmwares **[V]**
+
+Everything address-specific in this file is **Digitakt II 1.15C**, whose MAIN
+OS is `sections/section_3_MAIN_OS.bin`, sha-256 `6a6a887b…`. The snapshot
+ladder and the Ghidra program are the same image. The container and transport
+results — both checksums, the HMAC and its key derivation, the framing
+message's transfer constant and message count — are the exception: those are
+confirmed byte-exact against all four firmwares in the repo root.
+
+`Digitakt_II_OS1.16.syx` and `Digitone_II_OS1.11.syx` are a different
+generation, and three things separate them from 1.15C/1.10E:
+
+- **A sixth section, id 8**, packed, **103,416 bytes compressed on both
+  devices** — byte-for-byte the same compressed length on Digitakt and
+  Digitone, which suggests a shared component rather than per-device content.
+  Nothing else is known about it. **[O]**
+- **The bootstrap version bumps, `0x0200` -> `0x0201`.** Section 2's `dest` is
+  the version word, and it reads `0x02000000` in 1.15C and 1.10E, `0x02010000`
+  in 1.16 and 1.11. So installing either of the newer firmwares performs the
+  bootstrap upgrade — the one irreversible operation on the device, and the
+  reason `tools/patchimg.py` refuses section 2 outright.
+- **This repo cannot read them.** Every packed section of 1.16 fails to
+  depack. The cause is the oracle, not the new section: the depacker is taken
+  from the UPDATER, and 1.16's UPDATER differs from 1.15C's by **43.4%**
+  (14,231 of 32,776 bytes, first difference at offset `0x9b`), so the entry
+  point at `0x80000432` has moved. The two 2.01 updaters also differ from each
+  other, so the oracle would need re-deriving per device.
+
+Retargeting the machine work to 1.16 is therefore not an address rebase. It
+needs the 2.01 depacker oracle re-derived, a re-extraction, a fresh snapshot
+ladder built by cold boot, a re-import to Ghidra, and every address in "The
+ColdFire machine dispatch" re-derived. **[O]**
+
 ## Container
 
 `.syx` → SysEx transport (13,346 × 128-byte messages, `F0 00 20 3C 14 00 …`)
@@ -229,6 +262,54 @@ the same vector-copy loop that reads seven entries from `0x401e1958` in an
 unpatched control run, which sees zero reads of the original table. The table
 reads back intact afterwards, so nothing else claims that memory.
 `tools/machinepatch.py` runs both arms. **[V]**
+
+The dispatch half is done too. A 48-byte trampoline in the safe cave region
+replaces `FUN_400caf48`'s first six bytes with `jmp $40303e5c.l`, adds a
+`type == 7` case, and otherwise reproduces the original logic exactly: **[V]**
+
+```
+40303e5c  move.l $4(a7), d0          ; the machine type
+40303e60  moveq  #$7, d1
+40303e62  cmp.l  d0, d1
+40303e64  bne.b  $40303e6e           ; not 7 -> original path
+40303e66  move.l #$40303f5c, d0      ; the new descriptor, in the cave
+40303e6c  rts
+40303e6e  moveq  #$6, d1             ; ---- original logic from here
+40303e70  cmp.l  d0, d1
+40303e72  bcs.b  $40303e84
+40303e74  move.b #$2c, d1
+40303e78  muls.l d1, d0
+40303e7c  addi.l #$42923644, d0
+40303e82  rts
+40303e84  move.l #$4292374c, d0
+40303e8a  rts
+```
+
+Calling the patched dispatch directly in the live guest — set up a scratch
+stack, `emu_start` at `0x400caf48`, read `D0` — gives the right answer for
+every input:
+
+| arg | returns | |
+|---|---|---|
+| 0..5 | `0x42923644 + arg*0x2c` | unchanged |
+| 6 | `0x4292374c` | unchanged |
+| **7** | **`0x40303f5c`** | the new descriptor |
+| 8 | `0x4292374c` | fallback preserved |
+
+The descriptor carries entry 6's nine fields verbatim, so the new machine
+behaves as MANUAL SLICE, but its own name pointers: two static COW reps laid
+out in the cave as `[len][cap][-1][chars]`, reading back as `PLACEHOLDER`
+(11/11/-1) and `PLHD` (4/4/-1). The `-1` refcount is what makes them safe —
+every copy deep-clones rather than mutating cave memory. The run still reaches
+post-intro with the patch installed, so nothing about it breaks the boot.
+`tools/machinepatch.py --milestone b`.
+
+Worth recording as a near-miss: the trampoline's two branch displacements were
+wrong on the first attempt — `bne.b` landed on the `rts` rather than the block
+after it. Disassembling the emitted bytes back with `dt2.coldfire.disasm` and
+checking each branch target lands on an instruction boundary caught it before
+it ever ran. The corrected `bcs.b` displacement came out as `65 10`, byte-
+identical to the original function's, which is its own confirmation.
 
 What that does *not* show is a row on screen. `FUN_4005e022` (`MachineListView`)
 never fires on an idle post-intro run, so the list is built with eight entries
