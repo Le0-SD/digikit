@@ -23,6 +23,23 @@ merged. Read **Retractions** before trusting anything you remember.
 5. **"Only 178,796 of 320,780 bytes are loaded, with gaps of unknown purpose"**
    was an artefact of the truncated parse. All 320,780 bytes are accounted for.
 6. **The public aPLib format does not describe this device.** See below.
+7. **"The per-packet checksum resisted an exhaustive search" was a search in
+   the wrong family.** It is recovered, and it is not a CRC, a Fletcher or a
+   multiplicative hash — it folds the byte's own index in:
+   `(K + sum(body[6+i] ^ (i+K) for i in 0..118)) & 0x7F`. The black-box search
+   never tried index-XOR constructions, so 30,603 pairs at chance proved only
+   that the tried families were wrong. Read the code next time: the answer was
+   ~20 instructions in a section we already had.
+8. **`0x40003ca6` for the content checksum is a transcription slip** for
+   `0x80003ca6`, in the bootstrap's own address space. Propagated into
+   `docs/FINDINGS.md` and `docs/REMAINING.md`.
+9. **Section 4 is not the SysEx receiver.** It shares no strings or constants
+   with the bootstrap; the receive path is in section 2. Section 4 is most
+   consistent with being the flash-programming stub (inferred — its own code
+   was not traced).
+10. **"Only two fields block a flashable image" undercounted.** There is a
+    third, a 32-byte HMAC-SHA256 trailer, which no previous handover records
+    at all. It is now recovered too — but nothing had noticed it was there.
 
 ## What is now established
 
@@ -44,6 +61,52 @@ own block targets and reaches 291 functions. Auto-analysis alone finds nothing
 8a/9a/9b/11a as well as 25a_direct/25a_pcrel. `cond` 31 means "always" (31 is
 unencodable for 11a, whose unconditional form is 30 — the opcode fixes bit 32,
 the low bit of its own cond field).
+
+**The image is fully authenticated, and every field is now computed.** All
+three were recovered from the bootstrap by disassembly and confirmed
+byte-exact against all four firmwares in the repo root:
+
+| field | where | algorithm |
+|---|---|---|
+| content checksum | preamble bytes 4-7 | `sum((i ^ word_i))` over 1-based big-endian u32 words of the whole container, trailer included |
+| HMAC trailer | container's last 32 bytes | HMAC-SHA256 over `container[:total_len-32]` |
+| per-packet checksum | message byte 125 | `(K + sum(body[6+i] ^ (i+K), i=0..118)) & 0x7F` |
+
+The HMAC key is **derived, not stored** — same code at `0x80005d90` in both
+devices, only the data differs:
+
+    key[i] = CONST[i] ^ sha256(STRING)[i] ^ sha256(STRING[::-1])[i]
+
+    Digitakt II   STRING="Master Overdrive" @0x80006ff8, CONST @0x80007009
+    Digitone II   STRING="Multiplier"       @0x8000706c, CONST @0x80007077
+
+    dt2 key  50fadce1e6c0b93e132d9f8fef2e0c9624eafb392b45439f9d292814f44bcfda
+    dn2 key  a4986c2b68f382800b2dd7cfcace6fe2e73e643be62db32cd6a09cb30775d364
+
+Note the earlier docs' "32-byte constant beginning `69 5d 82 bc`" is only one
+of the three XOR operands, not the key.
+
+Both the HMAC and the content checksum are **real gates**: `FUN_80003c9c`
+branches on each, and failure lands in `FUN_80003bfc`, which prints
+"UPGRADE ABORTED" / "PLEASE REBOOT" and hangs in an infinite loop that never
+returns — the erase/write loop after it is unreachable. The per-packet
+checksum is different: its mismatch flag `_DAT_80008e3c` is written in six
+places and **read in none**, so a bad byte 125 silently resets the receive
+state machine.
+
+`K` is not a device constant baked into our code — it is byte 7 of the
+16-byte framing message (`0x0F` Digitakt II, `0x10` Digitone II). Framing body
+bytes 11..13 are the **data-message count** as a 21-bit base-128 value, which
+retires the last "unknown rule" in the transport: nothing is copied from the
+source file any more. Proof: blanking the framing counts and discarding the
+source preamble, re-encoding reproduces all four firmwares **byte-identically**.
+
+**The staging path imposes no size limit.** Each message's 101 decoded bytes
+go to `0x40000000 + seq*101`; the message count comes from the framing message
+with no bound check, and the erase/write loop caps nothing. Flash target is
+offset `0x80000`, which independently matches the known container location. So
+the 3x image is not refused by any software check — the open question is purely
+the physical DDR and NOR capacities, which this repo has never established.
 
 **Memory occupancy**, which decides whether new code has anywhere to live:
 
@@ -90,7 +153,8 @@ dispatch question.** The next instrument is the emulator — hook reads of
 `Machine.install_mmio_trace` and `tools/addrtrace.py` already exist.
 
 
-- **The per-packet SysEx checksum (byte 125) resisted an exhaustive search.**
+- ~~**The per-packet SysEx checksum (byte 125) resisted an exhaustive search.**~~
+  **SOLVED — see Retractions 7.** Kept here as a cautionary tale:
   Tested against 30,603 message/checksum pairs across two devices: every
   contiguous byte range as sum and as XOR, raw and 8-in-7-decoded, with
   constant offsets; every CRC-7 and CRC-8 polynomial with both init values,
@@ -148,23 +212,26 @@ four firmwares and proven by re-encoding both source files byte-identically:
 
 ### What still blocks flashing
 
-1. **The content checksum** at `0x40003ca6`, preamble bytes 4-7. Not traced.
-   Word size, endianness, start index and covered range all unpinned. Same
-   method as the CRC-32 and depacker oracles.
-2. **The per-packet checksum**, message byte 125. See Dead ends — it resisted
-   an exhaustive search. The cheaper question first: does the device even
-   check it? The bootstrap's SysEx receive code is in section 2, which we
-   have; it is not yet in the Ghidra project but importing it is easy.
-3. **Image size.** Store-only packing makes the image **5.07 MB against the
-   original 1.71 MB**. The device has to stage the compressed image somewhere
-   before depacking, and whether its buffer accepts 3x is unknown. If it does
-   not, that is what forces a real LZ77 packer. Answerable statically by
-   finding the receive buffer in the bootstrap — do this before the first
-   flash, not after.
-4. **`tools/patchimg.py` does not enforce "never touch sections 2 or 4".**
-   The docs state it as a rule for the operator; the code is a generic byte
-   patcher with no section awareness. Section 2 holds the bootstrap version
-   word gating the only irreversible operation. Make it code.
+Everything in this section's previous version is resolved. What is left:
+
+1. **Nothing has been flashed.** The chain is complete and self-consistent,
+   and a rebuilt image satisfies both of the device's own gates — but that has
+   only ever been checked by our code against our code. Items 1 and 2 of
+   Suggested order below are the real next step.
+2. **The final chunk's zero padding is still an inference.** No sample file
+   has a partial final chunk, so there is nothing to confirm it against. Our
+   rebuilds do produce one.
+3. **Image size, narrowed but not closed.** Store-only packing gives 5.07 MB
+   against the original 1.71 MB (2.97x). No *software* check refuses it (see
+   above). Physical DDR at `0x40000000` and NOR capacity from offset `0x80000`
+   are unestablished — a datasheet or a probe question, not a static-analysis
+   one. If either is short, that is what forces a real LZ77 packer.
+4. ~~`tools/patchimg.py` does not enforce "never touch sections 2 or 4"~~ —
+   done. It now identifies the image by sha256 against the pristine
+   extractions, with a content-signature fallback that survives an
+   already-patched image, and refuses sections 2 and 4 unconditionally.
+   `--force` does not override it and the guard runs before `--dry-run`
+   returns. Verified: exit 1, no output file written.
 
 The gate itself is `tools/roundtrip.py`. Run it after any change to the write
 path:
@@ -186,8 +253,9 @@ firmware argument.
 3. Calling convention — half-answered by `machineType_t` + `synthParams_t`.
 4. **Writing SHARC code — open, and the deepest.** There is no assembler and no
    semantic model, only length decoding and field extraction.
-5. Flashing — the container chain is **done and gated**; what remains is the
-   two checksums and the image-size question, all in Goal A above.
+5. Flashing — the container chain is **done, gated and fully authenticated**.
+   Both checksums and the HMAC are recovered and computed; what remains is
+   physically flashing one, and the image-size question. See Goal A above.
 
 **The cheapest first machine avoids (4) entirely**: a 12th descriptor entry
 registered from the ColdFire cave, mapping to an existing DSP mode with
@@ -209,7 +277,12 @@ that does not work rather than silence.
                           self-test and prints old vs new stored lengths.
     tools/roundtrip.py    the acceptance gate. Rebuilds and proves every
                           section comes back byte-identical through the
-                          device's own depacker. --quick skips MAIN OS.
+                          device's own depacker, and now also verifies the
+                          preamble checksum, the HMAC trailer, the framing
+                          message count and every byte-125 checksum.
+                          --quick skips MAIN OS.
+    dt2/authcode.py       the HMAC trailer: key derivation, compute, verify,
+                          seal. tools/content_hmac.py is its CLI.
 
 Ghidra project `~/ghidra-projects/dt2` holds `section_3_MAIN_OS.bin`,
 `dn2_MAIN_OS.bin` and now `dt2_SHARC`. Ghidra's decompiler fails with
@@ -219,22 +292,28 @@ Capstone.
 
 ## Suggested order
 
-1. Make `patchimg.py` refuse sections 2 and 4. Cheapest, and it is a safety
-   gate for everything after it.
-2. Find the bootstrap's SysEx receive buffer and its size — settles both
-   whether byte 125 is checked at all and whether a 5 MB image can be staged.
-   Import `sections/section_4_UPDATER.bin` (stored raw) into the Ghidra
-   project; it carries the same code as the bootstrap.
-3. Trace the content checksum at `0x40003ca6`.
-4. Emulator read-watch on `0x42923540`-`0x429237f8` during a boot to the UI,
-   to name the machine descriptor consumer. This is the one that reopens
+The first three items of the previous list are done. What is left, cheapest
+first:
+
+1. **Prove recovery on hardware while healthy** — hold FUNC at power-on,
+   STARTUP menu, MIDI DIN only, no version check. The repo still flags "a
+   corrupt MAIN OS still lets the menu come up" as inference. Demonstrate it
+   before you need it, because everything after this point can brick.
+2. **Flash an unmodified rebuild.** It should change nothing, and it is the
+   only way to separate "my patch was wrong" from "my repacker was wrong"
+   later. This is now a genuinely viable step rather than a blocked one.
+3. **Establish DDR and NOR capacity** — settles blocker 3 above, and can be
+   done before or alongside 2.
+4. **Emulator read-watch on `0x42923540`-`0x429237f8`** during a boot to the
+   UI, to name the machine descriptor consumer. This is the one that reopens
    Goal B, and static analysis has been ruled out for it.
-5. Prove recovery on hardware while healthy — hold FUNC at power-on, STARTUP
-   menu, MIDI DIN only, no version check. The repo flags "a corrupt MAIN OS
-   still lets the menu come up" as inference, not demonstrated, so demonstrate
-   it before you need it.
-6. Flash an unmodified rebuild. It should change nothing, and it is the only
-   way to separate "my patch was wrong" from "my repacker was wrong" later.
+
+A note on method, since this session produced three results the previous one
+had recorded as hard or impossible: all three came from **reading the
+bootstrap's code**, not from black-box search against the data. Section 2 was
+in the repo the whole time. When a field resists analysis, import the code
+that validates it before searching the space of algorithms that might produce
+it.
 
 `Digitakt_II_OS1.16.syx` and `Digitone_II_OS1.11.syx` are now in the repo root
 and were used in the transport analysis, so the header and counter rules hold

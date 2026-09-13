@@ -1,13 +1,16 @@
 """Write-side inverse of dt2/container.py: build an ELE3 container and a
 .syx transport around it.
 
-    NOT YET ACCEPTABLE TO A DEVICE. Do not flash output of rebuild(). Two
-    fields cannot yet be computed and are only carried through / zeroed as
-    placeholders (see below for exactly where):
-      - the preamble's 32-bit content checksum (bytes 4..7 of the 8-byte
-        preamble ahead of the ELE3 magic) -- algorithm not recovered;
-      - the per-message byte-125 checksum inside each 128-byte SysEx
-        message -- algorithm not recovered.
+    Both checksums and the HMAC trailer are now recovered, verified
+    byte-exact against all four firmwares in the repo root, and computed by
+    this module (see content_checksum(), packet_checksum() and
+    dt2/authcode.py). What genuinely remains before flashing:
+      - the final chunk's zero padding is still an inference -- no sample
+        file has a partial final chunk to confirm it against;
+      - store-only aPLib packing makes the image ~3x larger than stock, and
+        no device-side size limit is known from hardware (the receive code
+        imposes none);
+      - no rebuilt image has been flashed to hardware.
 
 Layer cake, innermost first (mirrors dt2/container.py, in reverse):
 
@@ -15,20 +18,22 @@ Layer cake, innermost first (mirrors dt2/container.py, in reverse):
                     by build_container(). Per-section storage quirks
                     (aPLib for 2/3/7, raw-with-header for 4, bare for 5)
                     are applied by store_for_section().
-  2. preamble    -- 8 bytes ahead of the magic; carried through unchanged
-                    by rebuild() (see the checksum warning above).
+  2. preamble    -- 8 bytes ahead of the magic; computed by rebuild() from
+                    the total length and content_checksum(), not carried
+                    from the source.
   3. 8-in-7      -- MIDI carries 7-bit bytes; encode_8in7() is the exact
                     inverse of the decode loop in dt2/container.py.
   4. MIDI SysEx  -- 128-byte messages, built by encode_syx(). The first
                     and last messages are the file's 16-byte framing
-                    messages; those carry a 2-byte field whose rule is not
-                    understood, so encode_syx() takes them as given rather
-                    than building them.
+                    messages; those carry the data-message count, which
+                    encode_syx() now recomputes and patches in, and each
+                    message's byte 125 is computed by packet_checksum().
 
 rebuild() ties all of this together: decode a source .syx, substitute any
-section content given in `replacements`, re-store and reassemble, and
-re-encode -- reusing the source file's own framing messages, since this
-module cannot build new ones.
+section content given in `replacements`, re-store and reassemble, compute
+the content checksum and HMAC trailer, and re-encode -- reusing the source
+file's own framing messages (with a corrected message count), since this
+module cannot build new ones from scratch.
 """
 import struct
 
@@ -58,6 +63,34 @@ def encode_8in7(data):
     return bytes(out)
 
 
+def content_checksum(container):
+    """The preamble's 32-bit checksum (bytes 4..7 of the 8-byte preamble).
+
+    Sum of (1-based word index XOR big-endian u32 word) over the whole
+    container, trailer included, mod 2**32. Recovered from the bootstrap's
+    own verifier at 0x80003ca6 and confirmed byte-exact against all four
+    firmwares in the repo root."""
+    acc = 0
+    for idx in range(1, (len(container) >> 2) + 1):
+        word, = struct.unpack_from('>I', container, (idx - 1) * 4)
+        acc = (acc + (idx ^ word)) & 0xFFFFFFFF
+    return acc
+
+
+def packet_checksum(body, k):
+    """Message byte 125, from the 125 bytes of header+payload before it.
+
+    `body` is the SysEx message between F0 and F7; `k` is the transfer-type
+    constant carried in the framing message (0x0F Digitakt II, 0x10
+    Digitone II). Covers body[6:125] -- the 3 counter bytes plus the 116
+    payload bytes. Recovered from the bootstrap at 0x80003748 and confirmed
+    against 64,053 messages across four firmwares."""
+    total = k
+    for i in range(119):
+        total += body[6 + i] ^ (i + k)
+    return total & 0x7F
+
+
 def store_for_section(section_id, data):
     """Decompressed section bytes -> stored bytes, applying the per-section
     storage rule dt2/container.py and emu/extract.py already document.
@@ -81,6 +114,13 @@ def build_container(header, entries):
     at 0x80, 16-byte aligned between sections, matching the observed layout
     in dt2/container.py's module docstring / the format facts this was
     built from. The section count is written at 0x1C, the table at 0x20.
+
+    The returned container ends with 16-byte alignment padding after the
+    last section, followed by a 32-byte zeroed trailer slot (no table
+    entry), which the caller fills via dt2.authcode.compute_trailer (or
+    seal()). Confirmed on all four firmwares in the repo root: 1347692+4+32
+    = 1347728; 1484024+8+32 = 1484064; 1743084+4+32 = 1743120;
+    1885144+8+32 = 1885184.
     """
     if len(header) != COUNT_OFF:
         raise ValueError('header must be exactly %d bytes' % COUNT_OFF)
@@ -108,10 +148,24 @@ def build_container(header, entries):
     for i, (sid, off, clen, dest) in enumerate(table):
         struct.pack_into('>IIII', out, TABLE_OFF + i * ENTRY_SZ, sid, off, clen, dest)
     out += body
+    out += bytes((-len(out)) % 16)
+    out += bytes(32)
     return bytes(out)
 
 
-def encode_syx(stream, device_id, framing_start, framing_end, checksum=lambda body: 0):
+def _patch_framing_count(msg, n):
+    """16-byte framing message -> same message with body bytes 11..13 (the
+    data-message count) rewritten to `n`, 21-bit big-endian base-128.
+    Verified on all four firmwares: body[7] is the transfer constant;
+    body bytes 11..13 are the message count (13344, 14694, 17259, 18666)."""
+    body = bytearray(msg[1:-1])
+    body[11] = (n >> 14) & 0x7F
+    body[12] = (n >> 7) & 0x7F
+    body[13] = n & 0x7F
+    return bytes([0xF0]) + bytes(body) + bytes([0xF7])
+
+
+def encode_syx(stream, device_id, framing_start, framing_end, checksum=None):
     """Decoded byte stream -> .syx bytes.
 
     Chunks `stream` into CHUNK_SIZE (101)-byte pieces -- the amount one
@@ -119,19 +173,28 @@ def encode_syx(stream, device_id, framing_start, framing_end, checksum=lambda bo
     encodes each into a 116-byte payload, and wraps each in the 9-byte
     header (constant fields, plus a 21-bit base-128 counter starting at
     FIRST_COUNTER) and a checksum byte, then F0/F7. `framing_start` and
-    `framing_end` are the complete 16-byte messages to emit first and last;
-    the caller supplies them because the 2-byte variable field inside them
-    is not understood, so this module cannot build its own.
+    `framing_end` are the complete 16-byte messages to emit first and last,
+    patched here so their message-count field (body bytes 11..13) matches
+    the number of data messages actually emitted, since that count changes
+    with content.
 
     The final chunk may be short: it is zero-padded to CHUNK_SIZE bytes.
     That padding value is an inference -- no sample file has a partial
     final chunk to confirm it against.
 
     `checksum(body)` computes byte 125 from the 125-byte header+payload
-    that precedes it; the real algorithm is not recovered, so the default
-    is a placeholder that always returns 0. Do not treat its output as
-    valid for a device -- see the module docstring.
+    that precedes it. By default this is packet_checksum() using the
+    transfer-type constant taken from `framing_start`; `checksum` overrides
+    this only for testing.
     """
+    k = framing_start[1:-1][7]     # transfer-type const; see packet_checksum
+    if checksum is None:
+        checksum = lambda body: packet_checksum(body, k)
+
+    n_msgs = (len(stream) + CHUNK_SIZE - 1) // CHUNK_SIZE
+    framing_start = _patch_framing_count(framing_start, n_msgs)
+    framing_end = _patch_framing_count(framing_end, n_msgs)
+
     out = bytearray()
     out += framing_start
     counter = FIRST_COUNTER
@@ -144,7 +207,7 @@ def encode_syx(stream, device_id, framing_start, framing_end, checksum=lambda bo
         b7 = (counter >> 7) & 0x7F
         b8 = counter & 0x7F
         body = MFR + bytes([device_id, 0x00, 0x7E, b6, b7, b8]) + payload
-        body += bytes([checksum(body) & 0x7F])  # placeholder checksum; see module docstring
+        body += bytes([checksum(body) & 0x7F])
         out.append(0xF0)
         out += body
         out.append(0xF7)
@@ -173,23 +236,24 @@ def _source_framing(raw_syx):
 def rebuild(syx_path, replacements=None, checksum=None):
     """Source .syx path -> rebuilt .syx bytes.
 
-    Decodes the source, takes its container header, preamble, section
-    order and destinations, substitutes any section whose id appears in
+    Decodes the source, takes its container header, section order and
+    destinations, substitutes any section whose id appears in
     `replacements` (a dict of id -> DECOMPRESSED bytes) and decompresses
     every other section via the same device-verified depacker
     emu/extract.py uses, re-stores every section with store_for_section(),
-    rebuilds the container, reattaches the source preamble unchanged (see
-    the checksum warning in the module docstring), and re-encodes to .syx
-    reusing the source's own first and last framing messages.
+    rebuilds the container, seals it with the HMAC trailer, computes
+    total_len and the content checksum for a fresh preamble, and re-encodes
+    to .syx reusing the source's own first and last framing messages.
 
     `checksum`, if given, is passed through to encode_syx() as its
     per-message checksum function; the default leaves it at encode_syx's
-    own placeholder (always 0).
+    own default (packet_checksum()).
     """
     import os
     import sys
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from emu.extract import classify, updater_image, depack
+    from dt2.authcode import seal, DEVICE_BY_ID
 
     replacements = replacements or {}
 
@@ -197,8 +261,15 @@ def rebuild(syx_path, replacements=None, checksum=None):
     off = dec.find(b'ELE3')
     if off < 0:
         raise ValueError('no ELE3 magic; unsupported container')
-    preamble = dec[off - 8:off]                # placeholder: checksum inside not recomputed
     header = dec[off:off + COUNT_OFF]
+
+    with open(syx_path, 'rb') as fh:
+        raw_syx = fh.read()
+    framing_start, framing_end = _source_framing(raw_syx)
+    device_id = framing_start[1:-1][3]
+    if device_id not in DEVICE_BY_ID:
+        raise ValueError('unknown device id 0x%02x' % device_id)
+    device = DEVICE_BY_ID[device_id]
 
     c, secs = sections(syx_path)
     img = updater_image(c, secs)
@@ -214,15 +285,10 @@ def rebuild(syx_path, replacements=None, checksum=None):
         entries.append((sid, dest, store_for_section(sid, decompressed)))
 
     new_container = build_container(header, entries)
-    stream = preamble + new_container
+    new_container = seal(new_container, device)
+    stream = struct.pack('>II', len(new_container), content_checksum(new_container)) + new_container
 
-    with open(syx_path, 'rb') as fh:
-        raw_syx = fh.read()
-    framing_start, framing_end = _source_framing(raw_syx)
-    device_id = framing_start[1:-1][3]
-
-    checksum_fn = checksum if checksum is not None else (lambda body: 0)
-    return encode_syx(stream, device_id, framing_start, framing_end, checksum=checksum_fn)
+    return encode_syx(stream, device_id, framing_start, framing_end, checksum=checksum)
 
 
 def _self_test():
@@ -279,8 +345,8 @@ def _self_test():
 USAGE = """usage: uv run python -m dt2.build firmware.syx
 
 Rebuilds a .syx from itself (no replacements) and prints each section's
-original and new stored length. Output is NOT acceptable to a device --
-see the module docstring."""
+original and new stored length. See the module docstring for what still
+remains before flashing."""
 
 
 if __name__ == '__main__':

@@ -10,13 +10,19 @@ run under Unicorn) accepts and decodes to exactly the bytes it started
 from. That is a strong claim about the write path, checked against the
 real decoder rather than against this project's own packer's inverse.
 
+The preamble's 32-bit content checksum, the container's 32-byte
+HMAC-SHA256 trailer, and each SysEx message's byte-125 checksum are all
+now recovered and computed by the write path (dt2/build.py, dt2/authcode.py);
+this gate verifies all three against the rebuilt image.
+
 What this does NOT prove: that the rebuilt .syx is acceptable to a real
-device. Two fields in the format are still unrecovered and only carried
-through as placeholders -- the preamble's 32-bit content checksum and the
-per-message byte-125 checksum inside each SysEx message (see dt2/build.py).
-The store-only packer in dt2/aplib.py also makes the image roughly three
-times its original size, which the device's staging buffer may or may not
-accept. DO NOT FLASH the output of this tool.
+device. No rebuilt image has ever been flashed to hardware. The final
+chunk's zero padding remains an inference, since no sample firmware has a
+partial final chunk to confirm it against. And the store-only packer in
+dt2/aplib.py makes the image roughly three times its original size; the
+receive code imposes no size limit, but the physical DDR and flash
+capacities on the device are not established. Flashing the output of this
+tool is untested -- proceed at your own risk.
 
 Runtime is dominated by depacking MAIN OS (section 3, ~3.1 MB) under
 emulation: expect ~90 seconds. --quick skips that section and finishes
@@ -39,7 +45,8 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dt2 import build
-from dt2.container import container as C
+from dt2.authcode import DEVICE_BY_ID, DEVICES, compute_trailer, derive_key
+from dt2.container import container as C, decode_syx
 from emu.oracle import depack
 from emu.extract import classify, NAMES, SOURCE_MARKER
 
@@ -91,6 +98,57 @@ def load_sections(sections_dir):
     return orig
 
 
+def check_authenticity(out, syx_path):
+    """Verify the three fields the write path computes -- the preamble
+    content checksum, the HMAC-SHA256 trailer, and the per-message byte-125
+    checksum -- against the rebuilt .syx `out` (already written to
+    `syx_path`). Prints one result line per check, returns True iff all
+    four pass (the framing message count is checked at both ends)."""
+    dec = decode_syx(syx_path)
+    total_len, stored_checksum = struct.unpack_from('>II', dec, 0)
+    container = dec[8:]
+    computed_checksum = build.content_checksum(container[:total_len])
+    ok_preamble = (stored_checksum == computed_checksum and
+                   total_len % 16 == 0 and total_len <= len(container))
+
+    messages = []
+    i = 0
+    while i < len(out):
+        if out[i] != 0xF0:
+            raise ValueError('expected F0 at offset %d' % i)
+        j = out.index(0xF7, i)
+        messages.append(out[i:j + 1])
+        i = j + 1
+    first_framing, last_framing = messages[0], messages[-1]
+    data_msgs = [m for m in messages if len(m) == 128]
+
+    device_id = first_framing[1:-1][3]
+    device = DEVICE_BY_ID.get(device_id)
+    trailer = container[total_len - 32:total_len]
+    ok_hmac = (device is not None and
+               compute_trailer(dec, derive_key(**DEVICES[device])) == trailer)
+
+    def framing_count(msg):
+        body = msg[1:-1]
+        return body[11] * 16384 + body[12] * 128 + body[13]
+    ok_count = (len(data_msgs) > 0 and
+                framing_count(first_framing) == len(data_msgs) and
+                framing_count(last_framing) == len(data_msgs))
+
+    k = first_framing[1:-1][7]
+    passed = sum(1 for m in data_msgs
+                 if m[1:-1][125] == build.packet_checksum(m[1:-1], k))
+    ok_packets = len(data_msgs) > 0 and passed == len(data_msgs)
+
+    print()
+    print('%-20s %s' % ('preamble checksum', 'OK' if ok_preamble else 'MISMATCH'))
+    print('%-20s %s' % ('HMAC trailer', 'OK' if ok_hmac else 'MISMATCH'))
+    print('%-20s %s' % ('framing count', 'OK' if ok_count else 'MISMATCH'))
+    print('%-20s %d/%d' % ('packet checksums', passed, len(data_msgs)))
+
+    return ok_preamble and ok_hmac and ok_count and ok_packets
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                   formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -139,6 +197,7 @@ def main(argv=None):
             all_ok = all_ok and ok
             print('%-4d %-10s %-8s %12d %#12x  %s' %
                   (sid, name, kind, len(got), dest, 'OK' if ok else 'MISMATCH'))
+        all_ok = check_authenticity(out, tmp_path) and all_ok
     finally:
         os.remove(tmp_path)
 

@@ -24,6 +24,13 @@ Patching the extracted section is enough to boot the result in the
 emulator. Getting a patched image onto real hardware additionally needs the
 container repacked, which this tool does NOT do.
 
+Sections 2 (DSP/bootstrap) and 4 (UPDATER) are refused unconditionally:
+section 2 holds the bootstrap version word that gates the device's only
+irreversible operation, and section 4 is the flash-programming stub.
+Identification is by sha256 of the pristine extracted sections, falling
+back to content signatures that also catch an already-patched image.
+`--force` does not bypass this guard.
+
 Usage:
     uv run python tools/patchimg.py --image IN.bin --out OUT.bin \\
         --str 0x40201e46=EQUALIZER:EQUALISER \\
@@ -35,6 +42,75 @@ import argparse, hashlib, json, os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 DEFAULT_LOAD_ADDR = 0x40000400
+
+FORBIDDEN_SECTIONS = {
+    2: ('DSP/bootstrap', 'it holds the bootstrap version word that gates the '
+                         "device's only irreversible operation"),
+    4: ('UPDATER', 'it is the flash-programming stub'),
+}
+
+KNOWN_SECTION_SHA256 = {
+    '1cd6ec15e01275dd7094be8ba1235139f6e2b66606e9fac9948a3e67cd26a68a': 2,
+    '6a6a887b0573a557b71badf32cd9392777c60b4d1f33dfae12bb8346a014a37b': 3,
+    'dd7560d4bc6e75eaa5857b625cfce0e9980f4c2900e3f29acbb24916fc31215d': 4,
+    'a35dd785e6d681c9ab47fbde5a38bf872b296ef5c2f93d36d27d58e5d5e115d4': 5,
+    '6d4316cddd41edef7a136c10d270313882028a59b96cc8fe97a716b949a7d551': 7,
+}
+
+
+def identify_section(image):
+    """Identify which firmware section `image` is, or return None.
+
+    First tries an exact sha256 match against the pristine extracted
+    sections (KNOWN_SECTION_SHA256). If that misses, falls back to content
+    signatures that only cover the forbidden sections (2 and 4) -- these
+    survive an already-patched image, so a patch-then-patch-again chain is
+    still caught. An unrecognised image returns None; None is NOT a
+    guarantee of safety, only an absence of a positive identification.
+    """
+    digest = hashlib.sha256(image).hexdigest()
+    if digest in KNOWN_SECTION_SHA256:
+        return KNOWN_SECTION_SHA256[digest]
+    if b'READY TO RECEIVE' in image and b'STARTUP MENU' in image:
+        return 2
+    if (len(image) == 32768 and image[:8] == b'\x00' * 8 and
+            image[8:12] == b'\x46\xfc\x27\x00'):
+        return 4
+    return None
+
+
+def check_section_allowed(image, declared_id=None):
+    """Refuse to proceed if `image` is (or is declared to be) section 2 or 4.
+
+    Returns the effective section id (detected, else declared, else None)
+    if the image is allowed. Raises SystemExit with a multi-line message
+    otherwise. --force does not override this check.
+    """
+    def _refuse(section_id, how):
+        label, why = FORBIDDEN_SECTIONS[section_id]
+        raise SystemExit(
+            "refusing to patch section %d (%s)\n"
+            "%s; %s\n"
+            "--force does not override this." % (section_id, label, how, why))
+
+    if declared_id is not None and declared_id in FORBIDDEN_SECTIONS:
+        _refuse(declared_id, "declared via --section-id %d" % declared_id)
+
+    detected_id = identify_section(image)
+    if detected_id in FORBIDDEN_SECTIONS:
+        digest = hashlib.sha256(image).hexdigest()
+        how = ("sha256 match" if digest in KNOWN_SECTION_SHA256
+               else "content signature")
+        _refuse(detected_id, "detected via %s" % how)
+
+    if declared_id is not None and detected_id is not None and declared_id != detected_id:
+        raise SystemExit(
+            "refusing to patch: --section-id %d does not match detected "
+            "section %d\n"
+            "the operator appears to be confused about what file this is."
+            % (declared_id, detected_id))
+
+    return detected_id if detected_id is not None else declared_id
 
 
 def load_image(path):
@@ -173,6 +249,9 @@ def main(argv=None):
                      metavar="ADDR=OLDHEX:NEWHEX", help="raw byte patch, repeatable")
     ap.add_argument("--force", action="store_true",
                      help="allow overwriting an existing --out")
+    ap.add_argument("--section-id", type=int, default=None,
+                     help="declare which firmware section --image is; "
+                          "refuses sections 2 and 4")
     ap.add_argument("--json", help="write the patch manifest as JSON")
     ap.add_argument("--dry-run", action="store_true",
                      help="verify and report, but do not write --out")
@@ -202,6 +281,10 @@ def main(argv=None):
         return 2
 
     image = load_image(args.image)
+    section_id = check_section_allowed(image, args.section_id)
+    if section_id is not None:
+        print("identified as section %d" % section_id, file=sys.stderr)
+
     errors = validate(image, patches)
     if errors:
         print("validation errors:", file=sys.stderr)
@@ -218,6 +301,7 @@ def main(argv=None):
         "image": args.image,
         "out": args.out,
         "load_addr": args.load_addr,
+        "section_id": section_id,
         "sha256_before": sha_before,
         "sha256_after": sha_after,
         "bytes_changed": bytes_changed,
