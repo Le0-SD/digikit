@@ -34,8 +34,8 @@ file on disk and is not a flashable patch.
 tkinter only, no third-party GUI dependency. Note Homebrew's python@3.14 does
 not ship tkinter; uv's managed CPython does, which is why pyproject pins 3.12.
 """
+import collections
 import os
-import queue
 import struct
 import sys
 import threading
@@ -106,6 +106,15 @@ BUDGET = 400_000          # instructions per pass, ~0.16s: pause/stop latency,
                           # how often it is called, so a smaller pass buys
                           # responsiveness almost for free.
 
+# Emulated dwell between panel state changes. _drain_input used to deliver
+# everything queued in one feed, so a press and its release reached the
+# firmware a few emulated milliseconds apart however slowly the user
+# clicked -- and a chord collapsed into an instant. A real press lasts
+# 50-200 ms. At BUDGET instructions per chunk and roughly one instruction
+# per cycle on a 132 MHz bus, a chunk is about 3 ms, so 16 chunks is around
+# 50 ms of dwell.
+PANEL_DWELL_CHUNKS = 16
+
 
 class Emulator(threading.Thread):
     """Runs the firmware and publishes a framebuffer. Owns no widgets."""
@@ -114,7 +123,7 @@ class Emulator(threading.Thread):
 
     def __init__(self, snapshot, weakptr=False, slc=False, syx=None,
                  fast=True, realtime=True, patch_machine=False,
-                 patch_eighth=7):
+                 patch_eighth=7, panel_dwell=PANEL_DWELL_CHUNKS):
         super().__init__()
         self.snapshot = snapshot
         self.weakptr = weakptr
@@ -122,6 +131,11 @@ class Emulator(threading.Thread):
         self.syx = syx
         self.patch_machine = patch_machine
         self.patch_eighth = patch_eighth
+        # See PANEL_DWELL_CHUNKS. 0 means no pacing: the old coalesce-and-
+        # deliver-once-per-chunk behaviour, for an A/B against this one.
+        self._dwell_chunks = panel_dwell
+        self._chunks_since_delivery = 0
+        self._delivered_before = False
         # Interactive running, not measurement. `fast` drops the `count=`
         # argument to emu_start, which costs 7.6x on this machine, in exchange
         # for timers landing on a basic-block boundary rather than an exact
@@ -161,7 +175,7 @@ class Emulator(threading.Thread):
         # worker sits inside emu_start for a whole BUDGET at a time. So
         # clicks arrive on this queue and are applied between chunks, the
         # same safe point pause already uses.
-        self.inbox = queue.Queue()
+        self.inbox = collections.deque()
         self.device = None          # which product, identified by firmware hash
         self.held = None            # panelin.Held, once the device is known
         self.button_names = {}      # control code -> the firmware's own name
@@ -188,36 +202,66 @@ class Emulator(threading.Thread):
     def _drain_input(self, m, profile, pc):
         """Apply queued panel input at a chunk boundary. -> the new PC.
 
-        Everything queued is encoded into ONE byte stream and delivered with
-        a single feed, because the firmware's ISR drains the whole receive
-        ring: one raised vector covers every message in it. Raising once per
-        event would nest exception frames for input the ring already holds.
+        Everything delivered in one pass is encoded into ONE byte stream and
+        sent with a single feed, because the firmware's ISR drains the whole
+        receive ring: one raised vector covers every message in it. Raising
+        once per event would nest exception frames for input the ring
+        already holds.
+
+        A single feed used to mean a single drain of the WHOLE queue, once
+        per BUDGET chunk -- so a press and its release, however far apart the
+        user actually clicked, reached the firmware a few emulated
+        milliseconds apart, and a chord collapsed into an instant. See
+        PANEL_DWELL_CHUNKS. Now a press/release (a button STATE change) is
+        held back until _dwell_chunks have passed since the last one was
+        delivered, so it dwells for something like a real press. Encoder
+        events are relative and bursty by nature rather than a state that can
+        be held, so they are not paced: every queued encoder event is drained
+        in the same pass as the one button transition (or on its own, if no
+        button transition is pending). Nothing queued is ever dropped, only
+        delayed until its dwell elapses. --panel-dwell 0 disables all of
+        this and restores the old drain-everything-every-chunk behaviour.
 
         Returns the PC because delivering input raises a vector, which moves
         it. Dropping the result would strand the run at the old address.
         """
         if self.held is None:
             return pc
+        paced = self._dwell_chunks > 0
+        if paced and self._delivered_before and (
+                self._chunks_since_delivery < self._dwell_chunks):
+            self._chunks_since_delivery += 1
+            return pc
         out = bytearray()
-        while True:
-            try:
-                kind, code, arg = self.inbox.get_nowait()
-            except queue.Empty:
-                break
-            if kind in ('press', 'release'):
-                pos = (self.held.press(code) if kind == 'press'
-                       else self.held.release(code))
-                if pos is not None:
-                    out += panelin.encode_buttons(*pos)
-            elif kind == 'encoder':
+        took_button = False
+        deferred = []
+        while self.inbox:
+            kind, code, arg = self.inbox.popleft()
+            if kind == 'encoder':
                 channel = self.device.encoder_channel(code)
                 if channel is not None:
                     out += panelin.encode_encoder(channel, arg)
-            elif kind == 'release_all':
-                for pos in self.held.release_all():
-                    out += panelin.encode_buttons(*pos)
+            elif paced and took_button:
+                deferred.append((kind, code, arg))
+            else:
+                took_button = True
+                if kind == 'press':
+                    pos = self.held.press(code)
+                    if pos is not None:
+                        out += panelin.encode_buttons(*pos)
+                elif kind == 'release':
+                    pos = self.held.release(code)
+                    if pos is not None:
+                        out += panelin.encode_buttons(*pos)
+                elif kind == 'release_all':
+                    for pos in self.held.release_all():
+                        out += panelin.encode_buttons(*pos)
+        for item in reversed(deferred):
+            self.inbox.appendleft(item)
         if not out:
             return pc
+        self._chunks_since_delivery = 0
+        self._delivered_before = True
         try:
             return panelin.feed(m, profile, bytes(out))
         except Exception as exc:                       # noqa: BLE001
@@ -767,7 +811,7 @@ class Panel(tk.Frame):
 class App(tk.Tk):
     def __init__(self, snapshot, weakptr=False, slc=False, scale=None,
                  syx=None, fast=True, realtime=True, patch_machine=False,
-                 patch_eighth=7):
+                 patch_eighth=7, panel_dwell=PANEL_DWELL_CHUNKS):
         super().__init__()
         self.title('Digi emulator')
         self.configure(bg='#15181d')
@@ -817,6 +861,7 @@ class App(tk.Tk):
         self.realtime = realtime
         self.patch_machine = patch_machine
         self.patch_eighth = patch_eighth
+        self.panel_dwell = panel_dwell
         self.shown = -1
         self.replay = None          # (frames, index, next_due) while replaying
         self.start()
@@ -828,13 +873,14 @@ class App(tk.Tk):
                             slc=self.slc, syx=self.syx, fast=self.fast,
                             realtime=self.realtime,
                             patch_machine=self.patch_machine,
-                            patch_eighth=self.patch_eighth)
+                            patch_eighth=self.patch_eighth,
+                            panel_dwell=self.panel_dwell)
         self.emu.start()
 
     def send_input(self, kind, code, arg):
         """Hand one panel event to the worker. Never touches guest memory."""
         if self.emu:
-            self.emu.inbox.put((kind, code, arg))
+            self.emu.inbox.append((kind, code, arg))
 
     def _ensure_controls(self):
         """Build the control surface once the worker has identified the device."""
@@ -1002,6 +1048,14 @@ if __name__ == '__main__':
         i = argv.index('--scale')
         scale = max(1, int(argv[i + 1]))
         del argv[i:i + 2]
+    # --panel-dwell N overrides PANEL_DWELL_CHUNKS; 0 disables pacing and
+    # restores the old coalesce-everything-into-one-feed behaviour, for
+    # testing the two against each other.
+    panel_dwell = PANEL_DWELL_CHUNKS
+    if '--panel-dwell' in argv:
+        i = argv.index('--panel-dwell')
+        panel_dwell = max(0, int(argv[i + 1]))
+        del argv[i:i + 2]
     syx = None
     if '--syx' in argv:
         i = argv.index('--syx')
@@ -1015,4 +1069,4 @@ if __name__ == '__main__':
                          '60000000,120000000,200000000,280000000,400000000' % snap)
     App(snap, weakptr=weakptr, slc=slc, scale=scale, syx=syx, fast=fast,
         realtime=realtime, patch_machine=patch_machine,
-        patch_eighth=patch_eighth).mainloop()
+        patch_eighth=patch_eighth, panel_dwell=panel_dwell).mainloop()

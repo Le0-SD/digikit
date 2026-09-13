@@ -304,6 +304,42 @@ every copy deep-clones rather than mutating cave memory. The run still reaches
 post-intro with the patch installed, so nothing about it breaks the boot.
 `tools/machinepatch.py --milestone b`.
 
+**Installed in the GUI, where the UI actually runs, the list half breaks
+boot and the dispatch half does not.** Bisected with
+`--patch-machine=list` / `=dispatch`: **[V]**
+
+| patch | result |
+|---|---|
+| dispatch only | 6 tasks, DTIM3 firing, panel rendering past 340M instructions |
+| list only | 2 tasks, DTIM3 never fires, main task in the terminal loop at `0x4012d2fa` |
+| neither | 6 tasks, normal |
+
+That clears the trampoline, the descriptor and the two static COW string
+reps — and the cave, since the dispatch half writes into the same region.
+It also clears the pre-existing `weak_ptr` hang as an explanation: both arms
+ran with `--weakptr`, and only the patched one fails. The fault log reports
+**0 distinct pages touched**, so it is not a wild pointer either; the
+`weak_ptr` trap is an object that was never constructed.
+
+Narrowing further with `--patch-machine=list:6`, which builds an eight-entry
+list whose last entry duplicates MANUAL SLICE instead of introducing a new
+machine type: **it boots normally.** So eight entries is fine, and **the
+value 7 specifically is what breaks it.** **[V]**
+
+That points at `FUN_4005d7b8`, the grouping helper `MachineListView` uses to
+place separators. It is not a table lookup but inline branch logic:
+`{0,1,2,3,4,6} -> 1`, `{5} -> 2`, and anything `>= 7 -> 0` (via `x &
+0xffffff00`, arithmetically zero for 7..255). So machine 7 lands in group
+id `0`, which nothing else uses. An earlier pass called that cosmetic — a
+spurious separator. It is not: something on the group-0 path is never
+constructed, and the row build then traps. Exactly what, is open. **[O]**
+
+The practical consequence for an eighth machine: it is not enough to extend
+the list and dispatch. `FUN_4005d7b8` has to give the new type a group id
+that the rest of the UI recognises — most likely `1`, the group the five
+sample-based machines share — and that is another small patch, in inline
+branch logic rather than a table.
+
 Worth recording as a near-miss: the trampoline's two branch displacements were
 wrong on the first attempt — `bne.b` landed on the `rts` rather than the block
 after it. Disassembling the emitted bytes back with `dt2.coldfire.disasm` and
