@@ -37,19 +37,64 @@ question and is not started. Rung 4 is out of scope for a first machine.
 
 An eighth machine is dispatched and named in the emulator, proven by direct
 in-guest call for all nine dispatch inputs. It is not yet visible on screen.
-Four patches get to rung 2 above; two are done:
+All four patches that should reach rung 2 are now implemented and pass
+headlessly, but **the patched image still fails to boot under the GUI** —
+see "The open failure" below.
 
-| # | patch | status |
-|---|---|---|
-| 1 | source list — relocate table D to the cave with an eighth entry, repoint the two `pea` immediates at `0x40052000`/`0x4005200a` | done, proven |
-| 2 | dispatch — trampoline `FUN_400caf48` for `type == 7`, descriptor and COW string reps in the cave | done, proven |
-| 3 | grouping — `FUN_4005d7b8` gives type 7 group id `0`, which nothing else uses, and boot breaks | not done |
-| 4 | display name — relocate the `0x401fbc50` name table to the cave with an eighth row, repoint the `lea` and raise the `moveq #6` bound at `0x400dcc50` | not done |
+| # | patch | what it does | state |
+|---|---|---|---|
+| 1 | source list | relocate table D to the cave with an eighth entry; repoint the `pea` immediates at `0x40052000`/`0x4005200a` | implemented |
+| 2 | dispatch | trampoline `FUN_400caf48` for `type == 7`; descriptor and COW string reps in the cave | implemented, boots clean on its own |
+| 3 | grouping | `FUN_4005d7b8`: `7206b2806604` -> `7207b2806504` at `0x4005d7ca`, making the exact-6 test a `<= 7` range test so type 7 gets group `1` instead of `0` | implemented, effect unverified |
+| 4 | display name | copy the 7-row `0x401fbc50` name table to the cave with an eighth row; repoint `FUN_400dcc50`'s bound (`0x400dcc51`) and `lea` immediate (`0x400dcc62`) | implemented, table verified correct |
 
 Two more are known but not blocking: the filter-list bounds (`pea` at
 `0x40052296`/`0x400522a0`), only needed if the new machine should be a filter
 target; and `FUN_4005e022`'s `param_1[0x73] + 1 < 8` auto-scroll gate, which
 is cosmetic.
+
+## The open failure
+
+With all four halves applied, `emu/gui.py` freezes at the end of the boot
+animation: 2 tasks instead of 6, `DTIM3 0`, `mainloop 0`, and the main task in
+the terminal loop at `0x4012d2fa`. The fault log reports **0 distinct pages
+touched**, so it is not a wild pointer — the `weak_ptr` trap is an object that
+was never constructed. This is the same signature as the `list`-only failure.
+
+What the bisect has established so far:
+
+| halves applied | result |
+|---|---|
+| none | boots, 6 tasks, renders |
+| `dispatch` | boots, 6 tasks, renders past 340M |
+| `list` | **fails** |
+| `list` with `--eighth 6` (eight rows, no new machine type) | boots |
+| all four | **fails** |
+
+So eight entries is fine; introducing machine *type 7* is what breaks it, and
+patch 3 was the hypothesis for why. That hypothesis is **not yet tested in
+isolation** — the decisive run has not been made:
+
+    uv run python -m emu.gui --weakptr --patch-machine=list+group snapshots/boot400M.snap
+
+If that boots, patch 3 works and the remaining break is in patch 4 (or in the
+combination). If it still fails, patch 3 is not sufficient and `FUN_4005d7b8`
+is not the only thing that rejects type 7.
+
+Also untested in isolation: `group`, `name`, and `list+group+name`. The GUI's
+`--patch-machine` accepts `+`-separated combinations for exactly this.
+
+What has been ruled out, so it is not re-investigated:
+
+- **The cave.** The `dispatch` half writes the trampoline, descriptor and
+  string reps into the same region and boots clean.
+- **The name table copy.** Read back from guest memory after patching, all
+  eight rows are correct: `Oneshot/ONE`, `Werp/WRP`, `Stretch/STRE`,
+  `Repitch/RPI`, `Grid/GRD`, `MIDI/MIDI`, `Slice/SLC` (plus its third
+  pointer), `Placeholder/PLC`.
+- **The pre-existing `weak_ptr` hang.** Both arms of every A/B ran with
+  `--weakptr`; only the patched arm fails.
+- **A wild pointer.** Zero memory faults in the failing run.
 
 ## How to reproduce
 
@@ -95,12 +140,12 @@ calling it in-guest.
    bound followed by a base address — and between them have eleven callers.
    Grep the image for that instruction shape to find any sibling accessors in
    one pass, rather than discovering them one crash at a time.
-2. Implement patches 3 and 4, which reaches rung 2 — an eighth machine listed,
-   selectable, and sounding like MANUAL SLICE. Both are the same shape as 1
-   and 2: a relocated table plus one or two immediates. The two constants are
-   already located: `FUN_4005d7b8`'s `moveq #6` at `0x4005d7ca` (type 7 must
-   return group `1`, not `0`) and `FUN_400dcc50`'s `moveq #6` at `0x400dcc50`
-   plus its `lea.l $401fbc50.l` at `0x400dcc60`.
+2. **Find why type 7 still breaks boot.** Patches 3 and 4 are written; the
+   question is what else rejects the new machine type. Start with the
+   `list+group` run named in "The open failure" — it is one command and it
+   splits the remaining search in half. The `[gui] FAULT` lines and the
+   terminal-loop fault summary are now printed unconditionally, so a failing
+   run reports more than it used to.
 3. Decode the descriptor's nine parameter IDs — rung 3, and the first thing
    that makes the machine actually different rather than a renamed clone.
 4. Convert the whole thing to a real image patch through `tools/patchimg.py`
