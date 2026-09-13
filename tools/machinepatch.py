@@ -64,6 +64,15 @@ This tool patches **guest memory on a resumed snapshot only**. It does not
 modify any file, does not touch the firmware image on disk, and produces
 nothing flashable -- the patch evaporates when the emulator process exits.
 
+The eighth machine's names, its display position and which stock descriptor
+it clones are a `MachineSpec` (see `--machine NAME:SHORT[:CLONE_OF[:POSITION]]`
+and `--fields`), defaulting to `DEFAULT_SPEC` ("Placeholder"/"PLC", cloned
+from type 6). `plan_b()` is the pure planner underneath `patch_b()`: it takes
+a `read(addr, n) -> bytes` callable instead of live guest memory, so the same
+plan can be produced against a static MAIN OS image. Only one new machine
+type is supported -- every bound this tool raises is raised to exactly 7
+(`NEW_TYPE`).
+
 Modelled on `tools/memdump.py` (resume/build, intro-handover spin loop,
 argparse/JSON conventions) and `tools/mmiotrace.py` (`CountingSink`,
 `install_mmio_trace`). As in both, `reg_read(UC_M68K_REG_SR)` is never
@@ -83,6 +92,7 @@ import os
 import struct
 import sys
 import time
+from dataclasses import dataclass, replace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -113,7 +123,8 @@ DISPATCH_WANT = bytes.fromhex('7206202f0004')
 DESCRIPTOR_BASE = 0x42923644
 DESCRIPTOR_STRIDE = 0x2c
 FALLBACK_DESCRIPTOR = 0x4292374c
-DESCRIPTOR_FIELDS = (0xf8, 0xf9, 0, 0xfb, 0xfc, 0xfd, 0, 0xfe, 0x0a)
+ENTRY6_FIELDS = (0xf8, 0xf9, 0, 0xfb, 0xfc, 0xfd, 0, 0xfe, 0x0a)
+DESCRIPTOR_FIELDS = ENTRY6_FIELDS  # alias, kept for callers that used the old name
 DEFAULT_CAVE_B = 0x40303e5c
 TRAMP_OFF = 0x000
 DESC_OFF = 0x100
@@ -122,8 +133,6 @@ LCHARS_OFF = 0x14c
 SNAME_OFF = 0x160
 SCHARS_OFF = 0x16c
 TABLE_B_OFF = 0x180
-LONG_NAME = 'PLACEHOLDER'
-SHORT_NAME = 'PLHD'
 SCRATCH_PAGE = 0x1ff00000
 DISPATCH_SENTINEL = 0xdeadbee0
 
@@ -141,8 +150,6 @@ NAME_TABLE_ROW_BYTES = 12
 NAME_TABLE_OFF = 0x200
 LONGSTR_OFF = 0x280
 SHORTSTR_OFF = 0x290
-LONGSTR = b'Placeholder\x00'
-SHORTSTR = b'PLC\x00'
 
 RANK_CALL = 0x40051872
 RANK_CALL_WANT = bytes.fromhex('4eb940198948')
@@ -152,6 +159,92 @@ RANK_SHIM_OFF = 0x2a0
 RANK_TABLE_OFF = 0x2c0
 
 PARTS = ('list', 'dispatch', 'group', 'name', 'rank')
+
+NEW_TYPE = 7    # the one new machine type this tool installs
+
+
+@dataclass(frozen=True)
+class MachineSpec:
+    """One new machine, type NEW_TYPE. Only one is supported: every bound this
+    tool raises is raised to exactly 7."""
+    name: str = 'Placeholder'      # display-name table, long; the UI upper-cases it
+    short: str = 'PLC'             # display-name table, abbreviation
+    desc_name: str = 'PLACEHOLDER'  # descriptor std::string rep, long
+    desc_short: str = 'PLHD'       # descriptor std::string rep, short
+    clone_of: int = 6              # stock type whose nine descriptor fields are copied
+    fields: tuple = None           # nine longwords overriding clone_of's (rung 3)
+    position: int = 7              # display position in the source list, 0..7
+
+
+DEFAULT_SPEC = MachineSpec()
+
+# The fixed cave layout's slot sizes: the descriptor reps' chars run from
+# LCHARS_OFF/SCHARS_OFF to the next slot, 0x14 bytes each including the NUL;
+# LONGSTR_OFF/SHORTSTR_OFF to the next slot are 0x10 bytes each including
+# the NUL.
+DESC_NAME_MAX = SNAME_OFF - LCHARS_OFF - 1
+DESC_SHORT_MAX = TABLE_B_OFF - SCHARS_OFF - 1
+NAME_MAX = SHORTSTR_OFF - LONGSTR_OFF - 1
+SHORT_MAX = RANK_SHIM_OFF - SHORTSTR_OFF - 1
+
+
+def spec_from_arg(value):
+    """'NAME:SHORT[:CLONE_OF[:POSITION]]' -> MachineSpec. The descriptor's own
+    names are the display names upper-cased."""
+    parts = value.split(':')
+    if not 2 <= len(parts) <= 4:
+        raise SystemExit(
+            'machinepatch: --machine wants NAME:SHORT[:CLONE_OF[:POSITION]], '
+            'got %r' % value)
+    name, short = parts[0], parts[1]
+    clone_of = int(parts[2], 0) if len(parts) >= 3 else MachineSpec.clone_of
+    position = int(parts[3], 0) if len(parts) >= 4 else MachineSpec.position
+    return MachineSpec(name=name, short=short,
+                        desc_name=name.upper(), desc_short=short.upper(),
+                        clone_of=clone_of, position=position)
+
+
+def validate_spec(spec):
+    for field_name in ('name', 'short', 'desc_name', 'desc_short'):
+        value = getattr(spec, field_name)
+        if not value:
+            raise SystemExit('machinepatch: spec.%s must not be empty' % field_name)
+        try:
+            value.encode('ascii')
+        except UnicodeEncodeError:
+            raise SystemExit('machinepatch: spec.%s must be pure ASCII, got %r'
+                             % (field_name, value))
+    if len(spec.desc_name) > DESC_NAME_MAX:
+        raise SystemExit('machinepatch: spec.desc_name %r is longer than %d '
+                         'chars' % (spec.desc_name, DESC_NAME_MAX))
+    if len(spec.desc_short) > DESC_SHORT_MAX:
+        raise SystemExit('machinepatch: spec.desc_short %r is longer than %d '
+                         'chars' % (spec.desc_short, DESC_SHORT_MAX))
+    if len(spec.name) > NAME_MAX:
+        raise SystemExit('machinepatch: spec.name %r is longer than %d chars'
+                         % (spec.name, NAME_MAX))
+    if len(spec.short) > SHORT_MAX:
+        raise SystemExit('machinepatch: spec.short %r is longer than %d chars'
+                         % (spec.short, SHORT_MAX))
+    if spec.clone_of not in range(7):
+        raise SystemExit('machinepatch: spec.clone_of must be 0..6, got %r'
+                         % (spec.clone_of,))
+    if spec.position not in range(8):
+        raise SystemExit('machinepatch: spec.position must be 0..7, got %r'
+                         % (spec.position,))
+    if spec.fields is not None:
+        if len(spec.fields) != 9 or not all(
+                isinstance(f, int) and 0 <= f <= 0xffffffff for f in spec.fields):
+            raise SystemExit('machinepatch: spec.fields must be 9 ints, each '
+                             '0..0xffffffff, got %r' % (spec.fields,))
+
+
+# These describe DEFAULT_SPEC only -- kept as module constants because
+# tools/uidrive.py reads them.
+LONG_NAME = DEFAULT_SPEC.desc_name
+SHORT_NAME = DEFAULT_SPEC.desc_short
+LONGSTR = DEFAULT_SPEC.name.encode('ascii') + b'\x00'
+SHORTSTR = DEFAULT_SPEC.short.encode('ascii') + b'\x00'
 
 
 def build_trampoline(cave_b):
@@ -175,9 +268,9 @@ def build_trampoline(cave_b):
     )
 
 
-def build_descriptor(cave_b):
+def build_descriptor(cave_b, fields):
     return struct.pack('>11I', cave_b + LCHARS_OFF, cave_b + SCHARS_OFF,
-                        *DESCRIPTOR_FIELDS)
+                        *fields)
 
 
 def build_rep(name):
@@ -185,11 +278,10 @@ def build_rep(name):
     return struct.pack('>IIi', len(name), len(name), -1) + chars
 
 
-def build_rank_table(eighth):
+def build_rank_table(order):
     """(type, display position) pairs, the same shape as FUN_400517c4's own
     seven-pair initialiser -- which is exactly this over ORIGINAL_TABLE."""
-    return b''.join(struct.pack('>II', t, i)
-                    for i, t in enumerate(ORIGINAL_TABLE + (eighth,)))
+    return b''.join(struct.pack('>II', t, i) for i, t in enumerate(order))
 
 
 def build_rank_shim(cave_b, table_len):
@@ -208,51 +300,138 @@ def build_rank_shim(cave_b, table_len):
     )
 
 
-def patch_b(m, cave_b, parts=PARTS,
-            eighth=DEFAULT_EIGHTH):
+def check_parts(parts):
     unknown = [p for p in parts if p not in PARTS]
     if unknown or not parts:
         raise SystemExit('machinepatch: unknown part(s) %s; known parts are %s'
                          % (', '.join(repr(p) for p in unknown) or '(none given)',
                             '+'.join(PARTS)))
-    lines = []
+
+
+def plan_b(read, cave_b, parts=PARTS, eighth=None, spec=DEFAULT_SPEC):
+    """-> [(addr, old, new), ...] in write order. Pure: every byte comes from
+    `read(addr, n) -> bytes` or from the spec, so the same plan can be applied
+    to live guest memory or to a static MAIN OS image."""
+    check_parts(parts)
+    validate_spec(spec)
+    if eighth is None:
+        eighth = NEW_TYPE
+    writes = []
 
     if 'dispatch' in parts:
-        cur = bytes(m.uc.mem_read(DISPATCH, 6))
+        cur = read(DISPATCH, 6)
         if cur != DISPATCH_WANT:
             raise SystemExit(
                 'machinepatch: %#010x holds %s, expected %s'
                 % (DISPATCH, cur.hex(), DISPATCH_WANT.hex()))
     if 'list' in parts:
         for site, want in ((END_SITE, END_WANT), (START_SITE, START_WANT)):
-            cur = bytes(m.uc.mem_read(site, 6))
+            cur = read(site, 6)
             if cur != want:
                 raise SystemExit(
                     'machinepatch: %#010x holds %s, expected %s'
                     % (site, cur.hex(), want.hex()))
     if 'group' in parts:
-        cur = bytes(m.uc.mem_read(GROUP_ADDR, len(GROUP_WANT)))
+        cur = read(GROUP_ADDR, len(GROUP_WANT))
         if cur != GROUP_WANT:
             raise SystemExit(
                 'machinepatch: %#010x holds %s, expected %s'
                 % (GROUP_ADDR, cur.hex(), GROUP_WANT.hex()))
     if 'name' in parts:
-        cur = bytes(m.uc.mem_read(NAME_ADDR, len(NAME_HEAD_WANT)))
+        cur = read(NAME_ADDR, len(NAME_HEAD_WANT))
         if cur != NAME_HEAD_WANT:
             raise SystemExit(
                 'machinepatch: %#010x holds %s, expected %s'
                 % (NAME_ADDR, cur.hex(), NAME_HEAD_WANT.hex()))
-        cur = bytes(m.uc.mem_read(NAME_LEA_ADDR, len(NAME_LEA_WANT)))
+        cur = read(NAME_LEA_ADDR, len(NAME_LEA_WANT))
         if cur != NAME_LEA_WANT:
             raise SystemExit(
                 'machinepatch: %#010x holds %s, expected %s'
                 % (NAME_LEA_ADDR, cur.hex(), NAME_LEA_WANT.hex()))
     if 'rank' in parts:
-        cur = bytes(m.uc.mem_read(RANK_CALL, len(RANK_CALL_WANT)))
+        cur = read(RANK_CALL, len(RANK_CALL_WANT))
         if cur != RANK_CALL_WANT:
             raise SystemExit(
                 'machinepatch: %#010x holds %s, expected %s'
                 % (RANK_CALL, cur.hex(), RANK_CALL_WANT.hex()))
+
+    if spec.fields is not None:
+        fields = spec.fields
+    elif spec.clone_of == 6:
+        fields = ENTRY6_FIELDS
+    else:
+        # The descriptor array is bss, so a static-image caller must pass
+        # `fields` for any clone other than 6.
+        fields = struct.unpack(
+            '>9I', read(DESCRIPTOR_BASE + spec.clone_of * DESCRIPTOR_STRIDE + 8, 36))
+
+    order = list(ORIGINAL_TABLE)
+    order.insert(spec.position, eighth)
+
+    def add(addr, new):
+        old = read(addr, len(new))
+        writes.append((addr, old, new))
+
+    if 'dispatch' in parts:
+        add(cave_b + TRAMP_OFF, build_trampoline(cave_b))
+        add(cave_b + DESC_OFF, build_descriptor(cave_b, fields))
+        add(cave_b + LNAME_OFF, build_rep(spec.desc_name))
+        add(cave_b + SNAME_OFF, build_rep(spec.desc_short))
+
+    if 'list' in parts:
+        tbytes = struct.pack('>8I', *order)
+        add(cave_b + TABLE_B_OFF, tbytes)
+        for site, new_ptr in ((START_SITE, cave_b + TABLE_B_OFF),
+                               (END_SITE, cave_b + TABLE_B_OFF + len(tbytes))):
+            add(site + 2, struct.pack('>I', new_ptr))
+
+    if 'group' in parts:
+        add(GROUP_ADDR, GROUP_NEW)
+
+    if 'name' in parts:
+        table_addr = cave_b + NAME_TABLE_OFF
+        long_addr = cave_b + LONGSTR_OFF
+        short_addr = cave_b + SHORTSTR_OFF
+        longstr = spec.name.encode('ascii') + b'\x00'
+        shortstr = spec.short.encode('ascii') + b'\x00'
+
+        rows = read(NAME_TABLE_SRC, NAME_TABLE_ROWS * NAME_TABLE_ROW_BYTES)
+        add(table_addr, rows)
+
+        row8 = struct.pack('>III', long_addr, short_addr, 0)
+        row8_addr = table_addr + NAME_TABLE_ROWS * NAME_TABLE_ROW_BYTES
+        add(row8_addr, row8)
+
+        add(long_addr, longstr)
+        add(short_addr, shortstr)
+
+        # The bound is the moveq's IMMEDIATE, the second byte of `72 06`, not
+        # the opcode byte -- writing at NAME_ADDR itself destroys the
+        # instruction.
+        add(NAME_ADDR + 1, b'\x07')
+
+        add(NAME_LEA_ADDR + 2, struct.pack('>I', table_addr))
+
+    if 'rank' in parts:
+        table = build_rank_table(order)
+        add(cave_b + RANK_TABLE_OFF, table)
+
+        shim = build_rank_shim(cave_b, len(table))
+        add(cave_b + RANK_SHIM_OFF, shim)
+
+        # The jsr's operand only, not its opcode.
+        add(RANK_CALL + 2, struct.pack('>I', cave_b + RANK_SHIM_OFF))
+
+    if 'dispatch' in parts:
+        add(DISPATCH, b'\x4e\xf9' + struct.pack('>I', cave_b))
+
+    return writes
+
+
+def patch_b(m, cave_b, parts=PARTS, eighth=None, spec=DEFAULT_SPEC):
+    check_parts(parts)
+
+    if 'rank' in parts:
         # The map is a function-local static: once its guard is set the
         # insert never runs again, and repointing it would change nothing.
         guard = bytes(m.uc.mem_read(RANK_GUARD, 1))
@@ -263,106 +442,13 @@ def patch_b(m, cave_b, parts=PARTS,
 
     m.ensure(cave_b)
 
-    if 'dispatch' in parts:
-        tramp = build_trampoline(cave_b)
-        old = bytes(m.uc.mem_read(cave_b + TRAMP_OFF, len(tramp)))
-        m.uc.mem_write(cave_b + TRAMP_OFF, tramp)
-        lines.append('%#010x  %s -> %s' % (cave_b + TRAMP_OFF, old.hex(), tramp.hex()))
+    read = lambda addr, n: bytes(m.uc.mem_read(addr, n))
+    writes = plan_b(read, cave_b, parts, eighth, spec)
 
-        desc = build_descriptor(cave_b)
-        old = bytes(m.uc.mem_read(cave_b + DESC_OFF, len(desc)))
-        m.uc.mem_write(cave_b + DESC_OFF, desc)
-        lines.append('%#010x  %s -> %s' % (cave_b + DESC_OFF, old.hex(), desc.hex()))
-
-        lrep = build_rep(LONG_NAME)
-        old = bytes(m.uc.mem_read(cave_b + LNAME_OFF, len(lrep)))
-        m.uc.mem_write(cave_b + LNAME_OFF, lrep)
-        lines.append('%#010x  %s -> %s' % (cave_b + LNAME_OFF, old.hex(), lrep.hex()))
-
-        srep = build_rep(SHORT_NAME)
-        old = bytes(m.uc.mem_read(cave_b + SNAME_OFF, len(srep)))
-        m.uc.mem_write(cave_b + SNAME_OFF, srep)
-        lines.append('%#010x  %s -> %s' % (cave_b + SNAME_OFF, old.hex(), srep.hex()))
-
-    if 'list' in parts:
-        tbytes = struct.pack('>8I', *(ORIGINAL_TABLE + (eighth,)))
-        old = bytes(m.uc.mem_read(cave_b + TABLE_B_OFF, len(tbytes)))
-        m.uc.mem_write(cave_b + TABLE_B_OFF, tbytes)
-        lines.append('%#010x  %s -> %s' % (cave_b + TABLE_B_OFF, old.hex(), tbytes.hex()))
-
-        for site, new_ptr in ((START_SITE, cave_b + TABLE_B_OFF),
-                               (END_SITE, cave_b + TABLE_B_OFF + len(tbytes))):
-            old = bytes(m.uc.mem_read(site + 2, 4))
-            new = struct.pack('>I', new_ptr)
-            m.uc.mem_write(site + 2, new)
-            lines.append('%#010x  %s -> %s' % (site + 2, old.hex(), new.hex()))
-
-    if 'group' in parts:
-        old = bytes(m.uc.mem_read(GROUP_ADDR, len(GROUP_NEW)))
-        m.uc.mem_write(GROUP_ADDR, GROUP_NEW)
-        lines.append('%#010x  %s -> %s' % (GROUP_ADDR, old.hex(), GROUP_NEW.hex()))
-
-    if 'name' in parts:
-        table_addr = cave_b + NAME_TABLE_OFF
-        long_addr = cave_b + LONGSTR_OFF
-        short_addr = cave_b + SHORTSTR_OFF
-
-        rows = bytes(m.uc.mem_read(NAME_TABLE_SRC,
-                                    NAME_TABLE_ROWS * NAME_TABLE_ROW_BYTES))
-        old = bytes(m.uc.mem_read(table_addr, len(rows)))
-        m.uc.mem_write(table_addr, rows)
-        lines.append('%#010x  %s -> %s' % (table_addr, old.hex(), rows.hex()))
-
-        row8 = struct.pack('>III', long_addr, short_addr, 0)
-        row8_addr = table_addr + NAME_TABLE_ROWS * NAME_TABLE_ROW_BYTES
-        old = bytes(m.uc.mem_read(row8_addr, len(row8)))
-        m.uc.mem_write(row8_addr, row8)
-        lines.append('%#010x  %s -> %s' % (row8_addr, old.hex(), row8.hex()))
-
-        old = bytes(m.uc.mem_read(long_addr, len(LONGSTR)))
-        m.uc.mem_write(long_addr, LONGSTR)
-        lines.append('%#010x  %s -> %s' % (long_addr, old.hex(), LONGSTR.hex()))
-
-        old = bytes(m.uc.mem_read(short_addr, len(SHORTSTR)))
-        m.uc.mem_write(short_addr, SHORTSTR)
-        lines.append('%#010x  %s -> %s' % (short_addr, old.hex(), SHORTSTR.hex()))
-
-        # The bound is the moveq's IMMEDIATE, the second byte of `72 06`, not
-        # the opcode byte -- writing at NAME_ADDR itself destroys the
-        # instruction.
-        old = bytes(m.uc.mem_read(NAME_ADDR + 1, 1))
-        m.uc.mem_write(NAME_ADDR + 1, b'\x07')
-        lines.append('%#010x  %s -> %s'
-                     % (NAME_ADDR + 1, old.hex(), b'\x07'.hex()))
-
-        old = bytes(m.uc.mem_read(NAME_LEA_ADDR + 2, 4))
-        new = struct.pack('>I', table_addr)
-        m.uc.mem_write(NAME_LEA_ADDR + 2, new)
-        lines.append('%#010x  %s -> %s' % (NAME_LEA_ADDR + 2, old.hex(), new.hex()))
-
-    if 'rank' in parts:
-        table = build_rank_table(eighth)
-        old = bytes(m.uc.mem_read(cave_b + RANK_TABLE_OFF, len(table)))
-        m.uc.mem_write(cave_b + RANK_TABLE_OFF, table)
-        lines.append('%#010x  %s -> %s' % (cave_b + RANK_TABLE_OFF, old.hex(), table.hex()))
-
-        shim = build_rank_shim(cave_b, len(table))
-        old = bytes(m.uc.mem_read(cave_b + RANK_SHIM_OFF, len(shim)))
-        m.uc.mem_write(cave_b + RANK_SHIM_OFF, shim)
-        lines.append('%#010x  %s -> %s' % (cave_b + RANK_SHIM_OFF, old.hex(), shim.hex()))
-
-        # The jsr's operand only, not its opcode.
-        old = bytes(m.uc.mem_read(RANK_CALL + 2, 4))
-        new = struct.pack('>I', cave_b + RANK_SHIM_OFF)
-        m.uc.mem_write(RANK_CALL + 2, new)
-        lines.append('%#010x  %s -> %s' % (RANK_CALL + 2, old.hex(), new.hex()))
-
-    if 'dispatch' in parts:
-        old = bytes(m.uc.mem_read(DISPATCH, 6))
-        new = b'\x4e\xf9' + struct.pack('>I', cave_b)
-        m.uc.mem_write(DISPATCH, new)
-        lines.append('%#010x  %s -> %s' % (DISPATCH, old.hex(), new.hex()))
-
+    lines = []
+    for addr, old, new in writes:
+        m.uc.mem_write(addr, new)
+        lines.append('%#010x  %s -> %s' % (addr, old.hex(), new.hex()))
     return lines
 
 
@@ -545,7 +631,8 @@ def run_b(args):
 
     patch_lines = []
     if not args.no_patch:
-        patch_lines = patch_b(m, args.cave_b, parts=args.parts, eighth=args.eighth)
+        patch_lines = patch_b(m, args.cave_b, parts=args.parts, eighth=args.eighth,
+                              spec=args.spec)
 
     intro = intro_running(m, profile.intro_pit3_isr)
     pits = Timers(Pits(m, hold=intro), Dtims(m, channels=(3,), hold=intro))
@@ -677,12 +764,19 @@ def main(argv=None):
                           'range fix, the display-name table, the sort '
                           'comparator ranking, or both/all five (default: '
                           'both)')
-    ap.add_argument('--eighth', type=lambda s: int(s, 0), default=DEFAULT_EIGHTH,
+    ap.add_argument('--eighth', type=lambda s: int(s, 0), default=None,
                      help='value to write as the 8th entry of the relocated '
-                          'machine list for --milestone b (default: 7). '
-                          'Use this to distinguish "eight entries is too '
-                          'many" from "the value 7 specifically is the '
-                          'problem".')
+                          'machine list for --milestone b (default is the '
+                          'new type, 7). Use this to distinguish "eight '
+                          'entries is too many" from "the value 7 '
+                          'specifically is the problem".')
+    ap.add_argument('--machine', default=None,
+                     help='NAME:SHORT[:CLONE_OF[:POSITION]] for the new '
+                          'machine installed by --milestone b (default: '
+                          'Placeholder/PLC, cloned from type 6, position 7)')
+    ap.add_argument('--fields', default=None,
+                     help='nine comma-separated ints overriding the cloned '
+                          'descriptor fields (0..0xffffffff each)')
     ap.add_argument('--no-patch', action='store_true',
                      help='skip the patch, for a control run')
     ap.add_argument('--instrs', type=lambda s: int(s, 0), default=90_000_000,
@@ -706,6 +800,10 @@ def main(argv=None):
     args = ap.parse_args(argv)
     args.parts = (PARTS
                   if args.parts == 'both' else (args.parts,))
+    args.spec = spec_from_arg(args.machine) if args.machine else DEFAULT_SPEC
+    if args.fields is not None:
+        fields = tuple(int(x, 0) for x in args.fields.split(','))
+        args.spec = replace(args.spec, fields=fields)
 
     report = run(args) if args.milestone == 'a' else run_b(args)
     if args.json:

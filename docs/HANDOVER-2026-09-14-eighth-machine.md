@@ -79,6 +79,10 @@ reasons still open (see FINDINGS.md). Every delivered feed is printed as
   combinations apply exactly those, and an optional `:N` suffix sets the
   eighth list entry's value (e.g. `--patch-machine=list:6`). Unknown part
   names are refused rather than silently ignored.
+- `--machine=NAME:SHORT[:CLONE_OF[:POSITION]]` sets the new machine's names,
+  the stock machine whose descriptor fields it copies, and its list position
+  (e.g. `--machine=Lofi:LOF:3:0`). The default is Placeholder/PLC, a copy of
+  MANUAL SLICE, last in the list. `tools/machinepatch.py` has the same flag.
 - `--panel-dwell N` sets the emulated dwell between panel state changes in
   chunks, default 16 (~50 ms). `0` restores the old coalescing and reproduces
   the flicker the dwell fixed.

@@ -690,6 +690,16 @@ in `tools/machinepatch.py` and selectable part by part with `--patch-machine`:
    shim on its map's one-time insert at `0x40051872`. Implemented. This was the
    boot blocker, and all five together boot.
 
+`tools/machinepatch.py` now takes a `MachineSpec` (display names, descriptor
+names, the stock type to copy fields from, list position, optional fields),
+and `plan_b` computes every write from a `read(addr, n)` function. With the
+default spec it produces the same 18 writes as the verified run, live and
+against the static image (`tests/test_machinepatch_plan.py`). With
+`--machine=Lofi:LOF:3:0` the list becomes `{7,0,1,2,3,6,4,5}`, the rank pairs
+follow it, boot completes with no exception, and MACHINE SEL shows LOFI as its
+first row. The fields copied live from REPITCH's descriptor are
+`0, 0xe7, 0, 0xe8, 0xe9, 0xea, 0xeb, 0xec, 0x0a`. **[V]**
+
 ## Emulation
 
 Function-level works well and is the practical path. Full boot was pushed as far

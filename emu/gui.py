@@ -33,6 +33,11 @@ too many" from "the value 7 is the problem". This patches guest memory in
 the running emulator only -- it modifies no file on disk and is not a
 flashable patch.
 
+--machine=NAME:SHORT[:CLONE_OF[:POSITION]] overrides the new machine's
+names, cloned descriptor and display position (see
+tools/machinepatch.py's MachineSpec); without it the default spec
+(Placeholder/PLC, cloned from type 6) is used.
+
 tkinter only, no third-party GUI dependency. Note Homebrew's python@3.14 does
 not ship tkinter; uv's managed CPython does, which is why pyproject pins 3.12.
 """
@@ -125,7 +130,8 @@ class Emulator(threading.Thread):
 
     def __init__(self, snapshot, weakptr=False, slc=False, syx=None,
                  fast=True, realtime=True, patch_machine=False,
-                 patch_eighth=7, panel_dwell=PANEL_DWELL_CHUNKS):
+                 patch_eighth=7, patch_machine_spec=None,
+                 panel_dwell=PANEL_DWELL_CHUNKS):
         super().__init__()
         self.snapshot = snapshot
         self.weakptr = weakptr
@@ -133,6 +139,7 @@ class Emulator(threading.Thread):
         self.syx = syx
         self.patch_machine = patch_machine
         self.patch_eighth = patch_eighth
+        self.patch_machine_spec = patch_machine_spec
         # See PANEL_DWELL_CHUNKS. 0 means no pacing: the old coalesce-and-
         # deliver-once-per-chunk behaviour, for an A/B against this one.
         self._dwell_chunks = panel_dwell
@@ -327,15 +334,18 @@ class Emulator(threading.Thread):
             if self.patch_machine:
                 sys.path.insert(0, os.path.join(os.path.dirname(
                     os.path.dirname(os.path.abspath(__file__))), 'tools'))
-                from machinepatch import patch_b, DEFAULT_CAVE_B
-                # patch_b reports a failed byte precondition with SystemExit,
-                # which derives from BaseException and so would slip past the
-                # handler below -- and a SystemExit on a worker thread kills
-                # it silently, leaving this window stuck on "loading
-                # snapshot". Convert it into something catchable.
+                from machinepatch import (patch_b, DEFAULT_CAVE_B,
+                                          spec_from_arg, DEFAULT_SPEC)
+                # patch_b (and spec_from_arg) report a failed precondition
+                # with SystemExit, which derives from BaseException and so
+                # would slip past the handler below -- and a SystemExit on a
+                # worker thread kills it silently, leaving this window stuck
+                # on "loading snapshot". Convert it into something catchable.
                 try:
+                    spec = (spec_from_arg(self.patch_machine_spec)
+                            if self.patch_machine_spec else DEFAULT_SPEC)
                     patch_b(m, DEFAULT_CAVE_B, parts=self.patch_machine,
-                            eighth=self.patch_eighth)
+                            eighth=self.patch_eighth, spec=spec)
                 except SystemExit as exc:
                     raise RuntimeError('machine patch refused: %s' % exc) from exc
                 self.stats['status'] = ('patched: ' + '+'.join(self.patch_machine)
@@ -859,7 +869,8 @@ class Panel(tk.Frame):
 class App(tk.Tk):
     def __init__(self, snapshot, weakptr=False, slc=False, scale=None,
                  syx=None, fast=True, realtime=True, patch_machine=False,
-                 patch_eighth=7, panel_dwell=PANEL_DWELL_CHUNKS):
+                 patch_eighth=7, patch_machine_spec=None,
+                 panel_dwell=PANEL_DWELL_CHUNKS):
         super().__init__()
         self.title('Digi emulator')
         self.configure(bg='#15181d')
@@ -909,6 +920,7 @@ class App(tk.Tk):
         self.realtime = realtime
         self.patch_machine = patch_machine
         self.patch_eighth = patch_eighth
+        self.patch_machine_spec = patch_machine_spec
         self.panel_dwell = panel_dwell
         self.shown = -1
         self.replay = None          # (frames, index, next_due) while replaying
@@ -922,6 +934,7 @@ class App(tk.Tk):
                             realtime=self.realtime,
                             patch_machine=self.patch_machine,
                             patch_eighth=self.patch_eighth,
+                            patch_machine_spec=self.patch_machine_spec,
                             panel_dwell=self.panel_dwell)
         self.emu.start()
 
@@ -1083,6 +1096,7 @@ if __name__ == '__main__':
     # Unknown part names are refused by machinepatch.patch_b.
     patch_machine = False
     patch_eighth = 7
+    patch_machine_spec = None
     for a in argv:
         if a == '--patch-machine':
             patch_machine = ('list', 'dispatch', 'group', 'name', 'rank')
@@ -1094,6 +1108,8 @@ if __name__ == '__main__':
             else:
                 parts_str = value
             patch_machine = tuple(parts_str.split('+'))
+        elif a.startswith('--machine='):
+            patch_machine_spec = a.split('=', 1)[1]
     scale = None
     if '--scale' in argv:
         i = argv.index('--scale')
@@ -1120,4 +1136,5 @@ if __name__ == '__main__':
                          '60000000,120000000,200000000,280000000,400000000' % snap)
     App(snap, weakptr=weakptr, slc=slc, scale=scale, syx=syx, fast=fast,
         realtime=realtime, patch_machine=patch_machine,
-        patch_eighth=patch_eighth, panel_dwell=panel_dwell).mainloop()
+        patch_eighth=patch_eighth, patch_machine_spec=patch_machine_spec,
+        panel_dwell=panel_dwell).mainloop()

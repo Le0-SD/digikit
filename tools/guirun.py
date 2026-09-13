@@ -40,7 +40,7 @@ from emu import config, panel, symbols
 from emu import device as devices, panelin
 from emu.pit import Pits, intro_running
 from unicorn.m68k_const import UC_M68K_REG_A7
-from machinepatch import patch_b, DEFAULT_CAVE_B
+from machinepatch import patch_b, DEFAULT_CAVE_B, spec_from_arg, DEFAULT_SPEC
 
 BUDGET = 400_000   # same as emu/gui.py
 
@@ -56,6 +56,10 @@ def parse_args(argv):
     p.add_argument('--syx')
     p.add_argument('--patch-machine', nargs='?',
                     const='list+dispatch+group+name+rank', default=None)
+    p.add_argument('--machine', default=None,
+                    help='NAME:SHORT[:CLONE_OF[:POSITION]] for the new '
+                         'machine (see machinepatch.MachineSpec); default '
+                         'is Placeholder/PLC cloned from type 6')
     p.add_argument('--at', action='append', default=[])
     p.add_argument('--stack-at', action='append', default=[],
                     type=lambda s: int(s, 0))
@@ -140,11 +144,13 @@ def main():
     if args.patch_machine is not None:
         parts, eighth = parse_patch_machine(args.patch_machine)
         try:
-            diffs = patch_b(m, DEFAULT_CAVE_B, parts=parts, eighth=eighth)
+            spec = spec_from_arg(args.machine) if args.machine else DEFAULT_SPEC
+            diffs = patch_b(m, DEFAULT_CAVE_B, parts=parts, eighth=eighth, spec=spec)
         except SystemExit as exc:
             print('[guirun] machine patch refused: %s' % exc)
             sys.exit(2)
-        print('[guirun] patched: %s (8th=%d)' % ('+'.join(parts), eighth))
+        print('[guirun] patched: %s (8th=%d, machine=%s/%s)'
+              % ('+'.join(parts), eighth, spec.name, spec.short))
         if diffs:
             for line in diffs:
                 print(line)
