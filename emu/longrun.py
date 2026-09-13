@@ -570,7 +570,7 @@ def run_until(m, pc, timeout_ms=250):
 
 
 class _FastStepper:
-    """Bound a run without `count=`, by accumulating translated block sizes.
+    """Bound a run without `count=`, by counting basic-block entries.
 
     `count=` is what makes emu_start stop on an exact instruction, and
     Unicorn implements it by counting every instruction, which breaks TB
@@ -583,27 +583,71 @@ class _FastStepper:
     A block hook can bound a run instead, and it leaves the fast dispatch
     path intact. Two things it cannot do exactly:
 
-      * A block's `size` is BYTES, not instructions, so the count is an
-        estimate divided by a bytes-per-instruction ratio. That ratio is not
-        a constant of the ISA -- measured on this image it moves between 3.05
-        and 3.79 depending on which code is running -- so it is re-measured
-        from a genuinely counted step every `recalibrate` steps. One counted
-        step in sixteen costs about 6% of the count= tax.
+      * The hook says a block was ENTERED, not how many instructions ran, so
+        the count is entries times a fixed instructions-per-entry figure.
       * The run stops at the first block boundary at or after the target, so
-        a timer fires up to one basic block late (about eight instructions
+        a timer fires up to one basic block late (about four instructions
         here) rather than on the exact instruction it was due.
 
     So this changes the instruction stream, and therefore the boot digest.
     It is opt-in, never the default, and nothing making a determinism or
     pass/fail claim should use it. See spin's `fast` argument.
+
+    Two earlier designs failed here, and both failures are worth keeping:
+
+    It summed block `size` in BYTES and divided by a bytes-per-instruction
+    ratio. But `size` is the size of the TRANSLATED block, not of what
+    executed, so a block entered and branched out of early still counted its
+    whole length. Entries do not have that problem.
+
+    It re-measured that ratio every sixteen steps from a `count=`-ed step,
+    and smoothed the sample in at 0.25. Two things made that a one-way
+    ratchet. Deadline stepping routinely asks for a step of 1, 3 or 11
+    instructions when two timers come due together, and `step` was the
+    divisor, so a single translated block's byte count swamped it. And the
+    budget MULTIPLIED by the ratio, so a bad sample lengthened the next run
+    instead of shortening it. Successive calibrations read 3.8 -> 16.2 ->
+    849 -> 17145, after which one nominal 62,377-instruction step consumed
+    1.07 GB of blocks -- roughly 200M instructions -- in 435 seconds while
+    crediting the emulated clock its 62,377. The GUI showed 1% of real time
+    and a frozen panel.
+
+    Both are now structural rather than guarded. The budget DIVIDES by
+    `per_block`, which is never below one instruction, so `left` can never
+    exceed `step` entries however wrong the figure is: it can make a step
+    short and the timers choppy, it cannot make one run away. And there is
+    no calibration to go wrong, because measurement showed there is nothing
+    to calibrate -- see PER_BLOCK.
     """
 
-    def __init__(self, m, recalibrate=16, ratio=3.8):
+    # Instructions per basic-block entry, measured on the main OS with
+    # `tools/steptrace.py --hookprobe 1000000 --warmup`: 1,000,000
+    # instructions entered 258,332 blocks, 3.871 an entry.
+    #
+    # The figure has to come from an UNCOUNTED run, which is why that probe
+    # counts instructions with a code hook rather than asking `count=` for a
+    # known number. Under `count=` the block hook's call count bears no
+    # relation to the run: the same probe's counted arm saw 692 calls for
+    # those million instructions, and in situ the calibration this replaced
+    # read anything from 0.009 to 1.2 instructions an entry. Calibrating
+    # from a counted step was measuring nothing, and spent 1.1-1.4 seconds a
+    # call to do it -- more wall time than the stepping it accelerated.
+    PER_BLOCK = 3.87
+    # A basic block is at least one instruction, and nothing on this image
+    # comes near the ceiling. A figure outside the band is a mistake, not a
+    # tuning choice, so it is refused rather than clamped.
+    PER_BLOCK_MIN = 1.0
+    PER_BLOCK_MAX = 64.0
+
+    def __init__(self, m, per_block=PER_BLOCK):
+        if not self.PER_BLOCK_MIN <= per_block <= self.PER_BLOCK_MAX:
+            raise ValueError(
+                'instructions per block must be between %g and %g, not %r'
+                % (self.PER_BLOCK_MIN, self.PER_BLOCK_MAX, per_block))
         self.m = m
-        self.ratio = ratio
-        self.recalibrate = recalibrate
+        self.per_block = per_block
         self.steps = 0
-        self.bytes = 0
+        self.blocks = 0
         self.left = 0
         m.uc.hook_add(UC_HOOK_BLOCK, self._on_block)
 
@@ -613,28 +657,16 @@ class _FastStepper:
         if self.left <= 0:
             uc.emu_stop()
             return
-        self.bytes += size
-        self.left -= size
+        self.blocks += 1
+        self.left -= 1
 
     def run(self, pc, step):
         """Execute about `step` instructions from `pc`. -> instructions run."""
         self.steps += 1
-        self.bytes = 0
-        if self.steps % self.recalibrate == 0:
-            # A counted step, purely to re-measure the ratio. `left` is set
-            # out of reach so the block hook only observes.
-            self.left = 1 << 62
-            self.m.uc.emu_start(pc, 0, count=step)
-            if self.bytes > 0:
-                measured = self.bytes / float(step)
-                # Smoothed: one step can straddle an unrepresentative stretch
-                # of code, and a ratio that chases every sample makes the
-                # emulated clock jitter.
-                self.ratio += 0.25 * (measured - self.ratio)
-            return step
-        self.left = int(step * self.ratio)
+        self.blocks = 0
+        self.left = max(1, int(step / self.per_block))
         self.m.uc.emu_start(pc, 0)
-        return max(1, int(self.bytes / self.ratio))
+        return max(1, int(self.blocks * self.per_block))
 
 
 def _fast_stepper(m):
