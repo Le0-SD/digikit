@@ -166,8 +166,16 @@ four firmwares and proven by re-encoding both source files byte-identically:
    patcher with no section awareness. Section 2 holds the bootstrap version
    word gating the only irreversible operation. Make it code.
 
-The round-trip gate is currently an ad-hoc script, not a tool. It is the
-acceptance test everything else depends on and should live under `tools/`.
+The gate itself is `tools/roundtrip.py`. Run it after any change to the write
+path:
+
+    uv run python tools/roundtrip.py Digitakt_II_OS1.15C.syx          # ~90s
+    uv run python tools/roundtrip.py Digitakt_II_OS1.15C.syx --quick  # seconds
+
+It verifies with the device's own depacker rather than our packer's inverse,
+which is why it is slow and why it is worth anything. Exits non-zero on
+mismatch, and refuses to run when `sections/.source-sha256` does not match the
+firmware argument.
 
 ## Goal B — what a new machine still needs
 
@@ -199,6 +207,9 @@ that does not work rather than silence.
     dt2/build.py          the write side of the container and transport.
                           `uv run python -m dt2.build <firmware.syx>` runs its
                           self-test and prints old vs new stored lengths.
+    tools/roundtrip.py    the acceptance gate. Rebuilds and proves every
+                          section comes back byte-identical through the
+                          device's own depacker. --quick skips MAIN OS.
 
 Ghidra project `~/ghidra-projects/dt2` holds `section_3_MAIN_OS.bin`,
 `dn2_MAIN_OS.bin` and now `dt2_SHARC`. Ghidra's decompiler fails with
@@ -215,15 +226,14 @@ Capstone.
    Import `sections/section_4_UPDATER.bin` (stored raw) into the Ghidra
    project; it carries the same code as the bootstrap.
 3. Trace the content checksum at `0x40003ca6`.
-4. Promote the round-trip gate to `tools/`.
-5. Emulator read-watch on `0x42923540`-`0x429237f8` during a boot to the UI,
+4. Emulator read-watch on `0x42923540`-`0x429237f8` during a boot to the UI,
    to name the machine descriptor consumer. This is the one that reopens
    Goal B, and static analysis has been ruled out for it.
-6. Prove recovery on hardware while healthy — hold FUNC at power-on, STARTUP
+5. Prove recovery on hardware while healthy — hold FUNC at power-on, STARTUP
    menu, MIDI DIN only, no version check. The repo flags "a corrupt MAIN OS
    still lets the menu come up" as inference, not demonstrated, so demonstrate
    it before you need it.
-7. Flash an unmodified rebuild. It should change nothing, and it is the only
+6. Flash an unmodified rebuild. It should change nothing, and it is the only
    way to separate "my patch was wrong" from "my repacker was wrong" later.
 
 `Digitakt_II_OS1.16.syx` and `Digitone_II_OS1.11.syx` are now in the repo root
