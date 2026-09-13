@@ -89,49 +89,85 @@ dispatch question.** The next instrument is the emulator — hook reads of
 `0x42923540`-`0x429237f8` during a boot to the UI and see who reads them.
 `Machine.install_mmio_trace` and `tools/addrtrace.py` already exist.
 
+
+- **The per-packet SysEx checksum (byte 125) resisted an exhaustive search.**
+  Tested against 30,603 message/checksum pairs across two devices: every
+  contiguous byte range as sum and as XOR, raw and 8-in-7-decoded, with
+  constant offsets; every CRC-7 and CRC-8 polynomial with both init values,
+  both bit orders and all xorouts, byte-at-a-time and 7-bit-symbol-at-a-time,
+  per-message and running; Fletcher variants mod 127 and 128; multiplicative
+  hashes for all 128 multipliers. All at chance (~1/128). Two real clues did
+  come out: it is **not a pure function of the payload** — identical payloads
+  carry different checksums, so the counter or header is folded in — and its
+  **low bit is exactly the parity of the low bits of `body[0:125]`**, for 100%
+  of messages in both files, which is the signature of an arithmetic
+  carry-bearing construction rather than a CRC.
+
 ## Goal A — the repack chain
 
-Done this session:
-- `dt2/aplib.py` — store-only packer, plus `pack_section()` which adds the
-  big-endian `[u32 compressed_len][u32 byte_sum]` header. All five sections
-  round-trip byte-identical through the device's own depacker at `0x80000432`,
-  including the 3.1 MB MAIN OS. Output grows ~9/8; that is fine, nothing in
-  the acceptance path hashes compressed bytes.
+**It works end to end.** A rebuilt Digitakt II 1.15C, re-decoded and
+re-extracted with the device's own depacker at `0x80000432`, returns all five
+sections byte-identical, the 3.1 MB MAIN OS and the SHARC blob included:
 
-  **The public aPLib format is not what the device implements.** A literal is
-  tag bit 1, not 0. The gamma2 stop bit is inverted. There is no "first byte is
-  always a literal" case. End-of-stream is reached by a `cmpi.l #$2ff`
-  comparison the normal encodings cannot hit, so the packer gets there by
-  32-bit wraparound — verified against the real depacker every time, but
-  whether Elektron's encoder does the same is unknown.
+    sec 5  META     raw            15B  OK
+    sec 2  DSP      packed      30302B  OK
+    sec 3  MAIN_OS  packed    3177312B  OK
+    sec 4  UPDATER  raw         32768B  OK
+    sec 7  BLOB     packed     320780B  OK
+    ROUND-TRIP GATE: PASS
 
-Still to write, both direct inverses of readers in `dt2/container.py`:
-- ELE3 section-table writer: magic, count at `0x1C`, 16-byte big-endian
-  entries `(id, offset, comp_len, dest)` from `0x20`. Preserve the quirks —
-  section 4 carries the header with sum 0 and a raw payload, section 5 has no
-  header at all.
-- 8-in-7 encoder: inverse of `dt2/container.py:37-44`, MSB-first, one marker
-  byte per seven data bytes.
+`dt2/aplib.py` — store-only packer plus `pack_section()`, which adds the
+big-endian `[u32 compressed_len][u32 byte_sum]` header. Output grows ~9/8.
 
-Then the round-trip gate: repack → re-extract with `emu/oracle.py` → assert all
-five sections byte-identical. Build it before the three traces, not after.
+**The public aPLib format is not what the device implements.** A literal is
+tag bit 1, not 0. The gamma2 stop bit is inverted. There is no "first byte is
+always a literal" case. End-of-stream is a `cmpi.l #$2ff` comparison the
+normal encodings cannot reach, so the packer gets there by 32-bit wraparound
+— verified against the real depacker every time, but whether Elektron's own
+encoder does the same is unknown. Implementing from the published spec, which
+is what `docs/REMAINING.md` proposed, would have failed.
 
-Still needing a trace, same method that produced the CRC-32 and depacker
-oracles byte-exact:
-- content checksum at `0x40003ca6` (word size, endianness, start index and
-  covered range all unpinned)
-- HMAC key *derivation* at `0x80005e2a` — the key material is confirmed at
-  `sections/section_2_DSP.bin` +0x6bf4 (anchor `be f9 a3 f7 c6 71 78 f2`, then
-  `"Master Overdrive\0"`, then a 32-byte constant from `69 5d 82 bc`), but how
-  they combine is unknown
-- the per-packet SysEx checksum, which has never been recovered because
-  `decode_syx()` discards byte 125
+`dt2/build.py` — the write side: `encode_8in7()`, `build_container()`,
+`store_for_section()`, `encode_syx()`, and `rebuild(syx, replacements)` which
+goes from a source `.syx` plus a dict of `id -> decompressed bytes` to a new
+`.syx`. Pass every section in `replacements` to skip the Unicorn depack, or it
+takes ~45s per compressed section.
 
-**Safety gap to close before anything is flashed:** `tools/patchimg.py` does
-not enforce "never touch sections 2 or 4". The docs state it as a rule for the
-operator; the code is a generic byte patcher with no section awareness. Section
-2 holds the bootstrap version word that gates the only irreversible operation.
-Make it code.
+**The transport is fully specified**, established over 64,053 messages across
+four firmwares and proven by re-encoding both source files byte-identically:
+- 9-byte header: `00 20 3c`, device id (`0x14` Digitakt II, `0x15` Digitone
+  II), `0x00`, command `0x7e`, then a 21-bit big-endian base-128 counter —
+  `b6*16384 + b7*128 + b8` — starting at **242** and incrementing by 1.
+- Each 116-byte payload is 14 full 8-in-7 groups plus a partial group of
+  1 marker + 3 data bytes, so **every message carries exactly 101 decoded
+  bytes**, independent of content.
+- The file is bracketed by two 16-byte messages using command `0x7f`, seq
+  `01` and `02`. Their 6 decoded bytes are 4 constant device-magic bytes plus
+  a 2-byte value that varies with firmware content by an unknown rule.
+  `build.rebuild()` copies them from the source rather than deriving them.
+
+### What still blocks flashing
+
+1. **The content checksum** at `0x40003ca6`, preamble bytes 4-7. Not traced.
+   Word size, endianness, start index and covered range all unpinned. Same
+   method as the CRC-32 and depacker oracles.
+2. **The per-packet checksum**, message byte 125. See Dead ends — it resisted
+   an exhaustive search. The cheaper question first: does the device even
+   check it? The bootstrap's SysEx receive code is in section 2, which we
+   have; it is not yet in the Ghidra project but importing it is easy.
+3. **Image size.** Store-only packing makes the image **5.07 MB against the
+   original 1.71 MB**. The device has to stage the compressed image somewhere
+   before depacking, and whether its buffer accepts 3x is unknown. If it does
+   not, that is what forces a real LZ77 packer. Answerable statically by
+   finding the receive buffer in the bootstrap — do this before the first
+   flash, not after.
+4. **`tools/patchimg.py` does not enforce "never touch sections 2 or 4".**
+   The docs state it as a rule for the operator; the code is a generic byte
+   patcher with no section awareness. Section 2 holds the bootstrap version
+   word gating the only irreversible operation. Make it code.
+
+The round-trip gate is currently an ad-hoc script, not a tool. It is the
+acceptance test everything else depends on and should live under `tools/`.
 
 ## Goal B — what a new machine still needs
 
@@ -142,7 +178,8 @@ Make it code.
 3. Calling convention — half-answered by `machineType_t` + `synthParams_t`.
 4. **Writing SHARC code — open, and the deepest.** There is no assembler and no
    semantic model, only length decoding and field extraction.
-5. Flashing — two trivial writers and three traces away.
+5. Flashing — the container chain is **done and gated**; what remains is the
+   two checksums and the image-size question, all in Goal A above.
 
 **The cheapest first machine avoids (4) entirely**: a 12th descriptor entry
 registered from the ColdFire cave, mapping to an existing DSP mode with
@@ -159,6 +196,9 @@ that does not work rather than silence.
                           --seed-calls is required for useful coverage.
     dt2/aplib.py          the packer. `uv run python -m dt2.aplib` re-verifies
                           against the device depacker.
+    dt2/build.py          the write side of the container and transport.
+                          `uv run python -m dt2.build <firmware.syx>` runs its
+                          self-test and prints old vs new stored lengths.
 
 Ghidra project `~/ghidra-projects/dt2` holds `section_3_MAIN_OS.bin`,
 `dn2_MAIN_OS.bin` and now `dt2_SHARC`. Ghidra's decompiler fails with
@@ -168,14 +208,26 @@ Capstone.
 
 ## Suggested order
 
-1. ELE3 writer and 8-in-7 encoder, then the round-trip gate.
-2. Make `patchimg.py` refuse sections 2 and 4.
-3. The three traces.
-4. Emulator read-watch on the descriptor table, to name the machine consumer.
-5. Prove recovery on hardware while healthy, then flash an unmodified rebuild
-   before anything modified.
+1. Make `patchimg.py` refuse sections 2 and 4. Cheapest, and it is a safety
+   gate for everything after it.
+2. Find the bootstrap's SysEx receive buffer and its size — settles both
+   whether byte 125 is checked at all and whether a 5 MB image can be staged.
+   Import `sections/section_4_UPDATER.bin` (stored raw) into the Ghidra
+   project; it carries the same code as the bootstrap.
+3. Trace the content checksum at `0x40003ca6`.
+4. Promote the round-trip gate to `tools/`.
+5. Emulator read-watch on `0x42923540`-`0x429237f8` during a boot to the UI,
+   to name the machine descriptor consumer. This is the one that reopens
+   Goal B, and static analysis has been ruled out for it.
+6. Prove recovery on hardware while healthy — hold FUNC at power-on, STARTUP
+   menu, MIDI DIN only, no version check. The repo flags "a corrupt MAIN OS
+   still lets the menu come up" as inference, not demonstrated, so demonstrate
+   it before you need it.
+7. Flash an unmodified rebuild. It should change nothing, and it is the only
+   way to separate "my patch was wrong" from "my repacker was wrong" later.
 
-Not yet examined: Digitakt II 1.16 and Digitone II 1.11, released with Outbox 8
-support. Diffing memory occupancy against 1.15C/1.10E would show how much
-headroom Elektron themselves consumed, which is direct evidence about how much
-is genuinely available.
+`Digitakt_II_OS1.16.syx` and `Digitone_II_OS1.11.syx` are now in the repo root
+and were used in the transport analysis, so the header and counter rules hold
+across four firmwares. Diffing their memory occupancy against 1.15C/1.10E
+would show how much headroom Elektron themselves consumed adding Outbox 8
+support — direct evidence about how much is genuinely available for a machine.
