@@ -36,14 +36,19 @@ failure mode. It then unit-tests the patched dispatch directly, by calling
 `0x400caf48` in the live guest for arguments 0..8 and checking D0 against
 the expected descriptor address for each.
 
-Bisecting Milestone B's two halves independently: `--parts list` alone (the
+Bisecting Milestone B's halves independently: `--parts list` alone (the
 8-entry table, dispatch left unpatched) fails to boot; `--parts dispatch`
 alone boots fine. So the failure is caused by the list gaining an eighth
-entry, not by the trampoline, the descriptor, or the cave writes. It remains
-open whether *any* 8th entry breaks it, or specifically the value 7 -- which
-`FUN_4005d7b8` maps to group id 0, a group nothing else uses. `--eighth`
-exists to tell these apart: run with `--parts list --eighth N` for some
-other N and see whether the count alone is the problem, or the value 7 is.
+entry, not by the trampoline, the descriptor, or the cave writes. That
+turned out to be specifically the value 7: `FUN_4005d7b8` maps machine
+type to a UI group id, and mapped type 7 to group 0, a group nothing else
+uses. `--parts group` patches its exact-equality bound test into a range
+test so 7 lands in the same group as 6. `--parts name` installs an eighth
+row in the display-name table (`FUN_400dcc50`) so the new machine gets its
+own "Placeholder"/"PLC" strings instead of falling back to an existing
+entry's. `--parts both` (the default) applies all four halves. `--eighth`
+exists to tell "eight entries is too many" apart from "the value 7 is the
+problem": run with `--parts list --eighth N` for some other N.
 
 This tool patches **guest memory on a resumed snapshot only**. It does not
 modify any file, does not touch the firmware image on disk, and produces
@@ -112,6 +117,23 @@ SHORT_NAME = 'PLHD'
 SCRATCH_PAGE = 0x1ff00000
 DISPATCH_SENTINEL = 0xdeadbee0
 
+GROUP_ADDR = 0x4005d7ca
+GROUP_WANT = bytes.fromhex('7206b2806604')
+GROUP_NEW = bytes.fromhex('7207b2806504')
+
+NAME_ADDR = 0x400dcc50
+NAME_HEAD_WANT = bytes.fromhex('7206202f0004b2806514')
+NAME_LEA_ADDR = 0x400dcc60
+NAME_LEA_WANT = bytes.fromhex('41f9401fbc50')
+NAME_TABLE_SRC = 0x401fbc50
+NAME_TABLE_ROWS = 7
+NAME_TABLE_ROW_BYTES = 12
+NAME_TABLE_OFF = 0x200
+LONGSTR_OFF = 0x280
+SHORTSTR_OFF = 0x290
+LONGSTR = b'Placeholder\x00'
+SHORTSTR = b'PLC\x00'
+
 
 def build_trampoline(cave_b):
     desc = cave_b + DESC_OFF
@@ -144,7 +166,8 @@ def build_rep(name):
     return struct.pack('>IIi', len(name), len(name), -1) + chars
 
 
-def patch_b(m, cave_b, parts=('list', 'dispatch'), eighth=DEFAULT_EIGHTH):
+def patch_b(m, cave_b, parts=('list', 'dispatch', 'group', 'name'),
+            eighth=DEFAULT_EIGHTH):
     lines = []
 
     if 'dispatch' in parts:
@@ -160,6 +183,23 @@ def patch_b(m, cave_b, parts=('list', 'dispatch'), eighth=DEFAULT_EIGHTH):
                 raise SystemExit(
                     'machinepatch: %#010x holds %s, expected %s'
                     % (site, cur.hex(), want.hex()))
+    if 'group' in parts:
+        cur = bytes(m.uc.mem_read(GROUP_ADDR, len(GROUP_WANT)))
+        if cur != GROUP_WANT:
+            raise SystemExit(
+                'machinepatch: %#010x holds %s, expected %s'
+                % (GROUP_ADDR, cur.hex(), GROUP_WANT.hex()))
+    if 'name' in parts:
+        cur = bytes(m.uc.mem_read(NAME_ADDR, len(NAME_HEAD_WANT)))
+        if cur != NAME_HEAD_WANT:
+            raise SystemExit(
+                'machinepatch: %#010x holds %s, expected %s'
+                % (NAME_ADDR, cur.hex(), NAME_HEAD_WANT.hex()))
+        cur = bytes(m.uc.mem_read(NAME_LEA_ADDR, len(NAME_LEA_WANT)))
+        if cur != NAME_LEA_WANT:
+            raise SystemExit(
+                'machinepatch: %#010x holds %s, expected %s'
+                % (NAME_LEA_ADDR, cur.hex(), NAME_LEA_WANT.hex()))
 
     m.ensure(cave_b)
 
@@ -197,6 +237,49 @@ def patch_b(m, cave_b, parts=('list', 'dispatch'), eighth=DEFAULT_EIGHTH):
             m.uc.mem_write(site + 2, new)
             lines.append('%#010x  %s -> %s' % (site + 2, old.hex(), new.hex()))
 
+    if 'group' in parts:
+        old = bytes(m.uc.mem_read(GROUP_ADDR, len(GROUP_NEW)))
+        m.uc.mem_write(GROUP_ADDR, GROUP_NEW)
+        lines.append('%#010x  %s -> %s' % (GROUP_ADDR, old.hex(), GROUP_NEW.hex()))
+
+    if 'name' in parts:
+        table_addr = cave_b + NAME_TABLE_OFF
+        long_addr = cave_b + LONGSTR_OFF
+        short_addr = cave_b + SHORTSTR_OFF
+
+        rows = bytes(m.uc.mem_read(NAME_TABLE_SRC,
+                                    NAME_TABLE_ROWS * NAME_TABLE_ROW_BYTES))
+        old = bytes(m.uc.mem_read(table_addr, len(rows)))
+        m.uc.mem_write(table_addr, rows)
+        lines.append('%#010x  %s -> %s' % (table_addr, old.hex(), rows.hex()))
+
+        row8 = struct.pack('>III', long_addr, short_addr, 0)
+        row8_addr = table_addr + NAME_TABLE_ROWS * NAME_TABLE_ROW_BYTES
+        old = bytes(m.uc.mem_read(row8_addr, len(row8)))
+        m.uc.mem_write(row8_addr, row8)
+        lines.append('%#010x  %s -> %s' % (row8_addr, old.hex(), row8.hex()))
+
+        old = bytes(m.uc.mem_read(long_addr, len(LONGSTR)))
+        m.uc.mem_write(long_addr, LONGSTR)
+        lines.append('%#010x  %s -> %s' % (long_addr, old.hex(), LONGSTR.hex()))
+
+        old = bytes(m.uc.mem_read(short_addr, len(SHORTSTR)))
+        m.uc.mem_write(short_addr, SHORTSTR)
+        lines.append('%#010x  %s -> %s' % (short_addr, old.hex(), SHORTSTR.hex()))
+
+        # The bound is the moveq's IMMEDIATE, the second byte of `72 06`, not
+        # the opcode byte -- writing at NAME_ADDR itself destroys the
+        # instruction.
+        old = bytes(m.uc.mem_read(NAME_ADDR + 1, 1))
+        m.uc.mem_write(NAME_ADDR + 1, b'\x07')
+        lines.append('%#010x  %s -> %s'
+                     % (NAME_ADDR + 1, old.hex(), b'\x07'.hex()))
+
+        old = bytes(m.uc.mem_read(NAME_LEA_ADDR + 2, 4))
+        new = struct.pack('>I', table_addr)
+        m.uc.mem_write(NAME_LEA_ADDR + 2, new)
+        lines.append('%#010x  %s -> %s' % (NAME_LEA_ADDR + 2, old.hex(), new.hex()))
+
     if 'dispatch' in parts:
         old = bytes(m.uc.mem_read(DISPATCH, 6))
         new = b'\x4e\xf9' + struct.pack('>I', cave_b)
@@ -224,6 +307,16 @@ def call_dispatch(m, arg, scratch_sp, sentinel):
         uc.reg_write(UC_M68K_REG_A0 + i, saved_a[i])
     uc.reg_write(UC_M68K_REG_PC, saved_pc)
     return d0
+
+
+def read_cstr(m, addr, limit=64):
+    chars = bytearray()
+    for i in range(limit):
+        b = bytes(m.uc.mem_read(addr + i, 1))[0]
+        if b == 0:
+            break
+        chars.append(b)
+    return chars.decode('latin1')
 
 
 def read_rep(m, addr):
@@ -408,6 +501,7 @@ def run_b(args):
     descriptor = None
     long_name = None
     short_name = None
+    name_row8 = None
 
     if mode == 'patched':
         m.ensure(SCRATCH_PAGE)
@@ -429,6 +523,21 @@ def run_b(args):
         descriptor = ['0x%08x' % w for w in struct.unpack('>11I', desc_raw)]
         long_name = read_rep(m, args.cave_b + LNAME_OFF)
         short_name = read_rep(m, args.cave_b + SNAME_OFF)
+
+        if 'name' in args.parts:
+            row8_addr = (args.cave_b + NAME_TABLE_OFF
+                         + NAME_TABLE_ROWS * NAME_TABLE_ROW_BYTES)
+            row8_raw = bytes(m.uc.mem_read(row8_addr, NAME_TABLE_ROW_BYTES))
+            long_ptr, short_ptr, third_ptr = struct.unpack('>III', row8_raw)
+            name_row8 = {
+                'addr': '0x%08x' % row8_addr,
+                'raw': row8_raw.hex(),
+                'long_ptr': '0x%08x' % long_ptr,
+                'short_ptr': '0x%08x' % short_ptr,
+                'third_ptr': '0x%08x' % third_ptr,
+                'long_str': read_cstr(m, long_ptr),
+                'short_str': read_cstr(m, short_ptr),
+            }
 
         dispatch_ok = all(row['match'] for row in table)
         if dispatch_ok and phase['post_intro']:
@@ -454,6 +563,7 @@ def run_b(args):
         'descriptor': descriptor,
         'long_name': long_name,
         'short_name': short_name,
+        'name_row8': name_row8,
         'reached_post_intro': phase['post_intro'],
         'instrs': done,
         'stop': stop,
@@ -482,11 +592,13 @@ def main(argv=None):
                      default=DEFAULT_CAVE_B,
                      help='cave address for --milestone b (default: '
                           '0x40303e5c)')
-    ap.add_argument('--parts', choices=('list', 'dispatch', 'both'),
+    ap.add_argument('--parts',
+                     choices=('list', 'dispatch', 'group', 'name', 'both'),
                      default='both',
                      help='which half of --milestone b to apply: the list '
-                          'relocation, the dispatch trampoline, or both '
-                          '(default: both)')
+                          'relocation, the dispatch trampoline, the group-id '
+                          'range fix, the display-name table, or both/all '
+                          'four (default: both)')
     ap.add_argument('--eighth', type=lambda s: int(s, 0), default=DEFAULT_EIGHTH,
                      help='value to write as the 8th entry of the relocated '
                           'machine list for --milestone b (default: 7). '
@@ -514,8 +626,8 @@ def main(argv=None):
     ap.add_argument('--no-esdhc', dest='esdhc', action='store_false')
     ap.add_argument('--json', help='write the full report here')
     args = ap.parse_args(argv)
-    args.parts = (('list', 'dispatch') if args.parts == 'both'
-                  else (args.parts,))
+    args.parts = (('list', 'dispatch', 'group', 'name')
+                  if args.parts == 'both' else (args.parts,))
 
     report = run(args) if args.milestone == 'a' else run_b(args)
     if args.json:

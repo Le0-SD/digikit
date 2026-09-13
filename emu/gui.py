@@ -23,13 +23,15 @@ the same point the timers are released.
     uv run python -m emu.gui [snapshot]
 
 --patch-machine installs the experimental eighth machine (PLACEHOLDER) into
-the running emulator's machine list. Bare, it applies both halves of the
-patch; --patch-machine=list or --patch-machine=dispatch applies just one
-half, for bisecting a boot failure. An optional :N suffix on the parts value
-(--patch-machine=list:6) sets the 8th list entry's value, default 7, to
-distinguish "eight entries is too many" from "the value 7 is the problem".
-This patches guest memory in the running emulator only -- it modifies no
-file on disk and is not a flashable patch.
+the running emulator's machine list. Bare, it applies all four halves of the
+patch (list, dispatch, group, name); --patch-machine=list, =dispatch,
+=group, or =name applies just one, and a +-separated combination
+(--patch-machine=list+dispatch) applies exactly those, for bisecting a boot
+failure. An optional :N suffix on the parts value (--patch-machine=list:6)
+sets the 8th list entry's value, default 7, to distinguish "eight entries is
+too many" from "the value 7 is the problem". This patches guest memory in
+the running emulator only -- it modifies no file on disk and is not a
+flashable patch.
 
 tkinter only, no third-party GUI dependency. Note Homebrew's python@3.14 does
 not ship tkinter; uv's managed CPython does, which is why pyproject pins 3.12.
@@ -1026,15 +1028,17 @@ if __name__ == '__main__':
     fast = '--exact' not in argv
     realtime = '--unthrottled' not in argv
     # --patch-machine installs the experimental eighth machine (PLACEHOLDER)
-    # into the machine list. Bare, it applies both halves; --patch-machine=list
-    # or --patch-machine=dispatch applies just the one half, for bisecting.
+    # into the machine list. Bare, it applies all four halves (list, dispatch,
+    # group, name); --patch-machine=list, =dispatch, =group, or =name applies
+    # just the one half, and a +-separated combination
+    # (--patch-machine=list+dispatch) applies exactly those, for bisecting.
     # An optional :N suffix on the parts value (e.g. --patch-machine=list:6)
     # sets the 8th list entry's value, default 7.
     patch_machine = False
     patch_eighth = 7
     for a in argv:
         if a == '--patch-machine':
-            patch_machine = ('list', 'dispatch')
+            patch_machine = ('list', 'dispatch', 'group', 'name')
         elif a.startswith('--patch-machine='):
             value = a.split('=', 1)[1]
             if ':' in value:
@@ -1042,7 +1046,7 @@ if __name__ == '__main__':
                 patch_eighth = int(eighth_str, 0)
             else:
                 parts_str = value
-            patch_machine = (parts_str,)
+            patch_machine = tuple(parts_str.split('+'))
     scale = None
     if '--scale' in argv:
         i = argv.index('--scale')
