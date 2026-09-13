@@ -134,58 +134,64 @@ def build_rep(name):
     return struct.pack('>IIi', len(name), len(name), -1) + chars
 
 
-def patch_b(m, cave_b):
+def patch_b(m, cave_b, parts=('list', 'dispatch')):
     lines = []
-    cur = bytes(m.uc.mem_read(DISPATCH, 6))
-    if cur != DISPATCH_WANT:
-        raise SystemExit(
-            'machinepatch: %#010x holds %s, expected %s'
-            % (DISPATCH, cur.hex(), DISPATCH_WANT.hex()))
-    for site, want in ((END_SITE, END_WANT), (START_SITE, START_WANT)):
-        cur = bytes(m.uc.mem_read(site, 6))
-        if cur != want:
+
+    if 'dispatch' in parts:
+        cur = bytes(m.uc.mem_read(DISPATCH, 6))
+        if cur != DISPATCH_WANT:
             raise SystemExit(
                 'machinepatch: %#010x holds %s, expected %s'
-                % (site, cur.hex(), want.hex()))
+                % (DISPATCH, cur.hex(), DISPATCH_WANT.hex()))
+    if 'list' in parts:
+        for site, want in ((END_SITE, END_WANT), (START_SITE, START_WANT)):
+            cur = bytes(m.uc.mem_read(site, 6))
+            if cur != want:
+                raise SystemExit(
+                    'machinepatch: %#010x holds %s, expected %s'
+                    % (site, cur.hex(), want.hex()))
 
     m.ensure(cave_b)
 
-    tramp = build_trampoline(cave_b)
-    old = bytes(m.uc.mem_read(cave_b + TRAMP_OFF, len(tramp)))
-    m.uc.mem_write(cave_b + TRAMP_OFF, tramp)
-    lines.append('%#010x  %s -> %s' % (cave_b + TRAMP_OFF, old.hex(), tramp.hex()))
+    if 'dispatch' in parts:
+        tramp = build_trampoline(cave_b)
+        old = bytes(m.uc.mem_read(cave_b + TRAMP_OFF, len(tramp)))
+        m.uc.mem_write(cave_b + TRAMP_OFF, tramp)
+        lines.append('%#010x  %s -> %s' % (cave_b + TRAMP_OFF, old.hex(), tramp.hex()))
 
-    desc = build_descriptor(cave_b)
-    old = bytes(m.uc.mem_read(cave_b + DESC_OFF, len(desc)))
-    m.uc.mem_write(cave_b + DESC_OFF, desc)
-    lines.append('%#010x  %s -> %s' % (cave_b + DESC_OFF, old.hex(), desc.hex()))
+        desc = build_descriptor(cave_b)
+        old = bytes(m.uc.mem_read(cave_b + DESC_OFF, len(desc)))
+        m.uc.mem_write(cave_b + DESC_OFF, desc)
+        lines.append('%#010x  %s -> %s' % (cave_b + DESC_OFF, old.hex(), desc.hex()))
 
-    lrep = build_rep(LONG_NAME)
-    old = bytes(m.uc.mem_read(cave_b + LNAME_OFF, len(lrep)))
-    m.uc.mem_write(cave_b + LNAME_OFF, lrep)
-    lines.append('%#010x  %s -> %s' % (cave_b + LNAME_OFF, old.hex(), lrep.hex()))
+        lrep = build_rep(LONG_NAME)
+        old = bytes(m.uc.mem_read(cave_b + LNAME_OFF, len(lrep)))
+        m.uc.mem_write(cave_b + LNAME_OFF, lrep)
+        lines.append('%#010x  %s -> %s' % (cave_b + LNAME_OFF, old.hex(), lrep.hex()))
 
-    srep = build_rep(SHORT_NAME)
-    old = bytes(m.uc.mem_read(cave_b + SNAME_OFF, len(srep)))
-    m.uc.mem_write(cave_b + SNAME_OFF, srep)
-    lines.append('%#010x  %s -> %s' % (cave_b + SNAME_OFF, old.hex(), srep.hex()))
+        srep = build_rep(SHORT_NAME)
+        old = bytes(m.uc.mem_read(cave_b + SNAME_OFF, len(srep)))
+        m.uc.mem_write(cave_b + SNAME_OFF, srep)
+        lines.append('%#010x  %s -> %s' % (cave_b + SNAME_OFF, old.hex(), srep.hex()))
 
-    tbytes = struct.pack('>8I', *NEW_TABLE)
-    old = bytes(m.uc.mem_read(cave_b + TABLE_B_OFF, len(tbytes)))
-    m.uc.mem_write(cave_b + TABLE_B_OFF, tbytes)
-    lines.append('%#010x  %s -> %s' % (cave_b + TABLE_B_OFF, old.hex(), tbytes.hex()))
+    if 'list' in parts:
+        tbytes = struct.pack('>8I', *NEW_TABLE)
+        old = bytes(m.uc.mem_read(cave_b + TABLE_B_OFF, len(tbytes)))
+        m.uc.mem_write(cave_b + TABLE_B_OFF, tbytes)
+        lines.append('%#010x  %s -> %s' % (cave_b + TABLE_B_OFF, old.hex(), tbytes.hex()))
 
-    for site, new_ptr in ((START_SITE, cave_b + TABLE_B_OFF),
-                           (END_SITE, cave_b + TABLE_B_OFF + len(tbytes))):
-        old = bytes(m.uc.mem_read(site + 2, 4))
-        new = struct.pack('>I', new_ptr)
-        m.uc.mem_write(site + 2, new)
-        lines.append('%#010x  %s -> %s' % (site + 2, old.hex(), new.hex()))
+        for site, new_ptr in ((START_SITE, cave_b + TABLE_B_OFF),
+                               (END_SITE, cave_b + TABLE_B_OFF + len(tbytes))):
+            old = bytes(m.uc.mem_read(site + 2, 4))
+            new = struct.pack('>I', new_ptr)
+            m.uc.mem_write(site + 2, new)
+            lines.append('%#010x  %s -> %s' % (site + 2, old.hex(), new.hex()))
 
-    old = bytes(m.uc.mem_read(DISPATCH, 6))
-    new = b'\x4e\xf9' + struct.pack('>I', cave_b)
-    m.uc.mem_write(DISPATCH, new)
-    lines.append('%#010x  %s -> %s' % (DISPATCH, old.hex(), new.hex()))
+    if 'dispatch' in parts:
+        old = bytes(m.uc.mem_read(DISPATCH, 6))
+        new = b'\x4e\xf9' + struct.pack('>I', cave_b)
+        m.uc.mem_write(DISPATCH, new)
+        lines.append('%#010x  %s -> %s' % (DISPATCH, old.hex(), new.hex()))
 
     return lines
 
@@ -359,7 +365,7 @@ def run_b(args):
 
     patch_lines = []
     if not args.no_patch:
-        patch_lines = patch_b(m, args.cave_b)
+        patch_lines = patch_b(m, args.cave_b, parts=args.parts)
 
     intro = intro_running(m, profile.intro_pit3_isr)
     pits = Timers(Pits(m, hold=intro), Dtims(m, channels=(3,), hold=intro))
@@ -397,7 +403,8 @@ def run_b(args):
         m.ensure(SCRATCH_PAGE)
         scratch_sp = SCRATCH_PAGE + PAGE - 0x100
         expected = {a: DESCRIPTOR_BASE + a * DESCRIPTOR_STRIDE for a in range(7)}
-        expected[7] = args.cave_b + DESC_OFF
+        expected[7] = (args.cave_b + DESC_OFF if 'dispatch' in args.parts
+                        else FALLBACK_DESCRIPTOR)
         expected[8] = FALLBACK_DESCRIPTOR
         for a in range(9):
             got = call_dispatch(m, a, scratch_sp, DISPATCH_SENTINEL)
@@ -465,6 +472,11 @@ def main(argv=None):
                      default=DEFAULT_CAVE_B,
                      help='cave address for --milestone b (default: '
                           '0x40303e5c)')
+    ap.add_argument('--parts', choices=('list', 'dispatch', 'both'),
+                     default='both',
+                     help='which half of --milestone b to apply: the list '
+                          'relocation, the dispatch trampoline, or both '
+                          '(default: both)')
     ap.add_argument('--no-patch', action='store_true',
                      help='skip the patch, for a control run')
     ap.add_argument('--instrs', type=lambda s: int(s, 0), default=90_000_000,
@@ -486,6 +498,8 @@ def main(argv=None):
     ap.add_argument('--no-esdhc', dest='esdhc', action='store_false')
     ap.add_argument('--json', help='write the full report here')
     args = ap.parse_args(argv)
+    args.parts = (('list', 'dispatch') if args.parts == 'both'
+                  else (args.parts,))
 
     report = run(args) if args.milestone == 'a' else run_b(args)
     if args.json:

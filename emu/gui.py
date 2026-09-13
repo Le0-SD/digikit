@@ -23,7 +23,9 @@ the same point the timers are released.
     uv run python -m emu.gui [snapshot]
 
 --patch-machine installs the experimental eighth machine (PLACEHOLDER) into
-the running emulator's machine list. This patches guest memory in the running
+the running emulator's machine list. Bare, it applies both halves of the
+patch; --patch-machine=list or --patch-machine=dispatch applies just one
+half, for bisecting a boot failure. This patches guest memory in the running
 emulator only -- it modifies no file on disk and is not a flashable patch.
 
 tkinter only, no third-party GUI dependency. Note Homebrew's python@3.14 does
@@ -160,6 +162,8 @@ class Emulator(threading.Thread):
         self.button_names = {}      # control code -> the firmware's own name
         self.encoder_names = {}
         self.device_error = None    # why there is no control surface, if so
+        self._faulted_pages = set()  # pages already reported by _fault_sink
+        self._fault_summary_printed = False  # print the report once, not per chunk
 
     def _identify_device(self, m, profile):
         """Work out which product this is and read its control names.
@@ -272,10 +276,10 @@ class Emulator(threading.Thread):
                 # it silently, leaving this window stuck on "loading
                 # snapshot". Convert it into something catchable.
                 try:
-                    patch_b(m, DEFAULT_CAVE_B)
+                    patch_b(m, DEFAULT_CAVE_B, parts=self.patch_machine)
                 except SystemExit as exc:
                     raise RuntimeError('machine patch refused: %s' % exc) from exc
-                self.stats['status'] = 'patched: eighth machine installed'
+                self.stats['status'] = 'patched: ' + '+'.join(self.patch_machine)
             # build() already resolved (and required) this same profile
             # internally -- see emu/symbols.py -- so re-resolving here is a
             # cache hit, not a rescan. fb_front is OPTIONAL: if it did not
@@ -295,6 +299,24 @@ class Emulator(threading.Thread):
             return
 
         self._uc = m.uc
+        self._m = m
+
+        def fault_sink(rec):
+            # Called from inside a Unicorn hook on the worker thread: no
+            # locks, no Tk calls, no guest memory access, and nothing may
+            # raise into the run -- same defensiveness as Machine._fault.
+            try:
+                page = rec['page']
+                if page in self._faulted_pages:
+                    return
+                self._faulted_pages.add(page)
+                kinds = '+'.join(sorted(rec['kinds'])) if rec['kinds'] else '?'
+                print('[gui] FAULT page=0x%08x first=0x%08x pc=0x%08x %s'
+                      % (page, rec['first_addr'], rec['first_pc'], kinds),
+                      flush=True)
+            except Exception:
+                pass
+        m.fault_sink = fault_sink
         self._reported = 0
         # PIT0 time slice, PIT2 wheel, PIT3 display -- but not until the intro
         # has handed over. Delivering into a running intro stops it ever
@@ -429,6 +451,11 @@ class Emulator(threading.Thread):
                     pass
         else:
             self.stats['status'] = 'stopped'
+        n_seen = len(m.fault_pages)
+        n_kept = len(m.faults)
+        capped = ' (truncated at max_fault_records)' if n_kept < n_seen else ''
+        print('[gui] faults: %d distinct pages touched, %d records kept%s'
+              % (n_seen, n_kept, capped), flush=True)
 
     def _publish_panel(self, m):
         """Once the OS owns the panel, draw the firmware's framebuffer.
@@ -493,6 +520,21 @@ class Emulator(threading.Thread):
         if s['terminal']:
             note = ('   TERMINAL LOOP at 0x4012d2fa -- the main task is hung '
                     'on a weak pointer; re-run with --weakptr to step over it')
+            if not self._fault_summary_printed:
+                self._fault_summary_printed = True
+                m = self._m
+                recs = sorted(m.faults, key=lambda r: r['count'],
+                              reverse=True)[:20]
+                print('[gui] fault summary at terminal loop: %d distinct '
+                      'pages touched, top %d by count'
+                      % (len(m.fault_pages), len(recs)), flush=True)
+                for rec in recs:
+                    kinds = '+'.join('%s:%d' % (k, c)
+                                      for k, c in sorted(rec['kinds'].items()))
+                    print('[gui]   page=0x%08x first=0x%08x pc=0x%08x '
+                          'count=%d %s'
+                          % (rec['page'], rec['first_addr'], rec['first_pc'],
+                             rec['count'], kinds), flush=True)
         print('[gui] %5.0fM instr  PIT0/2/3 %d/%d/%d  DTIM3 %d  '
               'mainloop %d  jobs %d  tasks %d  %s %d%s'
               % (s['instrs'] / 1e6, s['pit'][0], s['pit'][1], s['pit'][2],
@@ -914,8 +956,14 @@ if __name__ == '__main__':
     fast = '--exact' not in argv
     realtime = '--unthrottled' not in argv
     # --patch-machine installs the experimental eighth machine (PLACEHOLDER)
-    # into the machine list.
-    patch_machine = '--patch-machine' in argv
+    # into the machine list. Bare, it applies both halves; --patch-machine=list
+    # or --patch-machine=dispatch applies just the one half, for bisecting.
+    patch_machine = False
+    for a in argv:
+        if a == '--patch-machine':
+            patch_machine = ('list', 'dispatch')
+        elif a.startswith('--patch-machine='):
+            patch_machine = (a.split('=', 1)[1],)
     scale = None
     if '--scale' in argv:
         i = argv.index('--scale')
