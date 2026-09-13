@@ -386,8 +386,11 @@ gap is why the dispatch question is still open.
 Even with a working decoder, adding a machine needs, in order: read the dispatch
 table's indexing code; understand the per-machine algorithm's calling
 convention, parameter-block layout and RPC contract; write SHARC+ code; fit it
-into §7 (of which only 178,796 of 320,780 bytes are loaded by the ADI stream,
-with unloaded gaps of 46/52/80/337/691 KB whose purpose is unknown); and repack.
+into §7; and repack. The "unloaded gaps of unknown purpose" this section used
+to cite are gone as an unknown, and not in our favour: with the FILL bit fixed,
+all 320,780 bytes parse as one block chain — 319,116 of payload and 1,664 of
+headers — so there is no slack region to drop new code into. Anything added has
+to displace something or extend the image.
 And there is **no SHARC emulator**, so every iteration is flash-and-listen on
 real hardware, with no acceptance oracle of the kind Goal A enjoys.
 
