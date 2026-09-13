@@ -1,0 +1,91 @@
+# Handover — 2026-09-14, the eighth machine
+
+This thread continues `HANDOVER-2026-09-13-sharc-and-repack.md`. Goal A (the
+repack chain) is closed to the limit of what can be checked without hardware.
+This thread is Goal B: getting a new machine into the Digitakt II UI.
+Everything established is in `docs/FINDINGS.md` — "The ColdFire machine
+dispatch" and its subsection "The display names are a separate table". Read
+those, not this file, for facts.
+
+## Where it stands
+
+An eighth machine is dispatched and named in the emulator, proven by direct
+in-guest call for all nine dispatch inputs. It is not yet visible on screen.
+Four patches are needed; two are done:
+
+| # | patch | status |
+|---|---|---|
+| 1 | source list — relocate table D to the cave with an eighth entry, repoint the two `pea` immediates at `0x40052000`/`0x4005200a` | done, proven |
+| 2 | dispatch — trampoline `FUN_400caf48` for `type == 7`, descriptor and COW string reps in the cave | done, proven |
+| 3 | grouping — `FUN_4005d7b8` gives type 7 group id `0`, which nothing else uses, and boot breaks | not done |
+| 4 | display name — relocate the `0x401fbc50` name table to the cave with an eighth row, repoint the `lea` and raise the `moveq #6` bound at `0x400dcc50` | not done |
+
+Two more are known but not blocking: the filter-list bounds (`pea` at
+`0x40052296`/`0x400522a0`), only needed if the new machine should be a filter
+target; and `FUN_4005e022`'s `param_1[0x73] + 1 < 8` auto-scroll gate, which
+is cosmetic.
+
+## How to reproduce
+
+The machine-select screen renders, and modifier chords work, with:
+
+    uv run python -m emu.gui --weakptr --patch-machine=dispatch snapshots/boot400M.snap
+
+Click FUNC (it latches, staying sunken), then SRC. The list stays open.
+`clear` in the latch box releases held modifiers.
+
+- `--patch-machine` takes `list`, `dispatch`, or bare for both, with an
+  optional `:N` suffix setting the eighth list entry's value (e.g.
+  `--patch-machine=list:6`).
+- `--panel-dwell N` sets the emulated dwell between panel state changes in
+  chunks, default 16 (~50 ms). `0` restores the old coalescing and reproduces
+  the flicker the dwell fixed.
+- `--weakptr` is required on this snapshot or the main task traps before the
+  UI comes up.
+
+Headless equivalents: `tools/machinepatch.py --milestone b [--parts
+list|dispatch|both] [--eighth N]`, which also unit-tests the dispatch by
+calling it in-guest.
+
+## Retractions from this thread
+
+1. **The cave is not 58,188 free bytes.** The tail of MAIN OS is `.bss`. Only
+   `0x40303e5c`-`0x40307f60` (16,644 bytes) and `0x402f9c14`-`0x402fa000`
+   (1,004 bytes) are clear. See `docs/PATCHING.md`, corrected.
+2. **A clean runtime dump does not prove memory is free** — it only proves
+   nothing wrote there on the path observed. Use `tools/refscan.py` and
+   `tools/ghidraq.py ... range` as well; all three have different blind spots
+   and none is a proof.
+3. **The descriptor's name pointers are not the UI's display names.** Those
+   come from a separate static table. Corrected in FINDINGS.md.
+4. **"The UI task is never scheduled" was wrong** — it was true only of
+   headless resume runs. Under `emu/gui.py` the UI runs normally.
+
+## Suggested order
+
+1. **Sweep for remaining bounds before implementing.** Three of the four
+   patches above were discovered only when something broke. `FUN_400caf48`
+   and `FUN_400dcc50` are both accessors of the same shape — a `moveq #6`
+   bound followed by a base address — and between them have eleven callers.
+   Grep the image for that instruction shape to find any sibling accessors in
+   one pass, rather than discovering them one crash at a time.
+2. Implement patches 3 and 4. Both are the same shape as 1 and 2: a relocated
+   table plus one or two immediates.
+3. Convert the whole thing to a real image patch through `tools/patchimg.py`
+   and `dt2/build.py`, and put it through `tools/roundtrip.py`.
+4. Only then hardware — and the standing advice from the previous handover
+   still holds: prove recovery mode while the device is healthy, then flash
+   an unmodified rebuild before anything patched.
+
+## Tools added this thread
+
+    tools/memdump.py      resume, spin to post-intro, dump a guest range
+    tools/memfind.py      search mapped guest memory for a pattern
+    tools/refscan.py      exhaustive static scan for absolute references into a range
+    tools/machinepatch.py install the eighth machine live; --parts bisects it
+    tools/uidrive.py      script panel input and watch for UI-side signals
+    tools/ghidraq.py      gained a `range LO HI` subcommand
+
+`emu/gui.py` gained `--patch-machine`, `--panel-dwell`, latching modifiers,
+and unconditional memory-fault reporting (`[gui] FAULT page=... pc=...`),
+which was previously recorded and never surfaced.
