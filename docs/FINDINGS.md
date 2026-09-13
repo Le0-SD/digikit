@@ -29,8 +29,38 @@ string starts gives `0x80000400` with 96 hits. **[V]**
 
 - Per-packet transport checksum; 32-bit content checksum; **HMAC-SHA256** trailer.
 - No RSA/ECDSA anywhere. The HMAC **key is derived from material inside the
-  firmware itself** — anchor `be f9 a3 f7 c6 71 78 f2` at section 2 +`0x6BF4`,
-  followed by `"Master Overdrive\0"` and a 32-byte constant. **[V]**
+  firmware itself**, not stored — same code at `0x80005d90` in both devices,
+  only the data differs. For a per-device STRING and the 32-byte CONST stored
+  immediately after its NUL: **[V]**
+
+      key[i] = CONST[i] ^ sha256(STRING)[i] ^ sha256(STRING[::-1])[i]
+
+  | device | STRING | CONST at |
+  |---|---|---|
+  | Digitakt II | `"Master Overdrive"` @`0x80006ff8` | `0x80007009` |
+  | Digitone II | `"Multiplier"` @`0x8000706c` | `0x80007077` |
+
+  The "32-byte constant beginning `69 5d 82 bc`" earlier notes describe is only
+  one of the three XOR operands, not the key. **[C]**
+- **All three integrity fields are recovered and computed**, each confirmed
+  byte-exact against all four firmwares in the repo root. **[V]**
+
+  | field | where | algorithm |
+  |---|---|---|
+  | content checksum | preamble bytes 4-7 | `sum(i ^ word_i)` over 1-based big-endian u32 words of the whole container, trailer included |
+  | HMAC trailer | container's last 32 bytes | HMAC-SHA256 over `container[:total_len-32]` |
+  | per-packet | message byte 125 | `(K + sum(body[6+i] ^ (i+K), i=0..118)) & 0x7F` |
+
+  The container ends with 16-byte alignment padding then the 32-byte trailer,
+  all inside `total_len` (`1347692+4+32 = 1347728`, and the same on the other
+  three). The per-packet checksum had previously resisted an exhaustive search
+  over 30,603 pairs — it is not a CRC or a hash but folds each byte's own
+  index in, a family that search never covered. **[C]**
+- The transport carries no unknown fields. `K` above is byte 7 of the 16-byte
+  framing message (`0x0F` Digitakt II, `0x10` Digitone II), and framing body
+  bytes 11..13 are the **data-message count** as a 21-bit base-128 value.
+  Blanking those counts and discarding the source preamble, re-encoding
+  reproduces all four firmwares byte-identically. **[V]**
 - Round-trip is lossless: extract → rebuild → re-extract returns all five
   sections byte-identical, checksums and HMAC verifying. The rebuilt `.syx` is
   *not* byte-identical (the tool's aPLib packer beats Elektron's by 80,880
@@ -73,12 +103,37 @@ The bootstrap owns the STARTUP menu (`0x8000650d`), the factory test mode, and
 `READY TO RECEIVE` (`0x80006603`) — the legacy MIDI-DIN upgrade path. It is
 independent of MAIN OS and validates only:
 
-1. content checksum — word-sum, each word XORed with its index (`0x40003ca6`)
+1. content checksum — `sum(i ^ word_i)` over 1-based big-endian u32 words,
+   at `0x80003ca6`. Earlier notes give this as `0x40003ca6`; that is a
+   transcription slip — `0x80003ca6` is the instruction that reads the length
+   word the checksum covers, `move.l (0x40000000).l,D2`. **[C]**
 2. HMAC-SHA256 trailer (`0x80005e2a`; SHA-256 H0 at `0x800058bc`, K-table at `0x80006ef8`)
 
 **No version comparison on this path.** On failure: "UPGRADE ABORTED" and a spin
 loop, nothing written. **[V]** That a corrupt MAIN OS still lets the menu come up
 is a strong inference from the code layout, not demonstrated. **[O]**
+
+The receive path itself, traced in the bootstrap: each message's 101 decoded
+bytes are written to `0x40000000 + seq*101`, the message count comes from the
+framing message with **no bound check**, and the erase/write loop to flash
+offset `0x80000` caps nothing either — no software size limit exists anywhere
+on this path. **[V]**
+
+The two classes of failure behave very differently. A bad byte-125 checksum
+sets `_DAT_80008e3c`, which is written in six places and **read in none** —
+the receive state machine silently resets, with no message. A bad content
+checksum or HMAC branches into `FUN_80003bfc`, which prints "UPGRADE ABORTED"
+/ "PLEASE REBOOT" and hangs in an infinite loop that never returns, so the
+erase/write loop after it is unreachable. **[V]**
+
+```
+80003748  move.b (0x80007d17).l,D4b   ; K, the transfer-type const (0x0F here)
+80003752  move.b (0x0,A3,D0*1),D5b    ; body[6+i]
+8000375c  eor.l  D5,D2                ; ^ (i + K)
+8000375e  add.l  D2,D1                ; running sum
+8000376e  mvz.b  (0x78,A2),D1         ; body[125], the stored checksum
+80003774  cmp.l  D1,D0                ; against (K + sum) & 0x7F
+```
 
 ## What is patchable
 
@@ -93,12 +148,89 @@ and filters are labels and parameter IDs on the ColdFire; audio runs on the DSP.
   `COMB-`/`COMB+`, `LEGACY LP/HP`), 24 KB of factory sample paths, mod sources,
   song sections, the random-project-name word list. Same-length editable. **[V]**
 - Constants, ranges, defaults; size-preserving ColdFire logic.
-- **Adding a new machine**: not architecturally closed, but expensive and
-  unverifiable. Section 7 is a real ADI loader stream (32 blocks, only 178,796
-  of 320,780 bytes actually loaded, with unloaded gaps of 46/52/80/337/691 KB —
-  unloaded is not the same as free). ADI's CCES compiler is a free download. The
-  real blocker is that there is **no SHARC emulator or disassembler module**, so
-  every DSP iteration is flash-and-listen on hardware. **[V]/[O]**
+- **Adding a new machine**: the ColdFire side is no longer the blocker — see
+  "The ColdFire machine dispatch" below. Section 7 is a real ADI loader stream;
+  the remaining blocker is that there is **no SHARC assembler or semantic
+  model**, so a genuinely new algorithm still means flash-and-listen on
+  hardware. A machine that reuses an existing DSP mode with different
+  parameters avoids that entirely. **[V]/[O]**
+
+## The ColdFire machine dispatch **[V]**
+
+Found by emulator read-watch, not statically. Earlier analysis had concluded
+the descriptor table was write-only — every entry had exactly one reference, a
+write from the static initialiser `FUN_401ac1be`, and no readers anywhere. That
+was correct as far as it went: the table is uninitialised bss, so it exists
+only at runtime, and Ghidra throws `MemoryAccessException` reading it. Running
+`tools/mmiotrace.py` range-scoped over it on a boot resumed from
+`snapshots/boot400M.snap` gave 432 reads, all from a single PC, `0x4001767a`. **[C]**
+
+The dispatch is 34 bytes at `0x400caf48`:
+
+```
+400caf48  moveq  #6,D1               ; the bound -- one byte
+400caf4a  move.l (4,A7),D0           ; machine_type
+400caf4e  cmp.l  D0,D1
+400caf50  bcs.b  $400caf62           ; type > 6 -> fallback
+400caf52  move.b #0x2c,D1            ; stride, 44 bytes
+400caf56  mulu.l D1,D0
+400caf5a  addi.l #0x42923644,D0      ; descriptor array base
+400caf60  rts
+400caf62  move.l #0x4292374c,D0      ; == base + 6*0x2c, i.e. entry 6
+400caf68  rts
+```
+
+So an out-of-range machine type resolves to MANUAL SLICE rather than crashing —
+a forgiving failure mode for anything that patches this. The field accessor is
+`FUN_4001762c(obj, field)` → `*(descriptor + 8 + field*4)`; `FUN_400caf48` has
+six callers, all resolvable. Each descriptor is two string pointers, nine
+literal ID fields and a trailing tag of 10.
+
+Dumped live with `tools/memdump.py` — the only way to see it, since it is bss —
+the seven entries are the machine list in order: `0 SAMPLE`/`SAMP`, `1 WERP`,
+`2 STRETCH`, `3 REPITCH`, `4 SLICED SMP`/`SLIC`, `5 MIDI`, `6 MANUAL SLICE`/`MLIC`.
+Entry 5 (MIDI) is the one irregular record — all nine ID fields zero and no
+tag, which shows the IDs are not mandatory. Entries 3 and 6 carry six IDs
+rather than seven. **[V]**
+
+The UI's list length is not a numeral. `MachineSelectionView` (`FUN_400607b2`)
+builds two `std::vector<int>` by copying a rodata range, so the count is a pair
+of pointer immediates; `MachineListView` (`FUN_4005e022`) enumerates nothing
+and renders one row per vector entry. **[V]**
+
+| list | table | contents | built by |
+|---|---|---|---|
+| source | `0x401e1958`-`0x401e1974` | `{0,1,2,3,6,4,5}` — 7, in UI display order | `FUN_40051fbc` |
+| filter | `0x401e1940`-`0x401e1958` | `{0,1,4,3,5,2}` — 6, excludes MANUAL SLICE | `FUN_4005224c` |
+
+Every bound an eighth machine would have to clear, verified against the
+section bytes: the dispatch's `moveq #6` at `0x400caf48`, and the four `pea`
+immediates at `0x40052000` (table D end), `0x4005200a` (D start), `0x40052296`
+(E end) and `0x400522a0` (E start). The dispatch bound is a single byte,
+`0x400caf49`, `06` → `07`. **[V]**
+
+That alone buys nothing, because neither array can grow in place. Index 7
+resolves to `0x42923644 + 7*0x2c` = `0x42923778`, which is the live
+NONE/TRIG/RTRG parameter-page array; and `0x401e1974` is immediately live
+vtable/RTTI pointer data. Both neighbours are occupied. The workable shape is
+a trampoline (see `docs/PATCHING.md`): relocate table D into the cave with
+eight entries and repoint the two immediates, redirect `FUN_400caf48` to cave
+code handling `type == 7` while entries 0..6 resolve exactly as now, and build
+the 44-byte descriptor there. Note `0x401e1974` also appears at `0x40124252`,
+`0x401985dc` and `0x401bae4e` — those refer to the *next* object, which begins
+at that address, not to table D's end, and must be left alone. **[O]**
+
+Settle before writing any patch: the descriptor's two name pointers point into
+`0x44f25xxx` — heap, written as `std::string` at static-init. Reading the
+pointer yields the characters directly, so a pointer to a static rodata string
+may work, but whether the consumer treats the field as a `char*` or as a
+`std::string` object is not established. `FUN_4005e022` separately gates
+auto-scrolling the list to the active row on `param_1[0x73] + 1 < 8`; that is
+cosmetic, an unpatched eighth row would fail to auto-scroll rather than
+crash. **[O]**
+
+Still open: what the literal IDs (`0xca`-`0xfe`) mean, and how `machine_type`
+reaches the six callers. **[O]**
 
 ## Emulation
 
@@ -1370,6 +1502,36 @@ exact fingerprint:
 | `0xFC05C000` | DSPI0 |
 | `0xFC080000`-`0xFC08C000` | PIT0-PIT3 |
 | `0xFC090000` | EPORT |
+
+### Flash and DDR capacity **[V]**
+
+Both come out of the firmware's own code; neither needs a datasheet or a probe.
+
+DDR is **64 MiB**, from the bootstrap's own DDRMC writes:
+
+```
+DDR_CR04 @0xFC0B8010 = 0x00010101   ; bit 8 8BNK=1     -> 8 banks
+DDR_CR15 @0xFC0B803C = 0x02000103   ; ADDPINS=2        -> rows = 15-2 = 13
+DDR_CR16 @0xFC0B8040 = 0x02000407   ; COLSIZ=2         -> cols = 12-2 = 10
+```
+
+with the controller's fixed 1 chip select and x8 datapath: `2^23 * 8 * 1 =
+67,108,864`. The init sequence is byte-identical on both devices.
+`tools/ddr_geometry.py` re-derives this from any bootstrap image.
+
+NOR flash is **16 MiB**. The bootstrap issues RDID (`0x9F`) and dispatches on
+the 5 ID bytes at `FUN_800024ec`; only the branch matching mfg `0x01`, id
+`0x2018`, ext `0x00` — an S25FL127S-class part, 128 Mbit — selects the
+512-byte page and 256 KB erase geometry the flash loop actually uses. Weaker
+than the DDR result by one step: the firmware *recognises* the part, it never
+computes a capacity. **[V]/[D]**
+
+Against a store-only repacked image this is not close. What is staged and
+flashed is the decoded container, **4.00 MB** against a stock 1.35 MB — the
+5.07 MB `.syx` figure includes 8-in-7 transport framing that never lands in
+memory. Headroom is 16.8x on DDR and 4.1x on flash. A real LZ77 packer is not
+needed. That everything past the OS container to the end of the chip is free
+is an assumption; no partition table has been located. **[O]**
 
 **V4m, not V4e** -- MMU and EMAC but **no FPU**. That is the real reason 93%
 of executed instructions were soft-float: it is not a compiler flag, the part

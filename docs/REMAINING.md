@@ -57,27 +57,35 @@ reverse engineering first.
 3. `[W]` **ELE3 section-table writer**: magic, count at `0x1C`, 16-byte entries
    `(id, offset, comp_len, dest)` from `0x20`. Reader at `dt2/container.py:16,57`;
    the writer is a direct inverse.
-4. `[R]` **32-bit content checksum** at `0x40003ca6`, written into preamble
-   bytes 4..8. Described as "word-sum, each word XORed with its index" — but
-   word size, endianness, start index and the exact covered range are all
-   unpinned. Nobody has traced the routine. This is a short trace under the
-   existing Unicorn harness, in the style of how the CRC-32 oracle was built.
-5. `[R]` **HMAC-SHA256 trailer** at `0x80005e2a`. The key *material* is
-   confirmed present in `sections/section_2_DSP.bin`: anchor
-   `be f9 a3 f7 c6 71 78 f2` at `+0x6bf4`, then `"Master Overdrive\0"`, then a
-   32-byte constant beginning `69 5d 82 bc`. What is **not** known is the
-   derivation — whether the key is that constant verbatim, or a hash over
-   label‖constant, or something folding in the anchor. Same fix: trace the
-   routine and mirror it in `emu/oracle.py`.
+4. **32-bit content checksum.** Done — traced at `0x80003ca6` (not
+   `0x40003ca6`, a transcription slip in earlier notes; that address is the
+   bootstrap's own address space and is the instruction
+   `move.l (0x40000000).l,D2` that reads the length word the checksum
+   covers), written into preamble bytes 4..8. The algorithm is
+   `sum(i ^ word_i)` over 1-based big-endian u32 words of the whole container
+   including the 32-byte trailer, compared against preamble bytes 4-7.
+   Confirmed byte-exact on all four firmwares. Implemented as
+   `dt2.build.content_checksum`.
+5. **HMAC-SHA256 trailer.** Done — trailer computed at `0x80005e2a`; the key
+   is derived at `0x80005d90`, same code in both devices:
+   `key[i] = CONST[i] ^ sha256(STRING)[i] ^ sha256(STRING[::-1])[i]`, with
+   Digitakt II `STRING="Master Overdrive"` @`0x80006ff8` / CONST
+   @`0x80007009`, and Digitone II `STRING="Multiplier"` @`0x8000706c` / CONST
+   @`0x80007077`. It is textbook HMAC-SHA256 over `container[:total_len-32]`.
+   The "32-byte constant beginning `69 5d 82 bc`" noted above is only one of
+   the three XOR operands, not the key itself. Implemented as
+   `dt2/authcode.py`.
 6. `[W]` **8-in-7 re-encoding.** Direct inverse of `dt2/container.py:38-44`.
    No ambiguity.
-7. `[R]` **Per-packet SysEx checksum.** This is the quietest gap. `decode_syx()`
-   slices `body[9:125]` and *discards* byte 125 without ever computing or
-   checking it — so the per-packet checksum algorithm has never been recovered,
-   and it is not documented anywhere in `docs/`. Needed for the MIDI-DIN upgrade
-   path. Recover it by checking the decoder against the two `.syx` files we have
-   (13,346 packets of known-good data is a generous oracle for guessing a
-   one-byte checksum).
+7. **Per-packet SysEx checksum.** Done — `decode_syx()` had sliced
+   `body[9:125]` and discarded byte 125 without ever computing or checking
+   it. The algorithm is `(K + sum(body[6+i] ^ (i+K), i=0..118)) & 0x7F`,
+   where `body` is the bytes between F0 and F7 and `K` is byte 7 of the
+   16-byte framing message (`0x0F` Digitakt II, `0x10` Digitone II).
+   Verified on 64,053 messages across four firmwares. Implemented as
+   `dt2.build.packet_checksum`. Worth recording: an earlier exhaustive
+   black-box search over 30,603 pairs failed because the construction folds
+   each byte's own index in, a family the search never tried.
 8. `[W]` **Round-trip gate.** Repack → re-extract with `emu/oracle.py` → assert
    all five sections are byte-identical to what went in. Cheap, and it is the
    thing that makes flashing defensible.
@@ -105,9 +113,9 @@ For the stated goal, what is needed on top of the repack chain:
   into the device TOMLs before DN2 can be patched at all.
 
 **Estimate for Goal A:** the `[W]` items are a day or two of ordinary work. The
-three `[R]` items are each a bounded trace under a harness that already exists
-and has already been used to do exactly this twice (CRC-32, depacker). None of
-them is a research risk. Goal A is achievable.
+three checksum/HMAC items above are done, traced under a harness that already
+existed and had already been used to do exactly this twice (CRC-32,
+depacker). None of them was a research risk. Goal A is achievable.
 
 ---
 
@@ -123,8 +131,18 @@ rename a machine and reshape its parameter pages, but cannot make a new sound.
 
 What is located on the ColdFire side: a string table at `0x4022b20e` with the
 machine and filter names (`WERP`, `STRETCH`, `REPITCH`, `SLICED SMP`, `SVAR`,
-`LP4`, `COMB±`, …). No machine-ID enum, no per-machine parameter-page
-descriptor, no dispatch structure has been found.
+`LP4`, `COMB±`, …). There *is* a machine-ID dispatch and a per-machine
+descriptor array — found by emulator read-watch, not statically, which is why
+static analysis missed it. Dispatch is `FUN_400caf48`:
+`type < 7 ? type*0x2c + 0x42923644 : 0x4292374c` (the fallback is exactly
+entry 6, so an out-of-range type yields MANUAL SLICE rather than crashing).
+The descriptor array itself — base `0x42923644`, stride `0x2c` (44 bytes), 7
+entries — lives in bss, so it exists only at runtime; field accessor
+`FUN_4001762c(obj, field) -> *(descriptor + 8 + field*4)`. The 7 entries are
+`0 SAMPLE, 1 WERP, 2 STRETCH, 3 REPITCH, 4 SLICED SMP, 5 MIDI, 6 MANUAL
+SLICE`. The UI list length is not a numeral but a rodata range copied into a
+`std::vector<int>`: source list `0x401e1958`-`0x401e1974` = `{0,1,2,3,6,4,5}`,
+filter list `0x401e1940`-`0x401e1958` = `{0,1,4,3,5,2}`.
 
 On the SHARC side (container §7) `tools/sharcscan.py` finds, by literal
 pattern-matching two cjump encodings, candidate indirect-call tables. Reproduced
@@ -394,6 +412,12 @@ to displace something or extend the image.
 And there is **no SHARC emulator**, so every iteration is flash-and-listen on
 real hardware, with no acceptance oracle of the kind Goal A enjoys.
 
+Note the cost shape has changed since this list was written: the ColdFire
+selection/descriptor layer (§B.1) is now solved, so a machine that reuses an
+existing DSP mode needs no SHARC work at all — only a new ColdFire
+descriptor entry and string. Only a genuinely new algorithm still needs the
+SHARC-side work above.
+
 Goal B is not architecturally closed. The hour of figure-reading is spent and it
 paid; what remains is the substantial, genuinely hard work above, and the
 flash-and-listen iteration loop is still the thing that makes it expensive.
@@ -415,10 +439,10 @@ Start there.
 3. **Build the round-trip gate early**: repack → re-extract with the device's
    own depacker → assert all five sections byte-identical. This is what makes
    flashing defensible, and it exists as a test before anything else needs to.
-4. Trace the content checksum at `0x40003ca6`, then the HMAC key derivation at
-   `0x80005e2a`, then the per-packet SysEx checksum — the last of which has
-   never been recovered, because `decode_syx()` discards byte 125. Same method
-   that produced the CRC-32 and depacker oracles byte-exact, twice.
+4. Done: the content checksum (traced at `0x80003ca6`, not `0x40003ca6` as
+   earlier noted), the HMAC key derivation at `0x80005d90`, and the
+   per-packet SysEx checksum are all recovered. Same method that produced
+   the CRC-32 and depacker oracles byte-exact, twice.
 5. Move the DT2-1.15C addresses into `devices/*.toml`, so Digitone can be
    patched at all.
 6. Turn `patchimg.py`'s audit manifest into a patch format that can be read

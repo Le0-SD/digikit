@@ -4,6 +4,13 @@ Separate thread from `HANDOVER-2026-09-13.md`, which covers the front panel.
 Nothing here supersedes that file. Branch: `dsp-re-review`, 13 commits, none
 merged. Read **Retractions** before trusting anything you remember.
 
+> **Superseded in part.** A later session closed every checksum blocking a
+> flashable image, established DDR and flash capacity, and found the machine
+> dispatch. Those results are in `docs/FINDINGS.md` — "Integrity", "Recovery",
+> "Flash and DDR capacity" and "The ColdFire machine dispatch". Where this
+> file disagrees with FINDINGS.md, FINDINGS.md is right. The sections below
+> are left as the record of what this thread believed at the time.
+
 ## Retractions — things this repo believed that are wrong
 
 1. **`0x40128c7c` is not the ColdFire→SHARC transport.** It is a blocking
@@ -23,23 +30,6 @@ merged. Read **Retractions** before trusting anything you remember.
 5. **"Only 178,796 of 320,780 bytes are loaded, with gaps of unknown purpose"**
    was an artefact of the truncated parse. All 320,780 bytes are accounted for.
 6. **The public aPLib format does not describe this device.** See below.
-7. **"The per-packet checksum resisted an exhaustive search" was a search in
-   the wrong family.** It is recovered, and it is not a CRC, a Fletcher or a
-   multiplicative hash — it folds the byte's own index in:
-   `(K + sum(body[6+i] ^ (i+K) for i in 0..118)) & 0x7F`. The black-box search
-   never tried index-XOR constructions, so 30,603 pairs at chance proved only
-   that the tried families were wrong. Read the code next time: the answer was
-   ~20 instructions in a section we already had.
-8. **`0x40003ca6` for the content checksum is a transcription slip** for
-   `0x80003ca6`, in the bootstrap's own address space. Propagated into
-   `docs/FINDINGS.md` and `docs/REMAINING.md`.
-9. **Section 4 is not the SysEx receiver.** It shares no strings or constants
-   with the bootstrap; the receive path is in section 2. Section 4 is most
-   consistent with being the flash-programming stub (inferred — its own code
-   was not traced).
-10. **"Only two fields block a flashable image" undercounted.** There is a
-    third, a 32-byte HMAC-SHA256 trailer, which no previous handover records
-    at all. It is now recovered too — but nothing had noticed it was there.
 
 ## What is now established
 
@@ -62,52 +52,6 @@ own block targets and reaches 291 functions. Auto-analysis alone finds nothing
 unencodable for 11a, whose unconditional form is 30 — the opcode fixes bit 32,
 the low bit of its own cond field).
 
-**The image is fully authenticated, and every field is now computed.** All
-three were recovered from the bootstrap by disassembly and confirmed
-byte-exact against all four firmwares in the repo root:
-
-| field | where | algorithm |
-|---|---|---|
-| content checksum | preamble bytes 4-7 | `sum((i ^ word_i))` over 1-based big-endian u32 words of the whole container, trailer included |
-| HMAC trailer | container's last 32 bytes | HMAC-SHA256 over `container[:total_len-32]` |
-| per-packet checksum | message byte 125 | `(K + sum(body[6+i] ^ (i+K), i=0..118)) & 0x7F` |
-
-The HMAC key is **derived, not stored** — same code at `0x80005d90` in both
-devices, only the data differs:
-
-    key[i] = CONST[i] ^ sha256(STRING)[i] ^ sha256(STRING[::-1])[i]
-
-    Digitakt II   STRING="Master Overdrive" @0x80006ff8, CONST @0x80007009
-    Digitone II   STRING="Multiplier"       @0x8000706c, CONST @0x80007077
-
-    dt2 key  50fadce1e6c0b93e132d9f8fef2e0c9624eafb392b45439f9d292814f44bcfda
-    dn2 key  a4986c2b68f382800b2dd7cfcace6fe2e73e643be62db32cd6a09cb30775d364
-
-Note the earlier docs' "32-byte constant beginning `69 5d 82 bc`" is only one
-of the three XOR operands, not the key.
-
-Both the HMAC and the content checksum are **real gates**: `FUN_80003c9c`
-branches on each, and failure lands in `FUN_80003bfc`, which prints
-"UPGRADE ABORTED" / "PLEASE REBOOT" and hangs in an infinite loop that never
-returns — the erase/write loop after it is unreachable. The per-packet
-checksum is different: its mismatch flag `_DAT_80008e3c` is written in six
-places and **read in none**, so a bad byte 125 silently resets the receive
-state machine.
-
-`K` is not a device constant baked into our code — it is byte 7 of the
-16-byte framing message (`0x0F` Digitakt II, `0x10` Digitone II). Framing body
-bytes 11..13 are the **data-message count** as a 21-bit base-128 value, which
-retires the last "unknown rule" in the transport: nothing is copied from the
-source file any more. Proof: blanking the framing counts and discarding the
-source preamble, re-encoding reproduces all four firmwares **byte-identically**.
-
-**The staging path imposes no size limit.** Each message's 101 decoded bytes
-go to `0x40000000 + seq*101`; the message count comes from the framing message
-with no bound check, and the erase/write loop caps nothing. Flash target is
-offset `0x80000`, which independently matches the known container location. So
-the 3x image is not refused by any software check — the open question is purely
-the physical DDR and NOR capacities, which this repo has never established.
-
 **Memory occupancy**, which decides whether new code has anywhere to live:
 
 | | L1 (640 KB) | L2 (~1 MB) | DDR |
@@ -129,58 +73,6 @@ static initialiser `FUN_401ac1be` (reached from the global-constructor table at
 literals 45,46,47,48 and a trailing 49 — concrete evidence they are
 parameterised instances of one framework, not six algorithms.
 
-**The machine dispatch is solved.** Found with `tools/mmiotrace.py`
-range-scoped over the descriptor table on a Digitakt boot resumed from
-`snapshots/boot400M.snap`: 432 reads, all from a single PC, `0x4001767a`.
-Static analysis had found zero readers.
-
-The consumer is `FUN_4001762c(obj, field)` -> `*(descriptor + 8 + field*4)`,
-and the dispatch is 20 bytes at `0x400caf48`:
-
-    int FUN_400caf48(uint machine_type) {
-        if (machine_type < 7) return machine_type * 0x2c + 0x42923644;
-        return 0x4292374c;          // == entry 6
-    }
-
-So: base `0x42923644`, stride `0x2c` (44 bytes), **7 entries**, and an
-out-of-range type falls back to entry 6 rather than crashing. Six callers of
-`FUN_400caf48`, all resolvable. Each descriptor is two string pointers, nine
-literal ID fields and a trailing tag of 10.
-
-Dumped live with `tools/memdump.py` (the table is bss — it exists only at
-runtime), the seven entries are the Digitakt II machine list in order:
-
-    0 SAMPLE/SAMP   1 WERP/WERP   2 STRETCH   3 REPITCH
-    4 SLICED SMP/SLIC   5 MIDI   6 MANUAL SLICE/MLIC
-
-Entry 5 (MIDI) is the one irregular record: all nine ID fields zero and no
-tag. Entries 3 and 6 carry six IDs rather than seven.
-
-**What this means for adding a machine.** The previous plan — "a 12th
-descriptor entry" — was wrong on the count and on the method. There are seven,
-not eleven, and the array **cannot be extended in place**: `0x42923778`
-onwards is immediately occupied by another live 0x2c-stride array (NONE /
-TRIG / RTRG parameter pages), and `0x42923540`-`0x42923643` before it is the
-six-entry filter list. No slack on either side.
-
-The cheap patch is therefore not to relocate the array but to add one case to
-`FUN_400caf48`, whose base and bound are both immediates in a 20-byte
-function:
-
-    if (type < 7)  return type * 0x2c + 0x42923644;   // untouched
-    if (type == 7) return <44-byte descriptor in the cave>;
-    return 0x4292374c;
-
-That leaves all seven existing entries exactly where they are and needs only
-44 bytes plus two strings in the 58,188-byte cave at `0x402f9c14`. The
-fallback behaviour makes the failure mode forgiving: a machine type the
-patch does not handle yields MANUAL SLICE, not a crash.
-
-Still open for Goal B: what the literal IDs (`0xca`-`0xfe`) mean, how
-`machine_type` reaches `FUN_400caf48`'s callers, and where the UI gets the
-length of the machine list — the `< 7` bound here is the dispatch's, and the
-list UI may carry its own count that also needs patching.
-
 ## Dead ends — do not re-derive these
 
 - **The RPC dispatcher table's address is never loaded as an immediate.**
@@ -200,13 +92,14 @@ list UI may carry its own count that also needs patching.
   reset or PCM streaming. No machine-type comparison in any of them.
 
 The conclusion those three share: **static analysis cannot answer the machine
-dispatch question.** That was correct, and the emulator answered it — see
-"The machine dispatch is solved" below. The three dead ends above stand; they
-were dead ends, not wrong.
+dispatch question.** That held, and the emulator answered it — see "The
+ColdFire machine dispatch" in `docs/FINDINGS.md`. The three dead ends above
+stand; they were dead ends, not errors.
 
 
 - ~~**The per-packet SysEx checksum (byte 125) resisted an exhaustive search.**~~
-  **SOLVED — see Retractions 7.** Kept here as a cautionary tale:
+  **Since solved** — the algorithm folds each byte's own index in, a family the
+  search never tried. See `docs/FINDINGS.md`. Kept here as a cautionary tale:
   Tested against 30,603 message/checksum pairs across two devices: every
   contiguous byte range as sum and as XOR, raw and 8-in-7-decoded, with
   constant offsets; every CRC-7 and CRC-8 polynomial with both init values,
@@ -264,46 +157,22 @@ four firmwares and proven by re-encoding both source files byte-identically:
 
 ### What still blocks flashing
 
-Everything in this section's previous version is resolved. What is left:
+The three fields this section used to list are recovered, verified against all
+four firmwares, and computed by the write path; see `docs/FINDINGS.md`. The
+image-size question is closed too — DDR is 64 MiB, flash 16 MiB, and the
+staged payload is 4.00 MB, so a store-only repack fits with 4.1x headroom on
+the tighter ceiling. `tools/patchimg.py` now refuses sections 2 and 4 in code.
 
-1. **Nothing has been flashed.** The chain is complete and self-consistent,
-   and a rebuilt image satisfies both of the device's own gates — but that has
-   only ever been checked by our code against our code. Items 1 and 2 of
-   Suggested order below are the real next step.
-2. **The final chunk's zero padding is still an inference.** No sample file
-   has a partial final chunk, so there is nothing to confirm it against. Our
-   rebuilds do produce one.
-3. ~~**Image size**~~ — closed, and the "datasheet or probe question, not a
-   static-analysis one" line above was wrong. Both ceilings came out of the
-   firmware's own code (`tools/ddr_geometry.py`):
+What is actually left:
 
-   - **DDR: 64 MiB.** Decoded from the bootstrap's own DDRMC writes —
-     `DDR_CR04=0x00010101` (8 banks), `DDR_CR15=0x02000103` (13 row bits),
-     `DDR_CR16=0x02000407` (10 column bits), x8 datapath, 1 chip select.
-     Byte-identical init on both devices.
-   - **Flash: 16 MiB.** The bootstrap's RDID (`0x9F`) dispatch at
-     `FUN_800024ec` matches mfg `0x01` / id `0x2018` / ext `0x00` — an
-     S25FL127S-class part — and only that branch selects the 512-byte page
-     and 256 KB sector geometry the flash loop actually uses. One
-     inferential step weaker than the DDR result: the firmware recognises
-     the part, it never computes the capacity.
-
-   And the 5.07 MB figure was the wrong number to worry about. That is the
-   `.syx` file including 8-in-7 transport framing, which never lands in
-   memory. What is staged and flashed is the decoded container: **4.00 MB**
-   against a stock 1.35 MB. Headroom is 16.8x on DDR and 4.1x on flash. A
-   real LZ77 packer is not needed.
-
-   Not confirmed: that everything past the OS container to the end of the
-   chip is free. The 16 MiB ceiling and the `0x80000` start are firmware
-   facts; "the rest is unused" is an assumption — no partition table was
-   located.
-4. ~~`tools/patchimg.py` does not enforce "never touch sections 2 or 4"~~ —
-   done. It now identifies the image by sha256 against the pristine
-   extractions, with a content-signature fallback that survives an
-   already-patched image, and refuses sections 2 and 4 unconditionally.
-   `--force` does not override it and the guard runs before `--dry-run`
-   returns. Verified: exit 1, no output file written.
+1. **Nothing has been flashed.** The chain is complete and self-consistent and
+   a rebuilt image satisfies both of the device's own gates — but that has only
+   ever been checked by our code against our code.
+2. **The final chunk's zero padding is still an inference.** No sample file has
+   a partial final chunk to confirm it against; our rebuilds produce one.
+3. **Whether the flash past the OS container is free** is an assumption. The
+   16 MiB ceiling and the `0x80000` start are firmware facts; no partition
+   table has been located.
 
 The gate itself is `tools/roundtrip.py`. Run it after any change to the write
 path:
@@ -325,9 +194,8 @@ firmware argument.
 3. Calling convention — half-answered by `machineType_t` + `synthParams_t`.
 4. **Writing SHARC code — open, and the deepest.** There is no assembler and no
    semantic model, only length decoding and field extraction.
-5. Flashing — the container chain is **done, gated and fully authenticated**.
-   Both checksums and the HMAC are recovered and computed; what remains is
-   physically flashing one, and the image-size question. See Goal A above.
+5. Flashing — the container chain is **done and gated**; what remains is the
+   two checksums and the image-size question, all in Goal A above.
 
 **The cheapest first machine avoids (4) entirely**: a 12th descriptor entry
 registered from the ColdFire cave, mapping to an existing DSP mode with
@@ -349,17 +217,7 @@ that does not work rather than silence.
                           self-test and prints old vs new stored lengths.
     tools/roundtrip.py    the acceptance gate. Rebuilds and proves every
                           section comes back byte-identical through the
-                          device's own depacker, and now also verifies the
-                          preamble checksum, the HMAC trailer, the framing
-                          message count and every byte-125 checksum.
-                          --quick skips MAIN OS.
-    dt2/authcode.py       the HMAC trailer: key derivation, compute, verify,
-                          seal. tools/content_hmac.py is its CLI.
-    tools/memdump.py      resume a snapshot, spin to post-intro handover, dump
-                          a guest memory range as hex + longwords. The only
-                          way to see bss tables, which exist at runtime only.
-    tools/ddr_geometry.py decode the DDR controller init out of a bootstrap
-                          image and print the SDRAM size.
+                          device's own depacker. --quick skips MAIN OS.
 
 Ghidra project `~/ghidra-projects/dt2` holds `section_3_MAIN_OS.bin`,
 `dn2_MAIN_OS.bin` and now `dt2_SHARC`. Ghidra's decompiler fails with
@@ -369,28 +227,20 @@ Capstone.
 
 ## Suggested order
 
-The first three items of the previous list are done. What is left, cheapest
-first:
-
 1. **Prove recovery on hardware while healthy** — hold FUNC at power-on,
    STARTUP menu, MIDI DIN only, no version check. The repo still flags "a
    corrupt MAIN OS still lets the menu come up" as inference. Demonstrate it
    before you need it, because everything after this point can brick.
 2. **Flash an unmodified rebuild.** It should change nothing, and it is the
    only way to separate "my patch was wrong" from "my repacker was wrong"
-   later. This is now a genuinely viable step rather than a blocked one.
-3. ~~Establish DDR and NOR capacity~~ — done, see blocker 3 above.
-4. ~~Emulator read-watch to name the machine descriptor consumer~~ — done.
-   Goal B is reopened: see "The machine dispatch is solved". The next step
-   there is to find where the UI gets its machine-list length, then try the
-   one-case patch to `FUN_400caf48` in the emulator.
-
-A note on method, since this session produced three results the previous one
-had recorded as hard or impossible: all three came from **reading the
-bootstrap's code**, not from black-box search against the data. Section 2 was
-in the repo the whole time. When a field resists analysis, import the code
-that validates it before searching the space of algorithms that might produce
-it.
+   later.
+3. **Goal B, first machine.** The ColdFire dispatch is solved; what remains is
+   settling whether the descriptor's name field is a `char*` or a
+   `std::string`, then building the trampoline and testing it in the emulator.
+   Two gotchas for that work: Digitakt's post-intro screen renders blank, so
+   confirm UI state with `tools/panelsweep.py`'s `queue_send` event-record
+   method rather than by reading the framebuffer; and Digitakt's intro
+   handover needs ~140M instructions, not Digitone's ~64-70M.
 
 `Digitakt_II_OS1.16.syx` and `Digitone_II_OS1.11.syx` are now in the repo root
 and were used in the transport analysis, so the header and counter rules hold
