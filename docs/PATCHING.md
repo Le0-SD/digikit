@@ -30,6 +30,22 @@ runtime and can hold both code and scratch variables.
 Caveat: "untouched during boot" is not "never touched". A feature not
 exercised at boot could still use it. Re-check before relying on a region.
 
+That caveat has now bitten, on Digitakt. The 58,188-byte Digitakt cave at
+`0x402f9c14` is entirely zero in the static image, but a boot to post-intro
+leaves one non-zero byte, at `0x402fa193`. Watching the region shows why:
+there is a live 8-byte object at `0x402fa190` — a `u32` written once to `1`
+from `0x40005014`, and a second word read seven times from `0x40005030`. That
+is the shape of a C++ function-local static and its guard variable, which
+means the linker placed real data here and the trailing zeros are
+zero-initialised data, not slack.
+
+So the cave is not uniformly free, and its stated size is an upper bound, not
+an allocation. Empirically the rest of it stays zero through a boot to
+post-intro, and the first 1,404 bytes from the base have been used
+successfully (see `tools/machinepatch.py`), but anything placed here should be
+checked against a runtime dump of the specific region first —
+`tools/memdump.py --range` does that in one run.
+
 ## Injecting code: the trampoline recipe
 
 Redirect an existing call site into the cave, do the new work there, then

@@ -220,6 +220,22 @@ the 44-byte descriptor there. Note `0x401e1974` also appears at `0x40124252`,
 `0x401985dc` and `0x401bae4e` — those refer to the *next* object, which begins
 at that address, not to table D's end, and must be left alone. **[O]**
 
+The relocation half of that is done and works. Patching, in guest memory on a
+run resumed from `snapshots/boot400M.snap`: an eight-entry table
+`{0,1,2,3,6,4,5,7}` written at the cave base `0x402f9c14`, and the two `pea`
+operands repointed at it. The firmware then builds its machine-list vector
+from the cave — eight reads, eight distinct addresses, all from `0x4012d28e`,
+the same vector-copy loop that reads seven entries from `0x401e1958` in an
+unpatched control run, which sees zero reads of the original table. The table
+reads back intact afterwards, so nothing else claims that memory.
+`tools/machinepatch.py` runs both arms. **[V]**
+
+What that does *not* show is a row on screen. `FUN_4005e022` (`MachineListView`)
+never fires on an idle post-intro run, so the list is built with eight entries
+but never drawn without navigation — and Digitakt's post-intro screen renders
+blank anyway. The eighth row rendering as a second MANUAL SLICE (index 7 falls
+back to entry 6) is an expectation, not an observation. **[O]**
+
 The descriptor's two name pointers are **`std::string`, not `char*`** — the
 pre-C++11 libstdc++ copy-on-write representation, with a 12-byte header
 immediately *before* the character data: **[V]**
