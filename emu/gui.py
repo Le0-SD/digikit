@@ -55,6 +55,14 @@ from emu.screen import png
 FRAME_VECTOR = 208
 FRAME_HZ = 132_000_000 / ((0x2191 + 1) * 1024)     # 14.9996
 
+# Buttons that latch instead of behaving momentarily. A mouse cannot hold one
+# button while clicking another, so a modifier click toggles it and stays
+# asserted for the next press -- which is what makes FUNC+SRC reach SRC's
+# secondary function rather than its primary. Keyed off the device TOML's
+# group name; that grouping was previously editorial only, and this is the
+# first thing to read it semantically.
+LATCHING_GROUPS = frozenset({'modifiers'})
+
 W, H = 128, 64
 
 # Vertical space the window owes to everything that is not the panel: the
@@ -483,8 +491,12 @@ class Controls(tk.Frame):
 
     Every interaction goes onto the emulator's queue rather than touching
     guest memory, because the worker is inside Unicorn for a whole BUDGET at
-    a time. Press and release are bound separately so a chord -- hold FUNC,
-    tap a page button -- behaves the way it does on the hardware.
+    a time. A mouse cannot hold one button down while clicking another, so
+    buttons in a LATCHING_GROUPS group (e.g. FUNC) toggle instead of being
+    momentary: a click asserts the modifier and it stays asserted until
+    either a second click on it or the release of the next non-modifier
+    button consumes it -- which is what lets a click on FUNC followed by a
+    click on SRC reach SRC's secondary function.
     """
 
     BG = '#15181d'
@@ -497,6 +509,10 @@ class Controls(tk.Frame):
         self.button_names = button_names
         self.encoder_names = encoder_names
         self.send = send
+        self._latching = frozenset(
+            c for g in device.groups if g.name in LATCHING_GROUPS
+            for c in g.codes)
+        self._latched = {}          # code -> widget, currently latched
         self._build()
 
     # Character cells across before wrapping to a new row. Measured, not
@@ -580,11 +596,32 @@ class Controls(tk.Frame):
                            width=max(2, len(text)), padx=0, pady=0)
         # Bound rather than given a `command`, which fires only on release:
         # the wire carries button STATE, so a held button must stay held.
-        widget.bind('<ButtonPress-1>',
-                    lambda _e, c=code: self.send('press', c, 0))
-        widget.bind('<ButtonRelease-1>',
-                    lambda _e, c=code: self.send('release', c, 0))
+        if code in self._latching:
+            widget.bind('<ButtonPress-1>',
+                        lambda _e, c=code, w=widget: self._toggle_latch(c, w))
+        else:
+            widget.bind('<ButtonPress-1>',
+                        lambda _e, c=code: self.send('press', c, 0))
+            widget.bind('<ButtonRelease-1>',
+                        lambda _e, c=code: (self.send('release', c, 0),
+                                            self._consume_latched()))
         return widget
+
+    def _toggle_latch(self, code, widget):
+        if code in self._latched:
+            self.send('release', code, 0)
+            del self._latched[code]
+            widget.configure(relief='raised', bg=self.FACE)
+        else:
+            self.send('press', code, 0)
+            self._latched[code] = widget
+            widget.configure(relief='sunken', bg='#3a4654')
+
+    def _consume_latched(self):
+        for code, widget in self._latched.items():
+            self.send('release', code, 0)
+            widget.configure(relief='raised', bg=self.FACE)
+        self._latched.clear()
 
     def _encoders(self, box, group, labels):
         columns = group.columns or len(group.codes)
@@ -600,7 +637,7 @@ class Controls(tk.Frame):
                 tk.Button(strip, text=text, bg=self.FACE, fg=self.TEXT, bd=1,
                           font=('SF Mono', 8), width=2, padx=0, pady=0,
                           command=lambda c=code, s=step:
-                          self.send('encoder', c, s)).pack(side='left')
+                          self._encoder_turn(c, s)).pack(side='left')
             # Wheel over an encoder turns it. Tk reports the wheel differently
             # per platform -- a signed delta on macOS and Windows, buttons 4
             # and 5 on X11 -- so all three are bound.
@@ -608,15 +645,19 @@ class Controls(tk.Frame):
                 widget.bind('<MouseWheel>',
                             lambda e, c=code: self._wheel(e, c))
                 widget.bind('<Button-4>',
-                            lambda _e, c=code: self.send('encoder', c, 1))
+                            lambda _e, c=code: self._encoder_turn(c, 1))
                 widget.bind('<Button-5>',
-                            lambda _e, c=code: self.send('encoder', c, -1))
+                            lambda _e, c=code: self._encoder_turn(c, -1))
+
+    def _encoder_turn(self, code, step):
+        self.send('encoder', code, step)
+        self._consume_latched()
 
     def _wheel(self, event, code):
         step = 1 if event.delta > 0 else -1
         if event.state & 0x0001:            # shift held: coarse
             step *= 10
-        self.send('encoder', code, step)
+        self._encoder_turn(code, step)
 
 
 class Panel(tk.Frame):

@@ -328,12 +328,17 @@ and an unpatched control. The framebuffer stays blank throughout. **[V]**
 The panel input itself is fine — every injection produces a shape-valid
 `queue_send` record with the right code. The PC, sampled at every checkpoint,
 is pinned at `0x40002a18`: `FUN_40002a18`, which sets a PIT2 bit and calls
-`FUN_4000148c(0x47d9ade0)`. That is the **idle task**. Nothing else is
-runnable, so panel events are classified and queued and then never consumed,
-because the UI task consuming them is not being scheduled. This is the same
-family as the scheduler and device-event blockers recorded earlier in this
-file, not something the patch introduced — the control run behaves
-identically. **[V]**
+`FUN_4000148c(0x47d9ade0)` — the **idle task**. So in *these headless runs*
+nothing else is runnable and the queued panel events are never consumed. The
+control run behaves identically, so this is not something the patch
+introduced. **[V]**
+
+Do not generalise that into "the UI never runs": it does. Under `emu/gui.py`
+a button click visibly changes the page, so the UI task is scheduled and
+consuming panel events there. The difference between the GUI's configuration
+and `tools/uidrive.py`'s headless resume is not yet pinned down, and is the
+thing to chase before concluding anything about the UI from a headless
+run. **[C][O]**
 
 Note `FUN_400607b2` (`MachineSelectionView`) *does* fire, exactly once, ~60M
 instructions into a resumed run, in patched and control runs alike. So the
