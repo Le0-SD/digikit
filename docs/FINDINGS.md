@@ -220,14 +220,56 @@ the 44-byte descriptor there. Note `0x401e1974` also appears at `0x40124252`,
 `0x401985dc` and `0x401bae4e` — those refer to the *next* object, which begins
 at that address, not to table D's end, and must be left alone. **[O]**
 
-Settle before writing any patch: the descriptor's two name pointers point into
-`0x44f25xxx` — heap, written as `std::string` at static-init. Reading the
-pointer yields the characters directly, so a pointer to a static rodata string
-may work, but whether the consumer treats the field as a `char*` or as a
-`std::string` object is not established. `FUN_4005e022` separately gates
-auto-scrolling the list to the active row on `param_1[0x73] + 1 < 8`; that is
-cosmetic, an unpatched eighth row would fail to auto-scroll rather than
-crash. **[O]**
+The descriptor's two name pointers are **`std::string`, not `char*`** — the
+pre-C++11 libstdc++ copy-on-write representation, with a 12-byte header
+immediately *before* the character data: **[V]**
+
+```
+data-0xc  length
+data-0x8  capacity
+data-0x4  refcount
+data+0    chars, NUL-terminated
+```
+
+Read back live, the header is exactly that — `SAMPLE` at `0x44f25c7c` has
+length 6, capacity 6, refcount 0; `STRETCH` at `0x44f25cfc` has 7, 7, 0;
+`MANUAL SLICE` at `0x44f25ddc` has 12, 12, 0. Three of `FUN_400caf48`'s six
+callers copy the whole 44-byte descriptor by value, calling a constructor and
+destructor per name field — which is why they are non-trivial members rather
+than pointers. The copy is `FUN_401d3aba`: **[V]**
+
+```
+401d3aba  move.l (A1),D0             ; the stored data pointer
+          tst.l  -4(D0)              ; refcount
+          bmi    deep_clone          ; refcount < 0 -> _M_is_leaked(), clone
+          cmp.l  #DAT_44f1e088,...   ; the empty-string singleton, by address
+          beq    skip                ; never refcount the singleton
+          addq.l #1,-4(D0)           ; otherwise share: refcount++
+```
+
+So a new descriptor **cannot** point bare at a rodata string: the bytes before
+it are not a valid header, and `*(int*)(ptr-4)` would be whatever happens to
+sit there — either corrupting neighbouring data with a refcount increment, or
+taking the release path against a bogus header.
+
+It does not need a runtime-constructed string either. Laying the full rep out
+statically in the cave as `[u32 length][u32 capacity][i32 -1]["NAME\0"]` and
+pointing the field at the chars makes `refcount < 0` true, so every copy
+deep-clones into the heap, the static bytes are never mutated, and destructors
+only ever run against the clones. This is the same mechanism libstdc++ uses
+for a leaked rep. Not yet tried. **[O]**
+
+`FUN_4005e022` separately gates auto-scrolling the list to the active row on
+`param_1[0x73] + 1 < 8`; that is cosmetic — an unpatched eighth row would fail
+to auto-scroll rather than crash. **[O]**
+
+The list vectors are rebuilt every time `MachineSelectionView` is constructed,
+not once at static init: hooking `FUN_400607b2`, `FUN_40051fbc` and
+`FUN_4005224c` on a run resumed from `snapshots/boot400M.snap` shows all three
+firing ~60M instructions in. So a patch to the rodata tables or the descriptor
+array can be tested by poking guest memory after a resume — no cold boot
+needed. `FUN_4005e022` does *not* fire on an idle post-intro run, so the rows
+are built but never drawn without navigation. **[V]**
 
 Still open: what the literal IDs (`0xca`-`0xfe`) mean, and how `machine_type`
 reaches the six callers. **[O]**
