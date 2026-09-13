@@ -2,16 +2,42 @@
 
 This thread continues `HANDOVER-2026-09-13-sharc-and-repack.md`. Goal A (the
 repack chain) is closed to the limit of what can be checked without hardware.
-This thread is Goal B: getting a new machine into the Digitakt II UI.
-Everything established is in `docs/FINDINGS.md` — "The ColdFire machine
-dispatch" and its subsection "The display names are a separate table". Read
-those, not this file, for facts.
+This thread is Goal B. Everything established is in `docs/FINDINGS.md` — "The
+ColdFire machine dispatch" and its subsection "The display names are a
+separate table". Read those, not this file, for facts.
+
+## The goal, and how far "done" is
+
+**A new machine on the Digitakt II that appears in the machine list, can be
+selected, and makes a sound that the seven stock machines do not.**
+
+That is a ladder, and it is worth being explicit about which rung the work is
+on, because the four patches below only reach rung 2:
+
+1. **Listed** — an eighth row appears in MACHINE SEL with its own name.
+2. **Selectable** — selecting it does not crash, and the track plays. At this
+   rung the machine is a *clone*: the cave descriptor copies entry 6's nine
+   parameter IDs verbatim, so it behaves exactly like MANUAL SLICE and only
+   the name differs. This is deliberate — a known-good payload while the
+   plumbing is proven.
+3. **Distinct behaviour** — its own parameter set. The nine literal IDs in the
+   descriptor (`0xca`-`0xfe` across the stock entries) are not decoded yet; we
+   do not know what they select or what a valid new combination would be. MIDI
+   (entry 5) carries all nine zeroed, which proves they are not mandatory but
+   says nothing about what they mean.
+4. **A new algorithm** — DSP code the SHARC does not already run. This needs
+   the SHARC assembler and semantic model that do not exist, and is the
+   deepest item in the whole project. A machine that reuses an existing DSP
+   mode with different parameters avoids it entirely.
+
+So: the four patches below get to rung 2. Rung 3 is the next real research
+question and is not started. Rung 4 is out of scope for a first machine.
 
 ## Where it stands
 
 An eighth machine is dispatched and named in the emulator, proven by direct
 in-guest call for all nine dispatch inputs. It is not yet visible on screen.
-Four patches are needed; two are done:
+Four patches get to rung 2 above; two are done:
 
 | # | patch | status |
 |---|---|---|
@@ -69,11 +95,17 @@ calling it in-guest.
    bound followed by a base address — and between them have eleven callers.
    Grep the image for that instruction shape to find any sibling accessors in
    one pass, rather than discovering them one crash at a time.
-2. Implement patches 3 and 4. Both are the same shape as 1 and 2: a relocated
-   table plus one or two immediates.
-3. Convert the whole thing to a real image patch through `tools/patchimg.py`
+2. Implement patches 3 and 4, which reaches rung 2 — an eighth machine listed,
+   selectable, and sounding like MANUAL SLICE. Both are the same shape as 1
+   and 2: a relocated table plus one or two immediates. The two constants are
+   already located: `FUN_4005d7b8`'s `moveq #6` at `0x4005d7ca` (type 7 must
+   return group `1`, not `0`) and `FUN_400dcc50`'s `moveq #6` at `0x400dcc50`
+   plus its `lea.l $401fbc50.l` at `0x400dcc60`.
+3. Decode the descriptor's nine parameter IDs — rung 3, and the first thing
+   that makes the machine actually different rather than a renamed clone.
+4. Convert the whole thing to a real image patch through `tools/patchimg.py`
    and `dt2/build.py`, and put it through `tools/roundtrip.py`.
-4. Only then hardware — and the standing advice from the previous handover
+5. Only then hardware — and the standing advice from the previous handover
    still holds: prove recovery mode while the device is healthy, then flash
    an unmodified rebuild before anything patched.
 
