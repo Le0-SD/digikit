@@ -282,33 +282,106 @@ common body — is what a table of similar-signature handlers looks like. It is
 consistent with machines. It is equally consistent with eleven unrelated RPC
 operations.
 
-The runtime code that indexes the table was *not* found. The earlier search
-failed because it looked for the table's address in the `0x12`/`0x1c`/`0xb8`
-code spaces; the table actually lives at byte `0x282577c4`. That search is now
-worth redoing against the correct address.
+The runtime code that indexes the table was **not** found, and the obvious
+mechanism is now ruled out rather than merely unsearched. A full
+instruction-level scan — decoding every immediate-bearing instruction type
+across 99.5% of Digitakt's loaded bytes and 99.8% of Digitone's, 41,341 and
+85,257 absolute immediates respectively — finds the table's address nowhere.
+Nor does any of the 11 handler addresses appear as an immediate, on either
+device. The one tempting near-miss cluster turned out to be the handler
+bodies loading local self-references.
 
-### B.6 Where this actually leads
+So the table is reached through a pointer that is computed or fixed up at
+load time, not one baked into an instruction. Recovering it needs data-flow,
+not another address search.
 
-"RPC dispatcher" is the most useful thing found this session, because it names
-the seam between the two processors — and the *other* side of that seam is
-fully readable. `docs/FINDINGS.md` already records `Digisharc::rpcMsgHeader_t`
-among the shared structs in MAIN OS, on the ColdFire, where Capstone works, the
-emulator boots, and symbol-ish string tables exist.
+### B.6 The ColdFire side of the seam, and one retraction
 
-So the tractable path is not more SHARC archaeology. It is:
+**Retraction first.** `0x40128c7c` is not the ColdFire→SHARC transport. It is
+a blocking `usleep`, backed by DMA Timer 1 — Ghidra's own symbols name
+`0xFC074000` `DTIM1_DTMR` and `0xFC074004` `DTIM1_DTRR`, and all seven of its
+callers pass a bare microsecond count. `emu/dspboot.py`'s body already said
+the argument was a timeout; its title said "transport", and the title is what
+propagated.
 
-1. Find the ColdFire code that constructs and sends RPC messages.
-2. Recover the message-type enum from it — that is a small integer space.
-3. Match those message types against these 11 handlers, in order.
+The real path, and it matches `emu/dsp.py`'s model exactly:
 
-If the enum has 11 entries and its names are machine-shaped, the question is
-answered from the readable side of the chip. If it has 11 entries that are
-plainly protocol operations (set-param, load-kit, note-on), then the machine
-dispatch is one level deeper and we will know where to look next. Either
-outcome is decisive, and the work happens on the processor this project already
-understands.
+```c
+FUN_400cf4a8:  _DAT_8c00000a = 0x80;
+               do { } while ((_DAT_8c000002 & 1) == 0);   // ready line
+               _DAT_8c000002 = (ushort)param_1 << 8;
+```
 
-### B.4 Honest cost of Goal B
+Above it, `FUN_400cfd40` takes a mutex, pushes one 4 KB page, then sleeps
+100 µs — the same 100 µs `emu/dsp.py` records. Everything reaching the SHARC
+goes through exactly three callers of it:
+
+- `FUN_40146148` — bulk 4 KB page upload.
+- `FUN_4014653c` / `FUN_401465a4` — build a 4 KB buffer and send it with
+  `cmd = 0xFFFFFFFF`, the sentinel `emu/dsp.py` names.
+- `FUN_4014666c` — worker task on mailbox `0x40588f44`: 32 KB chunks, stereo
+  de-interleave into two page bases, re-queued until drained.
+
+**That cluster is the sampler, not the parameter RPC.** What looked like an
+opcode in the message header is a voice index — its callers walk arrays of
+1024 slots. It fits the SHARC-side assert from
+`lib/esp5-dsp/dsp-lib/sampler/digitakt_rompler_update.c`, and it means the
+sample-streaming path is now understood end to end.
+
+The parameter RPC is still unlocated. `Digisharc::rpcMsgHeader_t`,
+`rpcMsgOpReq_t` and `rpcMsgPingRequest_t` exist as RTTI in both images, but
+their typeinfo has no code xrefs — Ghidra never linked them to a vtable. And
+since all SHARC traffic goes through those three functions and none of them
+carries a parameter message, either parameter changes ride `FUN_4014653c`
+with a different shape, or they use a path not yet found. That is a narrow
+question, not an open hunt.
+
+### B.7 SHARC is now in Ghidra
+
+`tools/sharc_import.py` builds a Ghidra program from the loader's own block
+targets. Three things the format does not advertise had to be handled: the
+boot stream writes some regions more than once (so blocks are merged and
+payloads replayed in stream order), a `byte_count` 0 block carries a
+short-word execution address rather than a loader byte address, and the 32 MB
+DDR clear has to be skipped rather than reserved.
+
+Nothing in the processor module knows where code starts, so auto-analysis
+alone disassembles **nothing**. Seeded at the entry point, the 11 handlers
+and the call targets `tools/sharcscan.py` recovers, it reaches **289
+functions** on Digitakt.
+
+The SLEIGH generator also grew real control flow. It emitted p-code for 2 of
+the 10 documented control-flow types; it now does 8a, 9a, 9b and 11a as well
+— which is what took function recovery from 232 to 289. Two things there had
+to be measured rather than assumed:
+
+- **Which `cond` means "always"**: 31, dominant for 8a (48.8% / 47.2%) and 9a
+  (83.7% / 44.8%) across both images. Except `11a`, which cannot encode 31 at
+  all — its opcode fixes bit 32, the low bit of its own cond field, and
+  `sleigh` rejects the constructor as an impossible pattern. Its
+  unconditional form is 30, independently the measured dominant value there
+  (87.5%). The encoding constraint and the histogram agree.
+- **That `10a` must be excluded.** Its opcode mask constrains two bits, and
+  its cond field is near-uniform in real firmware (top value 14.9%, the rest
+  ~5% each) where genuine control-flow types spike hard at 31. Most 10a
+  matches are not instructions; making them indirect jumps would have
+  corrupted the analysis.
+
+`11c`, the compact 16-bit return, is still excluded as `uncertain`. Only 40
+of the 48-bit returns appear in 224 KB of code, so most returns are the form
+the spec cannot see — which is why function bounds remain poor.
+
+`tools/ghidraq.py` queries either processor's program (strings, symbols,
+xrefs, callers, decompile, read), chaining queries through one JVM load.
+
+**What this does and does not buy.** It buys a browsable SHARC corpus with a
+real call graph, and the ability to prove a negative at 99.5% coverage
+instead of guessing — which is how B.5's dead end got settled. It does not
+resolve data references: the spec has no p-code for immediate loads or memory
+loads, so Ghidra sees `call [I3]` and cannot say what `I3` holds. That single
+gap is why the dispatch question is still open.
+
+### B.8 Honest cost of Goal B
 
 Even with a working decoder, adding a machine needs, in order: read the dispatch
 table's indexing code; understand the per-machine algorithm's calling
@@ -326,28 +399,41 @@ flash-and-listen iteration loop is still the thing that makes it expensive.
 
 ## Recommended order
 
-1. ~~Re-read the Type5b_move figure crop.~~ **Done — see B.2/B.3.** The decoder
-   now runs 14–42x further on real firmware than on noise.
-2. ~~Disassemble the code indexing the SHARC dispatch table.~~ **Partly done —
-   see B.4/B.5.** The table is confirmed and self-labelled "RPC dispatcher";
-   the load map is now exact; the indexing code was not found, but the search
-   used the wrong address space and is worth redoing against byte `0x282577c4`.
-3. **Recover the RPC message-type enum from the ColdFire side** (see B.6). This
-   is the highest-value next step and it runs on the processor we can already
-   read, boot and instrument.
-4. Re-render the `Type3a` and `Type25c_rframe` figures at 400 DPI. Same defect
-   class as the Type5b_move one just fixed; they are now the top stall cause.
-5. Build the repack chain, `[W]` items first, store-only aPLib packer included.
-6. Trace the content checksum, then the HMAC derivation, then the packet
-   checksum — same method as the CRC-32 oracle.
-7. Move DT2-specific addresses into `devices/*.toml`; make the patcher
-   device-parameterised.
-8. Turn `patchimg.py`'s audit manifest into a readable patch format and add
-   selection + overlap checking.
-9. Gate the whole thing on a repack → re-extract → byte-identical round trip
-   before anything touches hardware.
+Goal A has had no work at all, and it gates everything: nothing this project
+produces can reach hardware without it, including any machine change that
+might eventually succeed. It is also the only part with no research risk.
+Start there.
 
-Steps 5–9 deliver the patching framework for both devices. Steps 2–3 decide
-whether machines are reachable at all; steps 1–2 are done and moved the
-question from "can we read any SHARC code" to "which RPC message is which",
-which is a much better problem to have.
+1. **Write the store-only aPLib packer.** The piece that sounds hardest and is
+   about forty lines — tag bit `0`, literal byte, repeat, end code, no LZ77
+   matching. Byte-exact packing was already established as unnecessary.
+2. The three mechanical writers: per-section header, ELE3 table, 8-in-7
+   encode. Each is the direct inverse of a reader in `dt2/container.py`.
+3. **Build the round-trip gate early**: repack → re-extract with the device's
+   own depacker → assert all five sections byte-identical. This is what makes
+   flashing defensible, and it exists as a test before anything else needs to.
+4. Trace the content checksum at `0x40003ca6`, then the HMAC key derivation at
+   `0x80005e2a`, then the per-packet SysEx checksum — the last of which has
+   never been recovered, because `decode_syx()` discards byte 125. Same method
+   that produced the CRC-32 and depacker oracles byte-exact, twice.
+5. Move the DT2-1.15C addresses into `devices/*.toml`, so Digitone can be
+   patched at all.
+6. Turn `patchimg.py`'s audit manifest into a patch format that can be read
+   back, and add selection plus overlap checking.
+
+Then, on the DSP side, in this order:
+
+7. **Re-read the `11c` figure at 400 DPI.** Same defect class as the
+   Type5b_move fix that worked. It repairs function bounds, which are poor
+   today because most returns are invisible.
+8. **Data semantics for the immediate-move and load types.** The largest
+   single unlock left: it is what would let Ghidra resolve `call [I3]`, and
+   therefore what answers B.5. Scope it deliberately — it is a substantial
+   job, not an afternoon.
+9. Locate the parameter RPC on the ColdFire side (B.6). Narrow, and it runs on
+   the processor that is already readable.
+
+And one standing caveat that none of the above removes: there is still no
+SHARC emulator, so every DSP change is flash-and-listen on hardware, with no
+acceptance oracle of the kind Goal A enjoys. That, not readability, is what
+makes new machines expensive.
