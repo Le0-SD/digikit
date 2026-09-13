@@ -264,6 +264,12 @@ USAGE = """usage: python -m emu.run [firmware.syx] [snapshot] [options]
   --weakptr    step over the weak_ptr branches that freeze the main task
   --slc        force the eMMC SLC flag (unnecessary with the eSDHC model)
   --scale N    integer panel zoom (default: fits your screen)
+  --exact      exact `count=` stepping instead of the default block-bounded
+               stepping: 7.6x slower, but every timer lands on the instruction
+               it was due at. Use it to compare a run against bootcheck.
+  --unthrottled
+               run as fast as the host allows, instead of pacing to the
+               hardware's own clock
   --accept-sections
                confirm the extracted sections match the firmware you named
   --check      resolve and validate everything, then stop without running
@@ -307,6 +313,14 @@ def main(argv):
 
     gui_flags = [f for f in flags
                  if f not in ('--accept-sections', '--check')]
+    # `--scale` is the one flag here that takes a value, and the value does
+    # not start with `--`, so the split above left it behind in `rest` and
+    # then dropped it. emu.gui would receive a bare `--scale` and die reading
+    # the argument after it. Put it back where it belongs.
+    if '--scale' in gui_flags:
+        i = argv.index('--scale')
+        if i + 1 < len(argv):
+            gui_flags.insert(gui_flags.index('--scale') + 1, argv[i + 1])
     cmd = [sys.executable, '-m', 'emu.gui', snapshot, '--syx', syx] + gui_flags
     print('$ %s\n' % ' '.join(cmd), flush=True)
     return subprocess.call(cmd)
