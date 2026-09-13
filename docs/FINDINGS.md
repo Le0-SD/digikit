@@ -226,6 +226,9 @@ Entry 5 (MIDI) is the one irregular record — all nine ID fields zero and no
 tag, which shows the IDs are not mandatory. Entries 3 and 6 carry six IDs
 rather than seven. **[V]**
 
+Those are **not** the names the UI shows — they look like internal or legacy
+labels. See "The display names are a separate table" below. **[C]**
+
 The UI's list length is not a numeral. `MachineSelectionView` (`FUN_400607b2`)
 builds two `std::vector<int>` by copying a rodata range, so the count is a pair
 of pointer immediates; `MachineListView` (`FUN_4005e022`) enumerates nothing
@@ -465,6 +468,70 @@ are built but never drawn without navigation. **[V]**
 
 Still open: what the literal IDs (`0xca`-`0xfe`) mean, and how `machine_type`
 reaches the six callers. **[O]**
+
+### The display names are a separate table **[V]**
+
+Seeing the machine-select screen render for the first time showed three of the
+seven names disagreeing with the descriptors: position 0 reads `ONESHOT` where
+the descriptor says `SAMPLE`, position 4 reads `SLICE` where index 6 says
+`MANUAL SLICE`, and position 5 reads `GRID` where index 4 says `SLICED SMP`.
+
+The displayed names come from a second, purely static table at `0x401fbc50` —
+7 rows of 12 bytes, three big-endian `char*` each, indexed by the **raw**
+machine type rather than the UI's display order. These are plain
+NUL-terminated C strings, with no COW `std::string` header, so they are a
+different mechanism from the descriptor's own name fields: **[V]**
+
+| idx | long | abbrev |
+|---|---|---|
+| 0 | `Oneshot` | `ONE` |
+| 1 | `Werp` | `WRP` |
+| 2 | `Stretch` | `STRE` |
+| 3 | `Repitch` | `RPI` |
+| 4 | `Grid` | `GRD` |
+| 5 | `MIDI` | `MIDI` |
+| 6 | `Slice` | `SLC` |
+
+Row 5 reuses one pointer for both columns, mirroring MIDI's irregularity in
+the descriptor array. Row 6 has a third non-null pointer (`0x4022c7cb`) that
+the others lack; unexplained. **[O]**
+
+`ONESHOT` was not findable by grep because the stored literal is `Oneshot` —
+the UI upper-cases it at draw time.
+
+The accessor is `FUN_400dcc50`, and it has the same shape as the dispatch:
+
+```
+400dcc50  moveq  #$6, d1           ; the bound, again one byte
+400dcc52  move.l $4(a7), d0
+400dcc56  cmp.l  d0, d1
+400dcc58  bcs.b  ...               ; out of range -> "ERROR"
+          lea.l  $401fbc50.l, a0   ; the table base
+```
+
+It is called from `FUN_4005da40`, the invoker half of a `std::function`-style
+closure built in `MachineListView`'s constructor and stored per row for lazy
+evaluation at draw time — which is exactly why an idle or headless run never
+observes it, even though the data is static ROM the whole time.
+
+**This is a fifth bound an eighth machine must clear**, on top of the dispatch
+bound and the four `pea` immediates. And the name table cannot be extended in
+place: `0x401fbca4`, immediately after row 6, is the base of another table,
+referenced by `lea.l $401fbca4.l, a0` at `0x400dcb26`. The 194 zero bytes there
+are that table's contents, not slack. So the name table has to be relocated to
+the cave as well, with `FUN_400dcc50`'s `lea` immediate repointed. **[V]**
+
+The complete recipe for a visible eighth machine, then, is four patches:
+
+1. **list** — relocate table D to the cave with an eighth entry, repoint the
+   two `pea` immediates. Done and proven.
+2. **dispatch** — trampoline `FUN_400caf48` for `type == 7`, descriptor and
+   `std::string` reps in the cave. Done and proven.
+3. **grouping** — `FUN_4005d7b8` must give type 7 a group the UI recognises;
+   as it stands type 7 falls to group `0` and boot breaks. Not done.
+4. **display name** — relocate the `0x401fbc50` table to the cave with an
+   eighth row, repoint the `lea` at `0x400dcc50`, and raise its `moveq #6`
+   bound. Not done.
 
 ## Emulation
 
