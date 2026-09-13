@@ -191,9 +191,13 @@ def disassemble(data: bytes, start_offset: int = 0, count: Optional[int] = None,
             hypotheses = identify(word0, 16, include_uncertain=True)
             hypotheses = [h for h in hypotheses if get_type(h)["uncertain"]]
             if group is not None:
+                if word1 is None:
+                    word1_desc = "word1 could not be read -- the buffer ended before the second word"
+                else:
+                    word1_desc = f"word1={word1:#06x}"
                 reason = (
                     f"word0 matches multi-word group {group} but the second-word test did not "
-                    f"resolve it (word1={word1:#06x} if read); see LENGTH_RULE_MULTIWORD "
+                    f"resolve it ({word1_desc}); see LENGTH_RULE_MULTIWORD "
                     f"residual_ambiguity for {group}"
                 )
             elif hypotheses:
