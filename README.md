@@ -20,10 +20,12 @@ It boots. The main OS runs, spawns its RTOS tasks, reaches its message loop and
 parameter row, the sample page with its knob widgets — into a 128x64 panel you
 can watch live, or dump to a PNG with `emu.panel`.
 
-It is a research instrument, not a Digitakt you can play. It runs at roughly
-2M instructions/second against the real part's ~264M, so a nominal 30 Hz UI
-draws at well under one frame per second. See **What works, and what does
-not** below for what that rules out.
+It is a research instrument, not a Digitakt you can play, but it is no longer
+too slow to watch. Block-bounded stepping reaches roughly 10M instructions a
+second — ahead of the 4.68M the timer models pace the firmware's own clock to,
+though still far short of the real part's ~264M — so the panel renders at
+20–25 fps and the GUI spends the surplus sleeping, keeping the emulated clock
+and the wall clock together. See **What works, and what does not** below.
 
 ## Quick start
 
@@ -33,11 +35,39 @@ firmware file in the working directory.
 ```sh
 uv sync
 tools/install-patched-unicorn.sh
-uv run python -m emu.run Digitakt_II_OS1.15C.syx --weakptr
+
+# Digitakt II
+uv run python -m emu.run Digitakt_II_OS1.15C.syx
+
+# Digitone II
+uv run python -m emu.run Digitone_II_OS1.10E.syx
 ```
 
 That checks each prerequisite, builds the boot snapshots on first run (one cold
 boot from reset, a few minutes — it happens once), and opens the live panel.
+
+**No flags are needed.** Three you will see in older notes are not:
+
+- `--slc` forces the eMMC SLC flag, which the eSDHC storage model already
+  supplies. `build()` turns that model on by default.
+- `--unthrottled` used to be how you got a watchable frame rate. It is now the
+  wrong choice: the emulator outruns the firmware's clock, so without the flag
+  the GUI paces itself to real time and the sequencer keeps proper tempo, and
+  with it everything runs about 1.5x too fast.
+- `--weakptr` steps over the weak_ptr branches that used to freeze the main
+  task. It is a fallback for a boot that stalls, not a default.
+
+`--exact` is worth knowing about: it swaps block-bounded stepping for exact
+`count=` stepping, about 5x slower, and is what to use when comparing a run
+against `tools/bootcheck.py`.
+
+**One firmware at a time.** `sections/` holds the decompressed image of
+whichever `.syx` was extracted last, and the filenames are fixed, so switching
+between the two devices re-extracts. `emu.run` checks this and refuses rather
+than running one firmware under the other's name; do what it tells you. To run
+one build while another occupies `sections/`, point `DT2_SECTIONS` at a second
+directory instead.
+
 Unicorn needs the required SR-read patch; see [docs/UNICORN.md](docs/UNICORN.md).
 `uv sync` can restore stock Unicorn, which the emulator deliberately rejects
 until the installer is rerun.
