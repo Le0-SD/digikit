@@ -1139,8 +1139,9 @@ Ghidra or disassembly output and it was not re-checked.
   exception. **[V]** A linear sweep finds no `move ACC,ACC` and no MAC with
   load in either handler (the 31 and 24 uses are elsewhere), so the
   handlers can run in Unicorn. **[D]** The frame build, though, reaches a
-  MAC with load in `FUN_400db9aa` at `0x400db9e0`, which Unicorn cannot run
-  (see "The frame capture runs; the frame build is switched off"). **[C]**
+  MAC with load in `FUN_400db9aa` at `0x400db9e0`, which stock Unicorn
+  2.1.4 cannot run; `patches/unicorn-2.1.4-m68k-emac-mac-load.patch` fixes
+  it (see "The frame capture runs; the frame build is switched off"). **[C]**
 
 ### Digitone II 1.11: the same link and the same machine table shape **[V][D][O]**
 
@@ -1262,9 +1263,29 @@ Ghidra or disassembly output and it was not re-checked.
   `a891 00c6`, `mac.w D6u,D0u,(A1),D4,ACC0`: a MAC with load. **[V]** On
   those two words alone Unicorn 2.1.4 (CFV4E) stops with `UC_ERR_EXCEPTION`
   and leaves PC, A1 and D4 unchanged, where the CPU adds D6u*D0u to ACC0
-  and loads `(A1)` into D4. **[V]** So the exception dump comes from the
-  emulator, not the firmware, and an emulated frame needs MAC with load in
-  Unicorn first. **[C]**
+  and loads `(A1)` into D4. **[V]** So the exception dump came from the
+  emulator, not the firmware. **[C]**
+- QEMU's MAC translation, which Unicorn 2.1.4 uses, has four faults in the
+  load forms: it faults when the Ry number has bit 0 or 1 set, reads a
+  data-register Rx from D2, adds for MSAC, and applies MASK to every load
+  address. `patches/unicorn-2.1.4-m68k-emac-mac-load.patch` fixes them, and
+  `tests/test_unicorn_emac.py` checks four load forms against the CFPRM.
+  **[V]** A sweep of the two code ranges finds about 160 MAC and MSAC with
+  load, about 60 of them with such an Ry; the sweep may count some data.
+  **[D]**
+- With that patch, `tools/sharcframe.py snapshots/boot400M.snap --passes 3
+  --poke 0x4094e4f4=0` runs all three passes to the handler's `rte` with one
+  driver call each and no exception; `0x400db9e0` runs 1836 times. **[V]**
+  Pass 0 sends 2050 zero bytes. Passes 1 and 2 send the same bytes, 46 of
+  them non-zero: `0002` at `+0x00`, `3840` at `+0xd8`, 16 slots of `0x60`
+  bytes starting at `+0x11c`, `+0x17c`, ... `+0x6bc`, each `0200 0000 0200`
+  then zeros, and near
+  the end `4000 1130` at `+0x736`, `0008` at `+0x7dc`, `0012` at `+0x7e0`,
+  `0002` at `+0x7e8`, `7fff ffff` at `+0x7f0` and `0001` at `+0x800`. **[V]**
+- After those passes, rows 1 to 15 of `0x80005b50 + i*0x8e` are non-zero and
+  each starts `02 00 00 00`; row 0 and the tables at `0x800047fc` and
+  `0x80003340` stay zero. **[V]** Why pass 0 sends zeros, and what the slot
+  words mean, is not known. **[O]**
 
 ## Emulation
 

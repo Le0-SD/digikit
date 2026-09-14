@@ -1,5 +1,6 @@
 """tools/sharcframe.py frame comparison (capture needs a snapshot)."""
 
+import argparse
 import os
 import sys
 import unittest
@@ -16,6 +17,14 @@ class RangesTest(unittest.TestCase):
 
     def test_length_difference(self):
         self.assertEqual(list(sharcframe.ranges(b'ab', b'abcd')), [(2, 4)])
+
+    def test_parse_poke(self):
+        self.assertEqual(sharcframe.parse_poke('0x4094e4f4=0'), (0x4094e4f4, bytes(4)))
+        self.assertEqual(sharcframe.parse_poke('0x10=0x12345678'), (0x10, bytes.fromhex('12345678')))
+
+    def test_parse_poke_needs_a_value(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            sharcframe.parse_poke('0x4094e4f4')
 
 
 if __name__ == '__main__':

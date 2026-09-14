@@ -2,7 +2,7 @@
 
     uv run python tools/sharcframe.py SNAPSHOT [--syx SYX] [--passes N]
         [--limit N] [--out-dir out/sharcframe] [--name NAME]
-        [--compare FRAME.bin] [--json OUT]
+        [--compare FRAME.bin] [--json OUT] [--poke ADDR=LONG]...
 
 Digitakt II 1.15C. The vector-191 handler 0x4002d652 builds the frame and
 calls the DSPI2 driver FUN_400cf9c4(tx_len, tx, rx_len, rx), but the
@@ -18,6 +18,10 @@ Each pass writes NAME-passN.bin with the TX bytes of the first driver call
 (NAME-passN-K.bin for later calls in the same pass). --compare prints the
 byte ranges where the pass 0 frame differs from FRAME.bin. Exit status is 0
 when every pass returned and reached the driver.
+
+--poke writes a big-endian long into guest memory before the first pass;
+--poke 0x4094e4f4=0 opens the frame-build gate (docs/FINDINGS.md, "The frame
+capture runs; the frame build is switched off").
 """
 
 import argparse
@@ -112,6 +116,14 @@ def ranges(a, b):
         yield n, max(len(a), len(b))
 
 
+def parse_poke(text):
+    """'0x4094e4f4=0' -> (0x4094e4f4, b'\\x00\\x00\\x00\\x00')."""
+    addr, sep, value = text.partition('=')
+    if not sep:
+        raise argparse.ArgumentTypeError('want ADDR=LONG, got %r' % text)
+    return int(addr, 0), struct.pack('>I', int(value, 0) & 0xFFFFFFFF)
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description='Capture the ColdFire-to-SHARC frame from a snapshot.')
     p.add_argument('snapshot')
@@ -123,6 +135,8 @@ def parse_args(argv=None):
     p.add_argument('--name')
     p.add_argument('--compare')
     p.add_argument('--json')
+    p.add_argument('--poke', action='append', default=[], type=parse_poke, metavar='ADDR=LONG',
+                   help='write a big-endian long before the first pass; repeatable')
     return p.parse_args(argv)
 
 
@@ -131,6 +145,9 @@ def main(argv=None):
     name = args.name or os.path.splitext(os.path.basename(args.snapshot))[0]
     m, at = restore(args.snapshot, args.syx)
     try:
+        for addr, data in args.poke:
+            m.uc.mem_write(addr, data)
+            print('poke %#010x = %s' % (addr, data.hex()))
         results = capture(m, at, args.passes, args.limit)
     finally:
         m.close()
@@ -161,7 +178,9 @@ def main(argv=None):
             print('  +%#06x-+%#06x  %s | %s' % (s, e, a[s:e][:32].hex(), b[s:e][:32].hex()))
     if args.json:
         with open(args.json, 'w') as f:
-            json.dump({'snapshot': args.snapshot, 'results': results}, f, indent=1)
+            json.dump({'snapshot': args.snapshot,
+                       'poke': [['%#010x' % a, d.hex()] for a, d in args.poke],
+                       'results': results}, f, indent=1)
     ok = results and all(r['stop'] == 'returned' and r['calls'] for r in results)
     return 0 if ok else 1
 
