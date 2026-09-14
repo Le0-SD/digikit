@@ -9,6 +9,10 @@ so each case sets them with instructions and copies them back into D and A
 registers. Expected values come from the ColdFire Programmer's Reference
 Manual (docs/refs/CFPRM.pdf, chapter 6), not from running Unicorn.
 
+MAC and MSAC with load run as the manual says only with
+patches/unicorn-2.1.4-m68k-emac-mac-load.patch; stock Unicorn 2.1.4 fails
+every LOAD_CASES entry.
+
 Two differences from the manual are pinned as known gaps, so a Unicorn
 change that fixes or alters them fails here and gets noticed.
 """
@@ -20,6 +24,7 @@ from unicorn import UC_ARCH_M68K, UC_MODE_BIG_ENDIAN, UC_PROT_ALL, Uc, UcError
 from unicorn import m68k_const
 
 CODE = 0x10000
+DATA = 0x20000
 
 # (name, words, initial registers, instruction count, expected registers)
 CASES = (
@@ -83,17 +88,81 @@ CASES = (
     ),
 )
 
+# MAC and MSAC with load (p.6-3 to 6-5, p.6-22 to 6-23). D2 holds a decoy:
+# stock Unicorn reads a data-register Rx from D2 whatever the extension
+# word says.
+# (name, words, initial registers, memory, instruction count, expected registers)
+LOAD_CASES = (
+    (
+        # move.l D7,MACSR; move.l D5,ACC0; mac.w D6u,D0u,(A1),D4,ACC0;
+        # move.l ACC0,D1. This is Digitakt II 0x400db9e0. ACC0 + 3 * 5 ->
+        # ACC0 and (A1) -> D4; ext bit 5 is 0, so MASK (0 after reset) is
+        # not used.
+        "mac.w with load, Ry = D6",
+        ["a907", "a105", "a891", "00c6", "a181"],
+        {
+            "D7": 0, "D5": 0, "D6": 0x00030002, "D0": 0x00050004,
+            "D2": 0x00090008, "D4": 0xAAAAAAAA, "A1": DATA,
+        },
+        {DATA: 0x0000002A},
+        4,
+        {"D1": 15, "D4": 0x0000002A, "A1": DATA},
+    ),
+    (
+        # move.l D7,MACSR; move.l D5,ACC0; mac.l D4,D0,(A1),D5,ACC0;
+        # move.l ACC0,D1. ACC0 + 7 * 5 -> ACC0 and (A1) -> D5.
+        "mac.l with load reads Rx from the extension word",
+        ["a907", "a105", "aa91", "0804", "a181"],
+        {"D7": 0, "D5": 0, "D0": 5, "D2": 9, "D4": 7, "A1": DATA},
+        {DATA: 0x0000002A},
+        4,
+        {"D1": 35, "D5": 0x0000002A},
+    ),
+    (
+        # move.l D7,MACSR; move.l D5,ACC0; move.l D1,MASK;
+        # msac.w D4u,D0u,(A2)+&,D5,ACC0; move.l ACC0,D1.
+        # ACC0 - 7 * 5 -> ACC0. Ext bit 5 applies MASK: 0x21010 & 0xFFFF0FFF
+        # is 0x20010, and 0x21010 itself is not mapped.
+        "msac.w with load subtracts and applies MASK",
+        ["a907", "a105", "ad01", "aa9a", "01e4", "a181"],
+        {
+            "D7": 0, "D5": 100, "D1": 0x00000FFF, "D0": 0x00050004,
+            "D2": 0x00090008, "D4": 0x00070006, "A2": 0x21010,
+        },
+        {DATA + 0x10: 0x11223344},
+        5,
+        {"D1": 65, "D5": 0x11223344},
+    ),
+    (
+        # move.l D7,MACSR; move.l D5,ACC0; mac.w D6l,D0l,-(A2),D5,ACC0;
+        # move.l ACC0,D1. ACC0 + 2 * 4 -> ACC0, A2 - 4 -> A2, (A2) -> D5.
+        "mac.w with load, predecrement",
+        ["a907", "a105", "aaa2", "0006", "a181"],
+        {
+            "D7": 0, "D5": 0, "D6": 0x00030002, "D0": 0x00050004,
+            "D2": 0x00090008, "A2": DATA + 0x20,
+        },
+        {DATA + 0x1C: 0x11223344},
+        4,
+        {"D1": 8, "D5": 0x11223344, "A2": DATA + 0x1C},
+    ),
+)
+
 
 def reg(name):
     return getattr(m68k_const, "UC_M68K_REG_" + name)
 
 
-def run(words, init, count):
+def run(words, init, count, memory=None):
     code = b"".join(struct.pack(">H", int(word, 16)) for word in words)
     uc = Uc(UC_ARCH_M68K, UC_MODE_BIG_ENDIAN)
     uc.ctl_set_cpu_model(m68k_const.UC_CPU_M68K_CFV4E)
     uc.mem_map(CODE, 0x1000, UC_PROT_ALL)
     uc.mem_write(CODE, code)
+    if memory:
+        uc.mem_map(DATA, 0x1000, UC_PROT_ALL)
+        for address, value in memory.items():
+            uc.mem_write(address, struct.pack(">I", value))
     uc.reg_write(reg("SR"), 0x2700)
     for name, value in init.items():
         uc.reg_write(reg(name), value)
@@ -102,17 +171,29 @@ def run(words, init, count):
 
 
 class UnicornEmacTest(unittest.TestCase):
+    def check(self, name, uc, end, expect):
+        self.assertEqual(uc.reg_read(reg("PC")), end, "stopped early")
+        for register, value in expect.items():
+            self.assertEqual(
+                uc.reg_read(reg(register)) & 0xFFFFFFFF,
+                value,
+                "%s: %s = %#010x" % (name, register, uc.reg_read(reg(register))),
+            )
+
     def test_cases(self):
         for name, words, init, count, expect in CASES:
             with self.subTest(name):
                 uc, end = run(words, init, count)
-                self.assertEqual(uc.reg_read(reg("PC")), end, "stopped early")
-                for register, value in expect.items():
-                    self.assertEqual(
-                        uc.reg_read(reg(register)) & 0xFFFFFFFF,
-                        value,
-                        "%s: %s = %#010x" % (name, register, uc.reg_read(reg(register))),
-                    )
+                self.check(name, uc, end, expect)
+
+    def test_load_cases(self):
+        for name, words, init, memory, count, expect in LOAD_CASES:
+            with self.subTest(name):
+                try:
+                    uc, end = run(words, init, count, memory)
+                except UcError as exc:
+                    self.fail("%s: %s" % (name, exc))
+                self.check(name, uc, end, expect)
 
     def test_known_gap_macsr_read_keeps_high_bits(self):
         # move.l #$ffffffff,MACSR; move.l MACSR,D0

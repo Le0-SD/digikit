@@ -29,15 +29,24 @@ class UnicornCompatibilityTest(unittest.TestCase):
             patch.object(
                 unicorn_compat, "_run_count_boundary_case", return_value={"pass": True}
             ) as count_run,
+            patch.object(
+                unicorn_compat, "_run_mac_load_case", return_value={"pass": True}
+            ) as mac_run,
         ):
             result = unicorn_compat.evaluate(factory=object())
         self.assertFalse(result["compatible"])
         self.assertEqual(
             list(result["cases"]),
-            ["zero_z_taken", "nonzero_z_clear", "count_boundary_cmp_z"],
+            [
+                "zero_z_taken",
+                "nonzero_z_clear",
+                "count_boundary_cmp_z",
+                "emac_mac_with_load",
+            ],
         )
         self.assertEqual(run.call_count, 2)
         count_run.assert_called_once_with(ANY)
+        mac_run.assert_called_once_with(ANY)
 
     def test_failure_is_actionable_without_patched_runtime(self):
         with patch.object(

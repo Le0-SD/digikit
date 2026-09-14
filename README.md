@@ -68,7 +68,8 @@ than running one firmware under the other's name; do what it tells you. To run
 one build while another occupies `sections/`, point `DT2_SECTIONS` at a second
 directory instead.
 
-Unicorn needs the required SR-read patch; see [docs/UNICORN.md](docs/UNICORN.md).
+Unicorn needs the repo's patches (SR read and CCR sync, EMAC MAC with load);
+see [docs/UNICORN.md](docs/UNICORN.md).
 `uv sync` can restore stock Unicorn, which the emulator deliberately rejects
 until the installer is rerun.
 
@@ -219,12 +220,11 @@ Read `docs/FINDINGS.md` before flashing anything.
 **GPL-2.0-or-later.** See [LICENSE](LICENSE).
 
 This said MIT until 2026-09-13, and could not:
-`patches/unicorn-2.1.4-m68k-hook-ccr-sync.patch` modifies
-`qemu/target/m68k/translate.c` and `qemu/target/m68k/unicorn.c` — QEMU source
-vendored inside Unicorn — so it is a derivative of that code and carries its
-terms. The dependency is not incidental either: `emu.unicorn_compat` refuses to
-run against stock Unicorn, so nothing here works except against the patched
-build. GPL-2.0-or-later is the licence that costs nothing to be right about.
+the patches in `patches/` modify `qemu/target/m68k/translate.c` and
+`qemu/target/m68k/unicorn.c` — QEMU source vendored inside Unicorn — so they
+are derivatives of that code and carry its terms. The dependency is not
+incidental either: `emu.unicorn_compat` refuses to run against stock Unicorn,
+so nothing here works except against the patched build. GPL-2.0-or-later is the licence that costs nothing to be right about.
 
 The licence covers the code in this repository and nothing else. **No Elektron
 firmware is included and none ever should be** — it is copyright Elektron, and

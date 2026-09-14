@@ -1,5 +1,5 @@
 # pyright: reportMissingImports=false
-"""Semantic compatibility check for patched Unicorn m68k CCR behavior."""
+"""Semantic compatibility check for patched Unicorn m68k CCR and EMAC behavior."""
 
 import json
 from functools import lru_cache
@@ -77,6 +77,51 @@ def _run_count_boundary_case(factory):
     return {"pc": pc, "sr": sr, "pass": pc == 0x1002 and sr == 4}
 
 
+def _run_mac_load_case(factory):
+    """MAC with load must run as the manual says (Digitakt II 0x400db9e0).
+
+    Stock Unicorn faults on this Ry (D6) and, with other Ry, reads Rx from D2
+    and ANDs MASK into the address even when the instruction does not ask.
+    """
+    from unicorn import UcError
+    from unicorn.m68k_const import (
+        UC_M68K_REG_A1,
+        UC_M68K_REG_D0,
+        UC_M68K_REG_D1,
+        UC_M68K_REG_D2,
+        UC_M68K_REG_D4,
+        UC_M68K_REG_D5,
+        UC_M68K_REG_D6,
+        UC_M68K_REG_D7,
+        UC_M68K_REG_SR,
+    )
+
+    uc = factory()
+    uc.mem_map(0, 0x10000)
+    # move.l d7,MACSR; move.l d5,ACC0; mac.w d6u,d0u,(a1),d4,ACC0;
+    # move.l ACC0,d1.  ACC0 + 3 * 5 -> ACC0 and (a1) -> d4.
+    uc.mem_write(0x1000, bytes.fromhex("a907 a105 a891 00c6 a181"))
+    uc.mem_write(0x2000, bytes.fromhex("0000002a"))
+    uc.reg_write(UC_M68K_REG_SR, 0x2700)
+    for regid, value in (
+        (UC_M68K_REG_D7, 0),
+        (UC_M68K_REG_D5, 0),
+        (UC_M68K_REG_D6, 0x00030002),
+        (UC_M68K_REG_D0, 0x00050004),
+        (UC_M68K_REG_D2, 0x00090008),
+        (UC_M68K_REG_D4, 0xAAAAAAAA),
+        (UC_M68K_REG_A1, 0x2000),
+    ):
+        uc.reg_write(regid, value)
+    try:
+        uc.emu_start(0x1000, 0x100A, count=4)
+    except UcError as exc:
+        return {"error": str(exc), "pass": False}
+    acc = uc.reg_read(UC_M68K_REG_D1) & 0xFFFFFFFF
+    loaded = uc.reg_read(UC_M68K_REG_D4) & 0xFFFFFFFF
+    return {"acc0": acc, "loaded": loaded, "pass": acc == 15 and loaded == 0x2A}
+
+
 def evaluate(factory=None):
     """Return bounded diagnostics; ``factory`` makes this testable without Unicorn."""
     if factory is None:
@@ -93,6 +138,7 @@ def evaluate(factory=None):
         "zero_z_taken": _run_case(factory, 0, 0xDE),
         "nonzero_z_clear": _run_case(factory, 1, 0x6F),
         "count_boundary_cmp_z": _run_count_boundary_case(factory),
+        "emac_mac_with_load": _run_mac_load_case(factory),
     }
     return {"compatible": all(case["pass"] for case in cases.values()), "cases": cases}
 
@@ -122,7 +168,7 @@ def require_compatible_unicorn():
             name for name, case in result["cases"].items() if not case["pass"]
         )
         raise RuntimeError(
-            "Installed Unicorn fails the m68k CCR compatibility check (%s). "
+            "Installed Unicorn fails the m68k compatibility check (%s). "
             "Run `%s` (uv sync restores stock Unicorn, which this guard rejects)."
             % (failed, INSTALL_COMMAND)
         )

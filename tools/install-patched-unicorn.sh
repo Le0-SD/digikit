@@ -1,11 +1,19 @@
 #!/usr/bin/env bash
-# Build the m68k SR-read and code-hook CCR-sync fixes from official Unicorn 2.1.4.
+# Build the m68k SR-read, code-hook CCR-sync and EMAC MAC-with-load fixes from
+# official Unicorn 2.1.4.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-patch=$root/patches/unicorn-2.1.4-m68k-hook-ccr-sync.patch
 commit=8028ec436f2d9376525352dd38ed9ed6b9f6be10
-patch_sha=56de71acf2adbd5ca2f448095478e65e49fd79d378aeb5b5e4217d2c90f52f4e
+# Applied in this order, each pinned by SHA-256.
+patches=(
+  "$root/patches/unicorn-2.1.4-m68k-hook-ccr-sync.patch"
+  "$root/patches/unicorn-2.1.4-m68k-emac-mac-load.patch"
+)
+patch_shas=(
+  56de71acf2adbd5ca2f448095478e65e49fd79d378aeb5b5e4217d2c90f52f4e
+  ac128dd6836997de55e0d2ad70d7a2978639168090f552c5634da50fddc70bfe
+)
 python=${PYTHON:-$root/.venv/bin/python}
 dry_run=false
 if [[ ${1:-} == --dry-run ]]; then
@@ -24,10 +32,12 @@ fi
   echo "error: interpreter must have unicorn==2.1.4; run uv sync first" >&2
   exit 2
 }
-[[ $(shasum -a 256 "$patch" | awk '{print $1}') == "$patch_sha" ]] || {
-  echo "error: unexpected patch SHA-256: $patch" >&2
-  exit 2
-}
+for i in "${!patches[@]}"; do
+  [[ $(shasum -a 256 "${patches[i]}" | awk '{print $1}') == "${patch_shas[i]}" ]] || {
+    echo "error: unexpected patch SHA-256: ${patches[i]}" >&2
+    exit 2
+  }
+done
 command -v git >/dev/null || {
   echo "error: git is required" >&2
   exit 2
@@ -76,8 +86,10 @@ git clone --quiet --branch 2.1.4 --depth 1 https://github.com/unicorn-engine/uni
   echo "error: tag 2.1.4 did not resolve to expected commit" >&2
   exit 2
 }
-git -C "$work/src" apply --check "$patch"
-git -C "$work/src" apply "$patch"
+for p in "${patches[@]}"; do
+  git -C "$work/src" apply --check "$p"
+  git -C "$work/src" apply "$p"
+done
 cmake -S "$work/src" -B "$work/build" -DCMAKE_BUILD_TYPE=Release -DUNICORN_ARCH=m68k -DUNICORN_BUILD_TESTS=OFF
 cmake --build "$work/build" --config Release --target unicorn
 built=$work/build/$built_name
@@ -89,5 +101,9 @@ built=$work/build/$built_name
 tmp_target=$(mktemp "$(dirname "$target")/.${built_name}.XXXXXX")
 cp "$built" "$tmp_target"
 mv -f "$tmp_target" "$target"
-printf 'unicorn commit=%s\npatch_sha256=%s\nlibrary=%s\nlibrary_sha256=%s\n' "$commit" "$patch_sha" "$target" "$(shasum -a 256 "$target" | awk '{print $1}')"
+printf 'unicorn commit=%s\n' "$commit"
+for i in "${!patches[@]}"; do
+  printf 'patch=%s sha256=%s\n' "$(basename "${patches[i]}")" "${patch_shas[i]}"
+done
+printf 'library=%s\nlibrary_sha256=%s\n' "$target" "$(shasum -a 256 "$target" | awk '{print $1}')"
 "$python" -m emu.unicorn_compat
