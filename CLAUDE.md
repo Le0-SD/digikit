@@ -1,0 +1,58 @@
+# digitakt2
+
+Reverse engineering of the Elektron Digitakt II firmware, OS 1.15C: a
+ColdFire MCF5441x main CPU and a SHARC+ DSP. Setup is in README.md, results
+in docs/FINDINGS.md, and current state and next steps in the newest
+`HANDOVER-*.md` in the repo root.
+
+## Rules
+
+- Record results in docs/FINDINGS.md, not in handovers. Marks: **[V]**
+  verified here, **[D]** documented or read once but not re-checked, **[O]**
+  open, **[C]** corrects an earlier claim. Have a second agent check a
+  finding against the image bytes before marking it [V]. An empty Ghidra
+  caller list is not evidence of dead code.
+- Firmware and anything derived from it (`*.syx`, `sections/`, `out/`,
+  `snapshots/`) is Elektron's copyright: never commit it.
+- Never name, copy or quote the vendor DSP toolchain or its files in
+  commits, docs or code. Cite only public manuals.
+- Commit only when Em asks.
+- Run the emulator only when a static answer is not enough, and bound runs
+  with `--limit`. Em runs emulator commands in the same tree:
+  `sections/.source-sha256` is the SHA-256 of the .syx the sections came
+  from, so compare it with `shasum -a 256 <the .syx>` before trusting a run.
+
+## Agents
+
+- scout reads code. Only its final message returns, so ask for quotes there.
+- coder applies fully specified edits (exact before/after text or full file
+  content). Check `git diff` afterwards.
+- general-purpose agents run processes: tests, Ghidra, the emulator.
+
+## Ghidra
+
+- Analysis project: `~/ghidra-projects/dt2-emac` (project name `dt2-emac`,
+  program `/section_3_MAIN_OS.bin`, language `68000:BE:32:ColdfireEMAC`).
+  The stock ColdFire language in `~/ghidra-projects/dt2` stops decoding at
+  `movclr`, so do not use it near interrupt handlers.
+- One JVM per project at a time. Read the dump first:
+  `out/ghidra/dt2-1.15C-emac/` from `tools/ghidradump.py` (`rg` over
+  `decomp/`, `sqlite3 xrefs.sqlite`; check `complete` and `image_sha256` in
+  `manifest.json`). For live queries use `tools/ghidraq.py` with
+  `--project ~/ghidra-projects/dt2-emac --project-name dt2-emac`, chaining
+  queries with `--then` in one JVM.
+- Ghidra's call and reference tables miss code outside functions, such as
+  small trampolines. Before recording "no caller" or "no writer", confirm
+  with `tools/refscan.py` on the raw image.
+- A pyghidra tool under `tools/` must remove its own directory from
+  `sys.path` before `import pyghidra` (copy the block in `tools/ghidraq.py`):
+  `tools/ghidra/` shadows the `ghidra` package, and the import fails with
+  `RecursionError`.
+- After a Ghidra upgrade, re-run `tools/ghidra/install-coldfire-emac.sh`.
+
+## Shell and tests
+
+- Tests: `uv run --with pytest python -m pytest tests -q`.
+- The shell is zsh: an unquoted `$VAR` is one word, not split. There is no
+  `timeout` binary.
+- The rtk hook shortens some output: use `rtk proxy git log` for the full log.
