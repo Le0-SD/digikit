@@ -1022,6 +1022,208 @@ by `MachineSpec.clone_of`, cover the differences found so far. Bare
 - What the SHARC is told about a type-7 track, and whether saving a
   project with type 7 works, are not checked. **[O]**
 
+### The ColdFire tells the SHARC through a periodic DSPI2 frame **[V][O]**
+
+Static reading only: Ghidra, the repo disassembler and `tools/refscan.py`.
+No emulator run. In this section **[V]** means a second agent re-checked the
+claim against the image bytes, and **[D]** means one agent read it from
+Ghidra or disassembly output and it was not re-checked.
+
+- `FUN_4002ce4a` writes the handler `0x4002d652` to the RAM vector slot
+  `0x400002fc` (vector 191, INTC1 source 63) and 5 to `ICR1_63`
+  (`0xFC04C07F`). The handler reads eDMA channel 50's SADDR (`0xFC045640`).
+  When the counter at `0x4028ac90` is zero, it calls
+  `FUN_400cf9c4(0x802, 0x80005348, 0xabc, 0x8000488c)` at `0x4002d6ba`.
+  **[V]**
+- Channel 50 is SSI0 transmit, and the RM lists INTC1 source 63 as not
+  used. No instruction reloads `0x4028ac90` by a literal address. What
+  raises source 63, and how many exchanges run per second, is not known.
+  **[D][O]**
+- `FUN_400cf9c4` is a DSPI2 (`0xEC038000`) send and receive driver using
+  eDMA channels 28 and 29. `FUN_400cf67c` sets CTAR0 to `0xFA010000`
+  (16-bit frames). Each PUSHR entry is `0x8001xxxx` (CONT, PCS0). The last
+  entry gets EOQ, TCD 29 DADDR is PUSHR (`0xEC038034`), and SERQ is written
+  with `0x1c`. The counts are bytes: TX `0x802` (2050 bytes, 1025 frames)
+  and RX `0xabc` (2748 bytes). Both buffers are in the 64 KB on-chip SRAM
+  at `0x80000000`. **[V]**
+- Ghidra lists no callers for `FUN_400cf9c4` or for the SHARC boot routine
+  `FUN_400cef6c`. The two `jsr` calls to `FUN_400cf9c4` (`0x4002d6ba`,
+  `0x400d13d4`) are in code that Ghidra did not assign to a function,
+  because the stock ColdFire language cannot decode `movclr` (next
+  section). An empty Ghidra caller list is not evidence of dead code in
+  this image. **[V]**
+- Frame content: a header written at `+0x00` (the constant 2) and at
+  `+0x22` to `+0x32`, then a 16-pass loop at `0x4002e470`-`0x4002e63a`. The
+  loop reads three per-track SRAM tables: `0x800047fc + 4*i` (longwords,
+  shifted by `asr.l #8`), `0x80003340 + i*0x9a` and `0x80005b50 + i*0x8e`.
+  The last base is the constant that `FUN_400db9aa` returns. **[V]** What
+  the fields mean is not known. **[O]**
+- A second handler, `0x400d1378`, installed by `FUN_400d15bc`, sends
+  `0x802` bytes from `0x429307f4` with only the first word set (1) and
+  receives nothing. **[V]** `FUN_400d15bc` is called by the console command
+  parser `FUN_400cd594` on `ENTER TEST MODE` and by `FUN_400cef6c`.
+  `EXIT TEST MODE` calls `FUN_4002d5c4`, which reinstalls `0x4002d652`.
+  **[D]**
+- Machine type: no call to `FUN_4004fc02` or `FUN_400caf48`, and no read
+  of `+0xa2`, was found in the handler or its frame loop. The one link
+  found is in the commit `FUN_40035e90`: when the new type is 5 (MIDI) it
+  calls `FUN_4002ed16(track, 0x7fff)`, which writes 1 to
+  `0x80004684 + 4*track` and `0x800046c4 + 4*track` (addressed as
+  `0x80003340 + (track + 0x4d1)*4` and `+ (track + 0x4e1)*4`). **[V]**
+- Not known: whether the handler reads those two arrays, and whether a
+  SLICE or PLACEHOLDER track produces a different frame. The writers of the
+  per-track tables are linked with the handler, among functions that use
+  file-browser strings (`ENTER DIR NAME`, `WRITE PROTECTED`), in about
+  `0x4002c0fa`-`0x4002f000`. About 45 of them are called from elsewhere and
+  they were not traced one by one. So "stock engine and own parameters" for
+  a new sample machine is still open. No engine id has been found in the
+  frame. **[D][O]**
+- The handler cannot run in the emulator today. Vector 191 is never
+  raised. DSPI2, SSI0 and eDMA channels 28, 29 and 50 are not modelled:
+  `emu/edma.py` handles channel 35 only, and `0xEC03802C` is a constant.
+  **[V]**
+- Ruled out as the control link **[D]**:
+  - FlexBus `0x8C000000` (`FUN_400cfd40`, callers `FUN_40146148`,
+    `FUN_4014653c`, `FUN_401465a4`) carries sample pages and slot headers
+    (address, length, loop point). Only `FUN_400cf4a8`, `FUN_400cf534` and
+    the boot routine `FUN_400cf67c` access `0x8C000000`-`0x8C00000F`. This
+    agrees with `docs/REMAINING.md` B.6.
+  - `FUN_4012720e` builds 28-byte-header packets (sequence number,
+    fragment offset, checksum) for the SysEx dump and receive code.
+  - The `Digisharc::rpcMsgOpReq_t` and `rpcMsgPingRequest_t` constructors
+    (`FUN_401bf37c`, `FUN_401bf3be`) are called from `FUN_40115372`, which
+    references `"MY ANALOG FOUR"`. `rpcMsgHeader_t`'s constructor is
+    `FUN_401b6316`.
+  - DSPI1 (`0xFC03C000`, eDMA 14/15, `FUN_400cfb92` via `FUN_40011df8`)
+    carries short opcode request and reply transactions, probably to a
+    codec.
+  - eDMA channel 59 is eSDHC block I/O (`FUN_400f0f7a` write,
+    `FUN_401208fe` read).
+
+### Stock Ghidra cannot decode `movclr`; a separate language fixes it **[V][C]**
+
+- The MCF5441x is a V4m with EMAC, and EMAC instructions use line A
+  (`0xAxxx`). The line-A words in the image are EMAC instructions, not
+  traps. The software float routines are ordinary `jsr` calls (see "Why
+  the emulator was slow").
+- The handler at `0x4002d652` saves the EMAC state at `0x4002d67c`:
+  `a988 a93c 0000 0000 ab84 af85 a1c0 a3c1 a5c2 a7c3 ad86` =
+  `move.l MACSR,A0`, `move.l #0,MACSR`, `move.l ACCext01,D4`,
+  `move.l ACCext23,D5`, `movclr.l ACC0..ACC3,D0..D3`, `move.l MASK,D6`.
+  A `movem` of D0-D6/A0 follows. Digitone II 1.11 has the same bytes at
+  `0x40025e60`.
+- Register moves are one word. A `#imm` source adds a 32-bit extension,
+  so `move.l #imm,MACSR` is 6 bytes (CFPRM).
+- Stock Ghidra 12.1.3 (`68000:BE:32:Coldfire`) decodes most EMAC
+  instructions but has no `movclr` constructor, so `a1c0 a3c1 a5c2 a7c3`
+  decode as bad instructions and flow analysis stops there. It also copies
+  `move.l ACCy,ACCx` in the wrong direction, picks the wrong accumulator
+  for MAC and MSAC with load (CFPRM p.6-4), and prints `move.l Ry,ACCx`
+  and the two ACCext moves with their operands swapped. An earlier reading
+  in this file, that Ghidra stops at every EMAC word, was wrong. **[V][C]**
+- The image has 96 `movclr` words (Digitakt II 1.15C) and 112 (Digitone II
+  1.11), mostly in accumulator saves at handler entry. **[D]**
+- `tools/ghidra/ColdfireEMAC/` is a separate language,
+  `68000:BE:32:ColdfireEMAC`, with those instructions fixed; see its
+  README and `tools/ghidra/install-coldfire-emac.sh`. Imported with it
+  (`~/ghidra-projects/dt2-emac`, 98 s), `FUN_4002d652` is a 5796-byte
+  function whose decompile shows
+  `FUN_400cf9c4(0x802,&DAT_80005348,0xabc,0x8000488c)`. `FUN_400cf9c4`
+  gets its two callers, error bookmarks drop from 64 to 41, functions rise
+  from 10520 to 10526, and five checked functions keep their entry and
+  size. **[V]**
+- Unicorn 2.1.4 with `UC_CPU_M68K_CFV4E` runs `movclr`, `mac.l` without
+  load, the MASK and ACCext moves and the handler prologue as the manual
+  says (`tests/test_unicorn_emac.py`). Two gaps are pinned in that test:
+  `move.l MACSR,Rx` keeps bits 31..12, and `move.l ACCy,ACCx` takes an
+  exception. **[V]** A linear sweep finds no `move ACC,ACC` and no MAC with
+  load in either handler (the 31 and 24 uses are elsewhere), so the
+  handlers can run in Unicorn. **[D]**
+
+### Digitone II 1.11: the same link and the same machine table shape **[V][D][O]**
+
+- The sections come from `uv run python -m emu.extract
+  Digitone_II_OS1.11.syx -o DIR`. 1.11 also has a section 8 (159,948
+  bytes, mostly `0xFF`) that 1.10E does not have. **[D]**
+- Dispatcher `FUN_400c248e`: `moveq #4,d1`, a bound check, `muls` by
+  `0x2c`, `addi.l #0x42432b24`. Out of range it returns `0x42432bd4`
+  (entry 4). **[V]** The five descriptors are 0 FM TONE, 1 WAVETONE,
+  2 FM DRUM, 3 SWARMER and 4 MIDI. **[D]**
+- `FUN_4004b7f2` calls vtable `+0x28` twice and returns the byte at `+0xde`
+  of the result: the machine type. **[V]** `FUN_4004b860` reads `+0xdf`,
+  probably the filter type. RTTI names `Digisharc::machineType_t`,
+  `Digisharc::synthParams_t` and `VoiceConfig::updateMirror`. **[D]**
+- Handler `FUN_40025e36` reads `0xFC045640`. When the counter
+  `0x402876f8` is zero, it calls
+  `FUN_400cf7be(0xa80, 0x80005e60, 0xabc, 0x800053a4)` at `0x40025e9e`:
+  TX 2688 bytes, RX 2748 bytes. The installer at `0x400d11d4` puts the
+  test handler `0x400d0f90` into `0x400002fc` and 5 into `0xFC04C07F`.
+  **[V]**
+- The frame has 16 per-track slots of `0x92` bytes, copied from
+  `0x800068e4 + i*0xca` with four `FUN_40134490` copies per slot.
+  `FUN_400db12a` rebuilds that table from `0x80003af0` and returns its base
+  as a constant. **[D]** No read of the machine type was found on this
+  path, and the code that fills `0x80003af0` was not found. **[O]**
+- On Digitone II the engine must reach the DSP, yet static reading did not
+  find it there either. Not finding the machine type on either image is a
+  limit of static reading, not evidence that the frame lacks it. **[O]**
+
+### Names from RTTI and code seeds in the EMAC Ghidra project **[V][D]**
+
+- `tools/codeseeds.py` finds 31016 `jsr`/`bsr` calls to 5685 targets in
+  the code ranges and 22 vector-table writes. `tools/rttiscan.py` finds
+  1052 typeinfo objects (class 122, si_class 728, vmi_class 125, pointer
+  50, fundamental 23, function 4), 1883 vtables with 12349 slots, 4802
+  instructions that load a vtable, and 47 `Class::method` strings, 41 of
+  them loaded by code. Each takes under 2 s; the output is in
+  `out/symbols/`. **[V]**
+- Ghidra's own `RecoverClassesFromRTTIScript` refuses the program until its
+  compiler is set to gcc, and then recovers no classes. **[D]**
+- `tools/ghidraapply.py seeds --analyze` on `~/ghidra-projects/dt2-emac`
+  created 32 functions, rolled back 34 (an Error bookmark or no function),
+  skipped 466 targets inside data, and named 19 interrupt handlers
+  `vector_<n>_handler`. `tools/ghidraapply.py rtti` created 3677 functions
+  from vtable slots and renamed 6811: 5774 `Class::vfunc_N`, 1016
+  `Class::ctor_dtor`, and 21 from `Class::method` strings, such as
+  `Project::updateMirror` and the other seven `updateMirror` methods. 152
+  slot functions shared by several classes stay unnamed. Functions went
+  from 10526 to 14257, and Error bookmarks stayed at 41. The project before
+  these writes is in `~/ghidra-projects/backup-2026-09-14/`. **[V]**
+- `vfunc_N` is the slot index, not the method's name. `ctor_dtor` marks a
+  function that loads a vtable address; it can be a constructor or a
+  destructor.
+- Spot checks: `0x4002d652` and `0x400d1378` are both
+  `vector_191_handler`, and `FUN_400cf9c4` still has exactly those two
+  callers. The vtable at `0x402015ec` (5 slots) belongs to
+  `std::_Sp_counted_ptr_inplace<Digisharc::rpcMsgHeader_t, ...>`, and
+  `0x401b6316` is that class's `ctor_dtor`. The earlier raw search above
+  read the vtable one word late, as `0x402015f0` with 4 slots. **[V]**
+
+### The frame capture runs; the frame build is switched off **[V][D][O]**
+
+- `tools/sharcframe.py snapshots/boot400M.snap --passes 3` takes 0.5 s.
+  Vector 191 holds `0x4002d652`. Each pass returns through the handler's
+  `rte` and calls `FUN_400cf9c4(0x802, 0x80005348, 0xabc, 0x8000488c)` once,
+  from `0x4002d6c0`. All 2050 TX bytes are zero in every pass. **[V]**
+- The handler builds the frame only when the long at `0x4094e4f4` is 0
+  (test at `0x4002d91a`). In `boot400M.snap` it is 1, `0x4094e4f8` is 1,
+  and the per-track tables are zero. `FUN_4002d5b2` writes exactly those
+  two values and is called from the SHARC boot routine `FUN_400cef6c`.
+  **[V]**
+- The only instruction found that clears `0x4094e4f4` by its address is in
+  `FUN_4002d5c4`, whose only caller is the console command parser
+  `FUN_400cd594` on `EXIT TEST MODE`. `FUN_4002d602(n)` starts a 5-pass
+  countdown at `0x4094e4f0` that ends by setting `0x4094e4f4` to 1; its five
+  callers are in project and sample loading. **[D]**
+- So the writer that clears `0x4094e4f4` in normal use is not known. It may
+  write through a pointer, which a scan for literal addresses cannot see.
+  **[O]**
+- Forcing `0x4094e4f4` to 0 before a pass enters the build path and ends in
+  the firmware's exception dump `FUN_4010fcae` (vector 64 at PC
+  `0x400db9e0`), which executes `halt`; Unicorn reports that as exception
+  257. A memory poke does not produce a valid
+  frame. **[D]**
+
 ## Emulation
 
 Function-level works well and is the practical path. Full boot was pushed as far
