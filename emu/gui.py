@@ -38,6 +38,11 @@ names, cloned descriptor and display position (see
 tools/machinepatch.py's MachineSpec); without it the default spec
 (Placeholder/PLC, cloned from type 6) is used.
 
+--ips-at WHEN:N (repeatable) changes the timer rate to N instructions per
+emulated second at instruction count WHEN (e.g. --ips-at 80M:18.72M after
+boot); the GUI then runs slower than real time if the emulator cannot
+keep up.
+
 tkinter only, no third-party GUI dependency. Note Homebrew's python@3.14 does
 not ship tkinter; uv's managed CPython does, which is why pyproject pins 3.12.
 """
@@ -57,7 +62,7 @@ from unicorn.m68k_const import UC_M68K_REG_A7, UC_M68K_REG_PC, UC_M68K_REG_SR
 from emu.longrun import build, spin
 from emu.dtim import Dtims, Timers
 from emu import config, device as devices, panel, panelin, symbols
-from emu.pit import INSTR_PER_SEC, Pits, intro_running
+from emu.pit import Pits, intro_running
 from emu.screen import png
 
 # The intro's frame rate is not a guess. PIT3 is configured at 0x400d3a7a with
@@ -131,7 +136,7 @@ class Emulator(threading.Thread):
     def __init__(self, snapshot, weakptr=False, slc=False, syx=None,
                  fast=True, realtime=True, patch_machine=False,
                  patch_eighth=7, patch_machine_spec=None,
-                 panel_dwell=PANEL_DWELL_CHUNKS):
+                 panel_dwell=PANEL_DWELL_CHUNKS, ips_at=()):
         super().__init__()
         self.snapshot = snapshot
         self.weakptr = weakptr
@@ -140,6 +145,7 @@ class Emulator(threading.Thread):
         self.patch_machine = patch_machine
         self.patch_eighth = patch_eighth
         self.patch_machine_spec = patch_machine_spec
+        self._pending_ips = sorted(ips_at)
         # See PANEL_DWELL_CHUNKS. 0 means no pacing: the old coalesce-and-
         # deliver-once-per-chunk behaviour, for an A/B against this one.
         self._dwell_chunks = panel_dwell
@@ -478,6 +484,16 @@ class Emulator(threading.Thread):
                 self.stats['status'] = 'running, no frame for %.0fs' % idle
             else:
                 self.stats['status'] = 'running'
+            due_ips, self._pending_ips[:] = (
+                [e for e in self._pending_ips
+                 if e[0] <= self.stats['instrs']],
+                [e for e in self._pending_ips
+                 if e[0] > self.stats['instrs']])
+            for when, n in due_ips:
+                for source in pits.sources:
+                    source.ips = n
+                print('[gui] ips -> %d at %d' % (n, self.stats['instrs']),
+                      flush=True)
             pc = self._drain_input(m, profile, pc)
             pc, executed, stop = spin(m, pc, BUDGET, pits=pits, fast=self.fast)
             if stop != 'limit':
@@ -491,14 +507,14 @@ class Emulator(threading.Thread):
                 break
             self.stats['instrs'] += executed
             if self.realtime:
-                # Sleep off whatever we are ahead of the hardware by. The
-                # budget is in instructions and INSTR_PER_SEC converts it, the
-                # same constant the timer models pace themselves with, so the
-                # emulated clock and the wall clock agree. Capped per sleep so
-                # pause and stop stay responsive.
-                ahead = (self._paced + executed) / INSTR_PER_SEC - (
-                    time.time() - self._pace_t0)
-                self._paced += executed
+                # Sleep off whatever we are ahead of the hardware by. _paced
+                # accumulates emulated seconds at the timers' live rate, so a
+                # rate change from --ips-at is reflected immediately instead
+                # of leaving the pacing keyed to the instruction count at the
+                # old rate. Capped per sleep so pause and stop stay
+                # responsive.
+                self._paced += executed / pits.sources[0].ips
+                ahead = self._paced - (time.time() - self._pace_t0)
                 if ahead > 0.003:
                     time.sleep(min(ahead, 0.05))
             self._publish_panel(m)
@@ -870,7 +886,7 @@ class App(tk.Tk):
     def __init__(self, snapshot, weakptr=False, slc=False, scale=None,
                  syx=None, fast=True, realtime=True, patch_machine=False,
                  patch_eighth=7, patch_machine_spec=None,
-                 panel_dwell=PANEL_DWELL_CHUNKS):
+                 panel_dwell=PANEL_DWELL_CHUNKS, ips_at=()):
         super().__init__()
         self.title('Digi emulator')
         self.configure(bg='#15181d')
@@ -922,6 +938,7 @@ class App(tk.Tk):
         self.patch_eighth = patch_eighth
         self.patch_machine_spec = patch_machine_spec
         self.panel_dwell = panel_dwell
+        self.ips_at = ips_at
         self.shown = -1
         self.replay = None          # (frames, index, next_due) while replaying
         self.start()
@@ -935,7 +952,8 @@ class App(tk.Tk):
                             patch_machine=self.patch_machine,
                             patch_eighth=self.patch_eighth,
                             patch_machine_spec=self.patch_machine_spec,
-                            panel_dwell=self.panel_dwell)
+                            panel_dwell=self.panel_dwell,
+                            ips_at=self.ips_at)
         self.emu.start()
 
     def send_input(self, kind, code, arg):
@@ -1072,6 +1090,12 @@ class App(tk.Tk):
         self.destroy()
 
 
+def parse_count(s):
+    if s and s[-1] in ('M', 'm'):
+        return int(float(s[:-1]) * 1_000_000)
+    return int(s, 0)
+
+
 if __name__ == '__main__':
     # --weakptr steps over the weak-pointer branches that otherwise freeze the
     # main task in the terminal loop after 153 messages. It is a diagnostic,
@@ -1128,6 +1152,25 @@ if __name__ == '__main__':
         i = argv.index('--syx')
         syx = argv[i + 1]
         del argv[i:i + 2]
+    # --ips-at WHEN:N (repeatable) changes the timer rate to N instructions
+    # per emulated second once instruction count WHEN is reached. WHEN and N
+    # both accept a plain integer or an M-suffixed count (80M, 18.72M).
+    ips_at = []
+    while '--ips-at' in argv or any(a.startswith('--ips-at=') for a in argv):
+        if '--ips-at' in argv:
+            i = argv.index('--ips-at')
+            spec = argv[i + 1]
+            del argv[i:i + 2]
+        else:
+            i = next(j for j, a in enumerate(argv)
+                     if a.startswith('--ips-at='))
+            spec = argv[i].split('=', 1)[1]
+            del argv[i:i + 1]
+        if ':' not in spec:
+            raise SystemExit('--ips-at expects WHEN:N, got %r' % spec)
+        when_str, n_str = spec.split(':', 1)
+        ips_at.append((parse_count(when_str), parse_count(n_str)))
+    ips_at.sort()
     args = [a for a in argv if not a.startswith('--')]
     snap = args[0] if args else 'snapshots/boot400M.snap'
     if not os.path.exists(snap):
@@ -1137,4 +1180,4 @@ if __name__ == '__main__':
     App(snap, weakptr=weakptr, slc=slc, scale=scale, syx=syx, fast=fast,
         realtime=realtime, patch_machine=patch_machine,
         patch_eighth=patch_eighth, patch_machine_spec=patch_machine_spec,
-        panel_dwell=panel_dwell).mainloop()
+        panel_dwell=panel_dwell, ips_at=ips_at).mainloop()

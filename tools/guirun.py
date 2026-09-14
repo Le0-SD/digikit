@@ -23,6 +23,26 @@ SRC is 2 on Digitakt II.
 with no dwell; `emu/gui.py` prints every feed it delivers in exactly that
 form, so a GUI session can be replayed by pasting its `[gui] input --feed`
 arguments.
+
+`--dump-at ADDR:ARG:LEN[=NAME]` dumps LEN bytes from the pointer in stack
+argument ARG (1, 2 or 3) on every hit.
+`--watch ADDR:LEN[=NAME]` and `--watch-max N` install a memory write watch
+over LEN bytes at ADDR, printing up to N hits with a stack scan each.
+`--ips N` overrides the emulator's instructions-per-second timer rate
+(accepts `18.72M`-style suffixes).
+`--ips-at WHEN:N` changes the timer rate to N instructions per emulated
+second at instruction count WHEN, e.g. after boot, so the boot itself is not
+stretched.
+`--trace-ui` prints the firmware UI path (UI queue sends/pops with wait,
+key dispatch offers to views, view activate/close; see emu/uitrace.py) and
+a window summary with each progress line.
+`--trace-ui-verbose` also prints tick records and offers outside key
+dispatch.
+`--trace-tasks` charges emulated instructions to RTOS tasks at each context
+switch and prints a per-task window summary with each progress line (see
+emu/taskprof.py).
+`--idle-yield N` raises the reschedule vector every N idle-spin passes
+instead of 20000 (see emu/longrun.py build).
 """
 import argparse
 import collections
@@ -36,10 +56,11 @@ sys.path.insert(0, os.path.join(
 
 from emu.longrun import build, spin
 from emu.dtim import Dtims, Timers
-from emu import config, panel, symbols
+from emu import config, panel, symbols, taskprof, uitrace
 from emu import device as devices, panelin
 from emu.pit import Pits, intro_running
-from unicorn.m68k_const import UC_M68K_REG_A7
+from unicorn import UC_HOOK_MEM_WRITE
+from unicorn.m68k_const import UC_M68K_REG_A7, UC_M68K_REG_PC
 from machinepatch import patch_b, DEFAULT_CAVE_B, spec_from_arg, DEFAULT_SPEC
 
 BUDGET = 400_000   # same as emu/gui.py
@@ -64,6 +85,15 @@ def parse_args(argv):
     p.add_argument('--stack-at', action='append', default=[],
                     type=lambda s: int(s, 0))
     p.add_argument('--stack-depth', type=int, default=128)
+    p.add_argument('--dump-at', action='append', default=[], type=parse_dump_at)
+    p.add_argument('--watch', action='append', default=[], type=parse_watch)
+    p.add_argument('--watch-max', type=int, default=16)
+    p.add_argument('--ips', type=parse_when, default=None)
+    p.add_argument('--ips-at', action='append', default=[], type=parse_ips_at)
+    p.add_argument('--trace-ui', action='store_true')
+    p.add_argument('--trace-ui-verbose', action='store_true')
+    p.add_argument('--trace-tasks', action='store_true')
+    p.add_argument('--idle-yield', type=int, default=None)
     p.add_argument('--limit', type=lambda s: int(s, 0), default=600_000_000)
     p.add_argument('--ring', type=int, default=64)
     p.add_argument('--input', action='append', default=[])
@@ -88,6 +118,14 @@ def parse_input(spec):
 def parse_feed(spec):
     when_str, hex_str = spec.split(':', 1)
     return parse_when(when_str), bytes.fromhex(hex_str)
+
+
+def parse_ips_at(spec):
+    if ':' not in spec:
+        raise argparse.ArgumentTypeError(
+            '--ips-at expects WHEN:N, got %r' % spec)
+    when_str, n_str = spec.split(':', 1)
+    return parse_when(when_str), parse_when(n_str)
 
 
 def parse_png_at(spec):
@@ -116,6 +154,46 @@ def parse_at(spec):
     return addr, name
 
 
+def parse_dump_at(spec):
+    if '=' in spec:
+        rest, name = spec.split('=', 1)
+    else:
+        rest, name = spec, None
+    parts = rest.split(':')
+    if len(parts) != 3:
+        raise argparse.ArgumentTypeError(
+            '--dump-at expects ADDR:ARG:LEN[=NAME], got %r' % spec)
+    addr_str, arg_str, len_str = parts
+    addr = int(addr_str, 0)
+    arg = int(arg_str, 0)
+    if arg not in (1, 2, 3):
+        raise argparse.ArgumentTypeError(
+            '--dump-at ARG must be 1, 2 or 3, got %r' % arg_str)
+    length = int(len_str, 0)
+    if not 1 <= length <= 256:
+        raise argparse.ArgumentTypeError(
+            '--dump-at LEN must be 1..256, got %r' % len_str)
+    if name is None:
+        name = '0x%08x' % addr
+    return addr, arg, length, name
+
+
+def parse_watch(spec):
+    if '=' in spec:
+        rest, name = spec.split('=', 1)
+    else:
+        rest, name = spec, None
+    addr_str, len_str = rest.split(':', 1)
+    addr = int(addr_str, 0)
+    length = int(len_str, 0)
+    if not 1 <= length <= 0x1000:
+        raise argparse.ArgumentTypeError(
+            '--watch LEN must be 1..0x1000, got %r' % len_str)
+    if name is None:
+        name = '0x%08x' % addr
+    return addr, length, name
+
+
 def stack_scan(uc, depth):
     """-> (a7, [(offset, word), ...]) for longwords above A7 that fall in the
     MAIN OS code span."""
@@ -137,6 +215,9 @@ def main():
     fast = not args.exact
 
     extra = {'syx': args.syx} if args.syx else {}
+    if args.idle_yield is not None:
+        extra['idle_yield'] = args.idle_yield
+        print('[guirun] idle-yield %d' % args.idle_yield)
     m, ev, st, pc, inq, at = build(args.snapshot, unblock=True, softfloat=True,
                                     bitmap=True, dsp=True, on_pixel=None,
                                     weakptr=args.weakptr, slc=args.slc, **extra)
@@ -191,8 +272,15 @@ def main():
             pass
     m.fault_sink = fault_sink
 
+    if args.ips is not None:
+        print('[guirun] ips %d' % args.ips)
+
     intro = intro_running(m, profile.intro_pit3_isr)
-    pits = Timers(Pits(m, hold=intro), Dtims(m, channels=(3,), hold=intro))
+    if args.ips is not None:
+        pits = Timers(Pits(m, hold=intro, instr_per_sec=args.ips),
+                      Dtims(m, channels=(3,), hold=intro, instr_per_sec=args.ips))
+    else:
+        pits = Timers(Pits(m, hold=intro), Dtims(m, channels=(3,), hold=intro))
     if pits.held and profile.intro_done is not None:
         def handover(uc, a, s_, d):
             pits.release()
@@ -320,8 +408,108 @@ def main():
     for addr in args.stack_at:
         at(addr, make_stack_at_hook(addr))
 
+    def print_stack_lines(found):
+        for offset, word in found:
+            print('  +0x%03x  0x%08x' % (offset, word))
+
+    dump_hit_counts = collections.Counter()
+
+    def make_dump_hook(addr, arg, length, name):
+        arg_offset = arg * 4
+        def hook(uc, a, s, d):
+            dump_hit_counts[addr] += 1
+            a7 = uc.reg_read(UC_M68K_REG_A7)
+            try:
+                ret = struct.unpack('>I', uc.mem_read(a7, 4))[0]
+                ptr = struct.unpack('>I', uc.mem_read(a7 + arg_offset, 4))[0]
+            except Exception:
+                print('[dump] %d %s unreadable' % (state['instrs'], name),
+                      flush=True)
+                return
+            try:
+                data = uc.mem_read(ptr, length)
+                groups = []
+                for i in range(0, len(data), 4):
+                    groups.append(' '.join('%02x' % b for b in data[i:i + 4]))
+                hexbytes = '  '.join(groups)
+            except Exception:
+                hexbytes = 'unreadable'
+            print('[dump] %d %s ret=0x%08x arg%d=0x%08x %s'
+                  % (state['instrs'], name, ret, arg, ptr, hexbytes),
+                  flush=True)
+        return hook
+
+    for addr, arg, length, name in args.dump_at:
+        at(addr, make_dump_hook(addr, arg, length, name))
+
+    watch_targets = args.watch
+    watch_hit_counts = collections.Counter()
+    watch_seen = collections.Counter()
+
+    def make_watch_hook(addr, name):
+        def hook(uc, access, address, size, value, user_data):
+            watch_hit_counts[addr] += 1
+            if watch_seen[addr] >= args.watch_max:
+                return
+            watch_seen[addr] += 1
+            pc = uc.reg_read(UC_M68K_REG_PC)
+            print('[watch] %d %s addr=0x%08x size=%d value=0x%x pc=0x%08x'
+                  % (state['instrs'], name, address, size, value, pc),
+                  flush=True)
+            a7, found = stack_scan(uc, args.stack_depth)
+            print_stack_lines(found)
+        return hook
+
+    for addr, length, name in watch_targets:
+        m.uc.hook_add(UC_HOOK_MEM_WRITE, make_watch_hook(addr, name),
+                       begin=addr, end=addr + length - 1)
+
+    def clock():
+        stepper = getattr(m, '_fast_stepper_obj', None)
+        if fast and stepper is not None:
+            return pits.now + int(stepper.blocks * stepper.PER_BLOCK)
+        return pits.now
+
+    button_names = {}
+
+    def button_name(code):
+        if code in button_names:
+            return button_names[code]
+        try:
+            name = panelin.control_name(m, profile, code)
+        except Exception:
+            name = None
+        button_names[code] = name
+        return name
+
+    if args.trace_ui or args.trace_ui_verbose:
+        trace = uitrace.UiTrace(m, at, profile, clock,
+                                 verbose=args.trace_ui_verbose,
+                                 button_name=button_name)
+        if trace.missing:
+            print(trace.summary())
+    else:
+        trace = None
+
+    task_prof = taskprof.TaskProfile(
+        m, at, profile, clock, ev['tasks'], spins=ev.get('idle_spins')
+    ) if args.trace_tasks else None
+    if task_prof is not None and task_prof.missing:
+        for line in task_prof.summary(pits.now):
+            print(line)
+
+    pending_ips = sorted(args.ips_at)
+
+    prev = collections.Counter(ev['satisfied_by'])
     reported = -1
     while state['instrs'] < args.limit:
+        due_ips, pending_ips[:] = (
+            [e for e in pending_ips if e[0] <= state['instrs']],
+            [e for e in pending_ips if e[0] > state['instrs']])
+        for when, n in due_ips:
+            for source in pits.sources:
+                source.ips = n
+            print('[guirun] ips -> %d at %d' % (n, state['instrs']))
         due_feeds, pending_feeds[:] = (
             [e for e in pending_feeds if e[0] <= state['instrs']],
             [e for e in pending_feeds if e[0] > state['instrs']])
@@ -357,6 +545,17 @@ def main():
                   % (state['instrs'] // 1_000_000, len(ev['tasks']),
                      pits.fired.get('DTIM3', 0), state['mainloop'],
                      state['jobs'], pc))
+            if trace is not None:
+                print(trace.summary())
+            if task_prof is not None:
+                for line in task_prof.summary(pits.now):
+                    print(line)
+                delta = ev['satisfied_by'] - prev
+                if delta:
+                    print('[guirun] satisfied window: %s' % ', '.join(
+                        'ret=0x%08x*%d' % (ret, n)
+                        for ret, n in delta.most_common(5)))
+                prev = collections.Counter(ev['satisfied_by'])
         if state['terminal']:
             pc, executed, stop = spin(m, pc, BUDGET, pits=pits, fast=fast)
             state['instrs'] += executed
@@ -366,11 +565,24 @@ def main():
           'jobs=%d pc=0x%08x'
           % (state['instrs'] // 1_000_000, state['terminal'], len(ev['tasks']),
              pits.fired.get('DTIM3', 0), state['mainloop'], state['jobs'], pc))
+    if trace is not None:
+        print(trace.summary())
+    if task_prof is not None:
+        for line in task_prof.summary(pits.now):
+            print(line)
+    if ev.get('satisfied_by'):
+        print('[guirun] pends force-satisfied by unblock: %d' % ev['satisfied'])
+        for ret, n in ev['satisfied_by'].most_common(15):
+            print('  ret=0x%08x  %d' % (ret, n))
     print('[guirun] faults: %d distinct pages touched' % len(m.fault_pages))
 
-    if at_targets:
+    if at_targets or args.dump_at or watch_targets:
         for addr, name in at_targets:
             print('  0x%08x  %s  hits=%d' % (addr, name, hit_counts[addr]))
+        for addr, arg, length, name in args.dump_at:
+            print('  0x%08x  %s  hits=%d' % (addr, name, dump_hit_counts[addr]))
+        for addr, length, name in watch_targets:
+            print('  0x%08x  %s  hits=%d' % (addr, name, watch_hit_counts[addr]))
 
     if hits:
         print('[guirun] last %d hook hits (oldest first):' % len(hits))
@@ -387,16 +599,14 @@ def main():
             print('[guirun] stack at first hit of 0x%08x (~%dM, after hook '
                   'seq #%d, A7=0x%08x):'
                   % (addr, instrs // 1_000_000, seq, a7))
-            for offset, word in found:
-                print('  +0x%03x  0x%08x' % (offset, word))
+            print_stack_lines(found)
         else:
             print('[guirun] 0x%08x never reached; no stack scan' % addr)
 
     if state['terminal']:
         a7, found = stack_scan(m.uc, 64)
         print('[guirun] stack at terminal loop (A7=0x%08x):' % a7)
-        for offset, word in found:
-            print('  +0x%03x  0x%08x' % (offset, word))
+        print_stack_lines(found)
 
 
 if __name__ == '__main__':

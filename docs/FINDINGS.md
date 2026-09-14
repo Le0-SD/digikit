@@ -621,6 +621,212 @@ received is unknown; since an idle boot is deterministic, input during boot is
 the likely difference. So whether the list stays open depends on state
 established early, not on when FUNC+SRC is pressed. **[V][O]**
 
+### MACHINE SEL closes itself: the UI queue falls behind **[V][O][C]**
+
+Found with `tools/guirun.py --trace-ui` (`emu/uitrace.py`), which prints UI
+queue sends and pops with their wait, each view a key event is offered to,
+and view activate/close. Runs start from `snapshots/boot400M.snap` with all
+five machine patches; instruction counts start at 0 there.
+
+- The UI main loop (`mainloop`, `0x40033492`) pops the UI queue at
+  `0x4094ef3c`. The queue holds item pointers, not copies: `+0x04` count,
+  `+0x10` mask, `+0x14` storage, `+0x18` write index, `+0x1c` read index.
+  Records are 16 bytes: byte `+0` type, long `+4` code, long `+8` flags,
+  long `+0xc` timestamp. Type 5 is the DTIM3 tick (fixed item
+  `0x4022aea6`); type 0 is a key event. **[V]**
+- Headless, the queue never drains after boot. Depth is 1 at 80M, 10 at
+  100M, 20 at 140M, 30 at 160M and 45 at 200M. The loop pops 114-121 items
+  per 20M while DTIM3 posts 120-126. The wait in the queue grows from 0.4M
+  instructions at 80M to about 5M at 170M and 7.4M at 200M. This is the
+  `mainloop` < `dtim3` drift in the progress lines. **[V]**
+- Key event flags: `0x01` press, `0x02` chord (a modifier is held), `0x08`
+  auto-repeat, `0x10` release. Seen: `0x03` and `0x12` for SRC in a FUNC
+  chord, `0x0b` for its repeats, `0x09` for FUNC repeats. Edges are queued
+  from return address `0x40110d7c`, repeats from `0x401108f8`. The first
+  repeat comes 24 counts of the counter at `0x47dc5a6c` (advanced by
+  `FUN_40110820`) after the press, about 1.9M instructions, then every 8
+  counts. **[V]**
+- MachineSelectionView's key handler `0x40060c2c` calls View::close
+  (`0x4010daa2`, returning to `0x40060c72`) for any event with code 1-6,
+  whether press, repeat or release. NO (12) closes on release; YES (10)
+  commits. **[V]**
+- Path of a key event: case 0 of the main loop calls `0x401072bc` at
+  `0x40033518` (A2 = item). Later in the same loop pass, `FUN_4010ecf2`
+  offers the event to each view in turn (`jsr (a0)` at `0x4010ed64`; D3 =
+  view, D0 after the call = consumed). For FUNC+SRC, 8 views pass and
+  MainScreenView consumes it; MachineSelectionView is activated
+  (`FUN_4010dc8a`) inside that offer, about 83k instructions after the
+  pop. **[V]**
+- Chord at 170M (`--panel-dwell 3`, SRC released at once): the SRC press
+  was sent at 170.47M and popped at 175.78M (waited 5.31M). The SRC
+  release was sent at 172.34M, before MachineSelectionView was activated
+  at 175.79M. The release was popped at 177.64M, offered to
+  MachineSelectionView, and closed it. With SRC held instead, the first
+  auto-repeat (sent 172.53M) closes it. **[V]**
+- Chord at 84-92M, backlog 2-4 items (`--panel-dwell 3` tap, `--panel-dwell
+  3` with SRC held to 104M, and default `--panel-dwell 16`): the SRC press
+  waited 0.30-0.49M, MachineSelectionView was activated, and no SRC repeat
+  or release was queued after that, even with SRC held or released later.
+  The list stayed open to the end of the run (130M) in all three. So the
+  firmware stops generating that key's repeats and release once the view
+  is active. Only events generated before activation reach the view, and
+  they exist only because the backlog delays activation. **[V]**
+- The GUI session that kept the list open had `mainloop` 12 ahead of
+  `dtim3` with no drift, so its queue was probably empty when the chord
+  came. That session was not traced. **[O]**
+- Why the main loop cannot keep up: each popped item costs about 171k
+  instructions on average, against a DTIM3 period of about 156k. Not yet
+  known whether this is real UI work made too expensive by the 4.68M
+  instructions-per-second timer rate (`docs/HANDOVER.md`, lines 31-58,
+  puts the real rate about 50 times higher), or an emulator artifact such
+  as a busy wait or a slow peripheral model. **[O]**
+- `--ips` above 4.68M, applied from `boot400M.snap`, stalls boot: still on
+  the splash screen at 200M at 4x and 10x. Not a quick test. **[O]**
+- `0x4005e022` is the MachineListView constructor: it calls
+  `FUN_4010d946(this, "MachineListView")`. It still gets no hits in these
+  runs; why is open. **[C]**
+- The display-name accessor `FUN_400dcc50` is called from `0x4005faf2` in
+  `FUN_4005fab8`, the per-row text callback stored in each MenuItem, not
+  directly from `FUN_4005da40`. **[C]**
+- View class names can be read from any view object through the Itanium
+  RTTI layout: name = `cstr(*(*(vptr - 4) + 4))`, e.g. vtable
+  `0x401e36f8` → typeinfo `0x401e36b4` → `"20MachineSelectionView"`.
+  **[V]**
+
+### Raising the timer rate after boot drains the UI queue **[V][O][C][D]**
+
+`tools/guirun.py --ips-at WHEN:N` changes the timers' instructions per
+emulated second at instruction count WHEN. Raising the rate from the
+snapshot stretches boot (4x and 10x were still on the splash screen at
+200M), so these runs raise it at 80M. `--trace-tasks` (`emu/taskprof.py`)
+charges instructions to RTOS tasks at each context switch.
+
+- `--ips-at 80M:4680000` gives progress lines identical to a run without
+  the option. **[V]**
+- Late chord (FUNC at 164M, SRC tap at 170M) with the rate raised at 80M
+  to 1.5x, 2x, 4x or 10x: the UI queue depth stays at 0-3 up to 200M, the
+  SRC press waits 0.07M-1.7M instructions instead of 5.3M, and
+  MachineSelectionView is activated and still open at 200M. At 1x it
+  closes at 177.6M. **[V]**
+- At 2x the backlog comes back later: depth 9 at 200M, 29 at 300M and 60
+  at 420M, and a chord at 380M closes the list at 400.8M. At 4x the depth
+  stays at 0-1 up to 420M and the list stays open. **[V]**
+- At 1x after boot the UI task (TCB `0x4094eee8`) gets 99.2% of the CPU.
+  The tasks with entries `0x400f1fce` (priority 3), `0x400f1eb6`
+  (priority 2) and `0x4012606a` (priority 6) get almost none, and `jobs`
+  stays at 1. With the rate raised, `0x400f1fce` and then `0x400f1eb6`
+  take 26-71% of the CPU between 100M and 160M, `jobs` goes to 2, and then
+  `0x4012606a` takes 50-78%. **[V]**
+- At 2x, 4x and 10x the screen shows `+DRIVE INITIALIZING` from about
+  160M, covering the list (at 4x it is still there at 419M). At 1.5x the
+  list is visible from 176M to 199M. So at 1x these runs never reach
+  +Drive initialization: the UI task leaves no CPU for the job tasks.
+  **[V]**
+- The GUI session that kept the list open reached `jobs 2` at about 260M,
+  and its screen changed to 409 lit pixels at about 470M. That may have
+  been this splash. **[O]**
+- With the rate raised at 80M to 1.5x, 4x or 10x and no key input,
+  `+DRIVE INITIALIZING` is still on screen at 1000M: 131, 49 and 20
+  emulated seconds after the change. It first appears at 250M (1.5x) or
+  by 150M (4x and 10x). There is no exception and no fault. Between
+  frames only the spinner changes. **[V]**
+- The splash task (entry `0x4012606a`) waits until the count at
+  `0x44e2d5cc` is nonzero, then loops with no exit. Each pass draws a
+  progress step, `(0x44e2d5d0 * 0x27) / 0x44e2d5cc`, and turns a spinner
+  (`FUN_40126332`). Ghidra shows one direct writer for each of the two
+  counts, both before the loop. **[V]**
+- The counts are also written through the helper `0x40125f6a` (reached
+  through thunks `0x4003230c` and `0x40032320` from `FUN_40032c5c`, a
+  mount routine): 2121 calls between 80M and 250M at 4x. So the bar does
+  advance once the task gets CPU; "one direct writer" was true but
+  incomplete. **[C]**
+- While the splash is up, its task takes 49-51% of the CPU at 1.5x,
+  72-74% at 4x and 88-90% at 10x. The job tasks (entries `0x400f1eb6`
+  and `0x400f1fce`) use CPU only in the 20M window after they start,
+  then almost none. At 1.5x the UI task gets half the CPU and the UI
+  queue grows again (109 at 300M, 916 at 1000M); at 4x and 10x it stays
+  at 0-1. **[V]**
+- Why +Drive initialization stalled: with `unblock=True`, `build()`
+  force-satisfies every semaphore pend that is not on its exclusion
+  lists. The progress-screen task pends on semaphore `0x44e2d148`
+  before its loop (at `0x401260c0`, covered by `display_wait`) and once
+  per frame inside it (at `0x40126132`, not covered). The display
+  module's PIT3 ISR (`0x40125f3c`; PIT3 set to PCSR `0x0936`, PMR
+  `0x4323`, about 7.5 Hz) posts that semaphore. At 4x the per-frame pend
+  ran 3879 times between 80M and 250M against 93 PIT3 posts, so the
+  prio-6 task drew about 40 frames per real one and starved the prio-2
+  job worker (entry `0x400f1eb6`), which was ready: parked right after a
+  mutex unlock's `trap #0`, resume PC `0x4000178c`. **[V]**
+- Fix: `display_sem` (read from `pea.l` at `0x40125f4e`, symbol
+  `display_frame_post`) is always in the never-fake set. With it and the
+  rate raised to 4x at 80M, the progress-screen task uses about 2% of
+  the CPU, the job worker about 69%, the splash is gone by 200M, the job
+  worker rests in the job pump from about 370M, an idle task takes the
+  spare CPU, and the UI queue stays at depth 0-2 up to 600M. At 1.5x the
+  splash is gone by 150M and the job worker is still working at 600M
+  with the UI queue at 0. At 1x nothing changes: the job worker never
+  starts. **[V]**
+- Pends still force-satisfied in a 600M run at 4x, by call site:
+  `0x400d4038` (intro, 175, all before about 120M), `0x40120cac` (in the
+  CMD25 write routine, 4), `0x40120a92` (in the CMD18 read routine, 2),
+  `0x40126046` (1). The UI task hits none of them, so `unblock` does not
+  explain the UI backlog at 1x. **[V]**
+- At 4x the firmware issues 941 CMD18 multi-block reads (`0x401208fe`)
+  and 3 CMD25 multi-block writes (`0x40120ae4`) by about 129M. The
+  eSDHC model completes each command at once and reads have no backing
+  data (see emu/esdhc.py). **[V]**
+- Whether the +Drive being empty matters later (projects, samples).
+  **[O]**
+- The MCF5441x reference manual gives "Up to 385 Dhrystone 2.1 MIPS @ 250
+  MHz" (`docs/refs/rm.txt`, line 2475). The firmware's bus clock is 132
+  MHz (see the section on the intro running at 15.00 fps), and the manual
+  fixes the bus clock at half the core clock, so the core runs at 264
+  MHz, above the manual's 250 MHz maximum. **[D]**
+- Why the core clock is above the rated maximum. **[O]**
+- The firmware has no CPU-speed calibration or counted delay loop that
+  was found: its timed waits use DTIM1 or the PITs. No MCF5441x BogoMIPS
+  boot log was found online. The real instruction rate is estimated at
+  200-264M instructions per second, from docs/HANDOVER.md lines 31-58 and
+  separately from the Dhrystone figure; `INSTR_PER_SEC` is 4.68M. **[D]**
+
+### Selecting PLACEHOLDER in the GUI **[V][O]**
+
+- In `emu.gui --patch-machine --ips-at 80M:18.72M`, FUNC+SRC opens MACHINE
+  SEL and DOWN scrolls to PLACEHOLDER. With FUNC released, the
+  first YES marks PLACEHOLDER as selected and a second YES closes the
+  menu. Track 1's SRC page then shows LEV, STRT, LEN and LOOP instead of
+  ONESHOT's TUNE, PLAY, SAMP and LEV. There is no exception and the main
+  loop keeps up with DTIM3. **[V]**
+- Reaching PLACEHOLDER took 7 DOWN taps from ONESHOT headless, but 4 taps
+  in two GUI sessions (in one of them FUNC was latched). Whether FUNC+DOWN
+  moves further, or the cursor started on a lower row, is not known. **[O]**
+- PLACEHOLDER is machine type 7. The default `MachineSpec` copies the
+  nine descriptor fields of type 6, SLICE, so the new machine shows
+  SLICE's parameter page. **[V]**
+- Headless, YES on a row that is not the current machine calls
+  `0x40035e90` once with (object, track 0, machine type): 7 for
+  PLACEHOLDER, 1 for WERP, 4 for GRID. The list stays open afterwards,
+  with or without the machine patch. YES on the current machine's row
+  closes the list (View::close returns to `0x40060e3c`). **[V]**
+- Not checked yet: the `PLC: ---` header popup, and whether a trig on
+  the new machine plays or throws. **[O]**
+- In an earlier GUI session FUNC was still latched, so YES on
+  PLACEHOLDER was a FUNC+YES chord. The screen showed "Prj must be
+  re-saved!", later a "<project> >> +DRIVE..." screen, and it did not
+  change for more than 500M instructions while every task above the
+  init task was blocked. A headless replay of that session's recorded
+  input, which ended at the YES press, showed neither message, so input
+  after that point set it off. **[O]**
+- "Prj must be re-saved!" (`0x40225994`) is shown by the project save
+  routine `FUN_4004303e` when a cached format code is not 4;
+  `FUN_4012184e` reads that code from an in-RAM table. The string
+  "INITIALIZING +DRIVE..." is referenced by `FUN_401239be`, a pass that
+  reads about 4.1 MiB of the drive in chunks and checks two
+  checksum-style gates; the other " +DRIVE..." templates have no static
+  reference. **[V]**
+- Whether the emulated eMMC, which returns zeros for reads and keeps no
+  writes, causes that hang. **[O]**
+
 ### The display names are a separate table **[V]**
 
 Seeing the machine-select screen render for the first time showed three of the
