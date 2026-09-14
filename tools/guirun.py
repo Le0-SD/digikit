@@ -33,6 +33,9 @@ over LEN bytes at ADDR, printing up to N hits with a stack scan each.
 `--ips-at WHEN:N` changes the timer rate to N instructions per emulated
 second at instruction count WHEN, e.g. after boot, so the boot itself is not
 stretched.
+`--post-intro-ips N` sets the timer rate applied when the intro hands over;
+default 18720000 (4x INSTR_PER_SEC); 0 keeps the default rate; ignored when
+--ips or --ips-at is given.
 `--trace-ui` prints the firmware UI path (UI queue sends/pops with wait,
 key dispatch offers to views, view activate/close; see emu/uitrace.py) and
 a window summary with each progress line.
@@ -49,6 +52,7 @@ import collections
 import os
 import struct
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(
@@ -58,7 +62,7 @@ from emu.longrun import build, spin
 from emu.dtim import Dtims, Timers
 from emu import config, panel, symbols, taskprof, uitrace
 from emu import device as devices, panelin
-from emu.pit import Pits, intro_running
+from emu.pit import INSTR_PER_SEC, Pits, intro_running
 from unicorn import UC_HOOK_MEM_WRITE
 from unicorn.m68k_const import UC_M68K_REG_A7, UC_M68K_REG_PC
 from machinepatch import patch_b, DEFAULT_CAVE_B, spec_from_arg, DEFAULT_SPEC
@@ -90,6 +94,12 @@ def parse_args(argv):
     p.add_argument('--watch-max', type=int, default=16)
     p.add_argument('--ips', type=parse_when, default=None)
     p.add_argument('--ips-at', action='append', default=[], type=parse_ips_at)
+    # Timer rate applied once the intro hands over to the OS. At the default
+    # rate the UI task falls behind the 30 Hz DTIM3 tick (FINDINGS: "MACHINE
+    # SEL closes itself"). 0 keeps the default rate. Ignored when --ips or
+    # --ips-at is given.
+    p.add_argument('--post-intro-ips', type=parse_when,
+                   default=4 * INSTR_PER_SEC)
     p.add_argument('--trace-ui', action='store_true')
     p.add_argument('--trace-ui-verbose', action='store_true')
     p.add_argument('--trace-tasks', action='store_true')
@@ -281,10 +291,19 @@ def main():
                       Dtims(m, channels=(3,), hold=intro, instr_per_sec=args.ips))
     else:
         pits = Timers(Pits(m, hold=intro), Dtims(m, channels=(3,), hold=intro))
+    post_intro_ips = (args.post_intro_ips
+                      if args.ips is None and not args.ips_at else 0)
+    held_at_start = pits.held
+    print('[guirun] timer rate %d, after intro %s'
+          % (pits.sources[0].ips, post_intro_ips or 'unchanged'))
     if pits.held and profile.intro_done is not None:
         def handover(uc, a, s_, d):
             pits.release()
             print('[guirun] intro handover at %dM' % (state['instrs'] // 1_000_000))
+            if post_intro_ips:
+                # Applied by the main loop at the next chunk boundary, the
+                # same way as --ips-at.
+                pending_ips.append((state['instrs'], post_intro_ips))
         at(profile.intro_done, handover)
 
     state = {'instrs': 0, 'mainloop': 0, 'jobs': 0, 'terminal': False, 'seq': 0}
@@ -499,9 +518,13 @@ def main():
             print(line)
 
     pending_ips = sorted(args.ips_at)
+    if post_intro_ips and not held_at_start:
+        pending_ips.append((0, post_intro_ips))  # snapshot is past the intro
 
     prev = collections.Counter(ev['satisfied_by'])
     reported = -1
+    wall_t0 = time.monotonic()
+    wall_prev = (wall_t0, 0)
     while state['instrs'] < args.limit:
         due_ips, pending_ips[:] = (
             [e for e in pending_ips if e[0] <= state['instrs']],
@@ -541,10 +564,16 @@ def main():
         step = state['instrs'] // 20_000_000
         if step != reported:
             reported = step
+            now = time.monotonic()
+            rate = ((state['instrs'] - wall_prev[1])
+                    / max(1e-6, now - wall_prev[0]))
+            wall_prev = (now, state['instrs'])
             print('[guirun] %dM tasks=%d dtim3=%d mainloop=%d jobs=%d pc=0x%08x'
+                  ' wall=%.1fs rate=%.2fM/s real=%.0f%%'
                   % (state['instrs'] // 1_000_000, len(ev['tasks']),
                      pits.fired.get('DTIM3', 0), state['mainloop'],
-                     state['jobs'], pc))
+                     state['jobs'], pc, now - wall_t0, rate / 1e6,
+                     100.0 * rate / pits.sources[0].ips))
             if trace is not None:
                 print(trace.summary())
             if task_prof is not None:
@@ -565,6 +594,9 @@ def main():
           'jobs=%d pc=0x%08x'
           % (state['instrs'] // 1_000_000, state['terminal'], len(ev['tasks']),
              pits.fired.get('DTIM3', 0), state['mainloop'], state['jobs'], pc))
+    wall = time.monotonic() - wall_t0
+    print('[guirun] wall: %.1fs, %.2fM instr/s average'
+          % (wall, state['instrs'] / max(1e-6, wall) / 1e6))
     if trace is not None:
         print(trace.summary())
     if task_prof is not None:
