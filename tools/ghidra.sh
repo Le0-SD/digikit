@@ -22,10 +22,12 @@ GHIDRA=${GHIDRA:-/opt/homebrew/Cellar/ghidra/12.1.3/libexec/support/analyzeHeadl
 # and `run` died on it, `run` quietly enough that it looked like the scripts
 # were returning no results.
 PROJ=${GHIDRA_PROJ:-$HOME/ghidra-projects/dt2}
-NAME=dt2
-IMG=sections/section_3_MAIN_OS.bin
+NAME=${GHIDRA_NAME:-dt2}
+IMG=${GHIDRA_IMG:-sections/section_3_MAIN_OS.bin}
 BASE=0x40000400            # dspboot.MAIN_LOAD
-LANG=68000:BE:32:Coldfire  # NOT plain 68000: MVS/MVZ and FF1 decode wrong
+# NOT plain 68000: MVS/MVZ and FF1 decode wrong. GHIDRA_LANG=68000:BE:32:ColdfireEMAC
+# (tools/ghidra/install-coldfire-emac.sh) also decodes the EMAC instructions.
+LANG=${GHIDRA_LANG:-68000:BE:32:Coldfire}
 
 [ -x "$GHIDRA" ] || { echo "no analyzeHeadless at $GHIDRA (set GHIDRA=)" >&2; exit 1; }
 

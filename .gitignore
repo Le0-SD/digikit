@@ -22,4 +22,6 @@ docs/refs/*.pdf
 docs/refs/rm.txt
 .coldtrace/
 tools/ghidra/SHARC/data/languages/*.sla
+tools/ghidra/ColdfireEMAC/data/languages/*.sla
+tools/ghidra/ColdfireEMAC/extension.properties
 tools/nbdocs-scrape.py
