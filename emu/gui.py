@@ -23,11 +23,13 @@ the same point the timers are released.
     uv run python -m emu.gui [snapshot]
 
 --patch-machine installs the experimental eighth machine (PLACEHOLDER) into
-the running emulator's machine list. Bare, it applies all five parts of the
-patch (list, dispatch, group, name, rank); --patch-machine=list, =dispatch,
-=group, =name, or =rank applies just one, and a +-separated combination
-(--patch-machine=list+dispatch) applies exactly those, for bisecting a boot
-failure. An optional :N suffix on the parts value (--patch-machine=list:6)
+the running emulator's machine list. Bare, it applies all nine parts of the
+patch (list, dispatch, group, name, rank, permit, hint, pertype, clone);
+--patch-machine=list, =dispatch, =group, =name, =rank, =permit, =hint,
+=pertype, or =clone applies just one, and a
++-separated combination (--patch-machine=list+dispatch) applies exactly
+those, for bisecting a boot failure. An optional :N suffix on the parts
+value (--patch-machine=list:6)
 sets the 8th list entry's value, default 7, to distinguish "eight entries is
 too many" from "the value 7 is the problem". This patches guest memory in
 the running emulator only -- it modifies no file on disk and is not a
@@ -37,6 +39,15 @@ flashable patch.
 names, cloned descriptor and display position (see
 tools/machinepatch.py's MachineSpec); without it the default spec
 (Placeholder/PLC, cloned from type 6) is used.
+
+--ips-at WHEN:N (repeatable) changes the timer rate to N instructions per
+emulated second at instruction count WHEN (e.g. --ips-at 80M:18.72M after
+boot); the GUI then runs slower than real time if the emulator cannot
+keep up.
+
+--post-intro-ips N sets the timer rate applied when the intro hands over;
+default 18720000 (4x INSTR_PER_SEC); 0 keeps the default rate; ignored when
+--ips-at is given.
 
 tkinter only, no third-party GUI dependency. Note Homebrew's python@3.14 does
 not ship tkinter; uv's managed CPython does, which is why pyproject pins 3.12.
@@ -131,7 +142,8 @@ class Emulator(threading.Thread):
     def __init__(self, snapshot, weakptr=False, slc=False, syx=None,
                  fast=True, realtime=True, patch_machine=False,
                  patch_eighth=7, patch_machine_spec=None,
-                 panel_dwell=PANEL_DWELL_CHUNKS):
+                 panel_dwell=PANEL_DWELL_CHUNKS, ips_at=(),
+                 post_intro_ips=4 * INSTR_PER_SEC):
         super().__init__()
         self.snapshot = snapshot
         self.weakptr = weakptr
@@ -140,6 +152,10 @@ class Emulator(threading.Thread):
         self.patch_machine = patch_machine
         self.patch_eighth = patch_eighth
         self.patch_machine_spec = patch_machine_spec
+        self._pending_ips = sorted(ips_at)
+        # Timer rate applied once the intro hands over; see --post-intro-ips.
+        # An explicit --ips-at wins, so recorded sessions replay unchanged.
+        self._post_intro_ips = 0 if ips_at else post_intro_ips
         # See PANEL_DWELL_CHUNKS. 0 means no pacing: the old coalesce-and-
         # deliver-once-per-chunk behaviour, for an A/B against this one.
         self._dwell_chunks = panel_dwell
@@ -157,6 +173,8 @@ class Emulator(threading.Thread):
         self.realtime = realtime
         self._paced = 0
         self._pace_t0 = None
+        self._rate_t = None         # wall-clock instruction rate window
+        self._rate_instrs = 0
         self.fb = bytearray(W * H)
         self.pause = threading.Event()
         self.stop_flag = threading.Event()
@@ -166,7 +184,7 @@ class Emulator(threading.Thread):
                       'bmp': 0, 'instrs': 0, 'pit': (0, 0, 0),
                       'status': 'loading snapshot', 'mainloop': 0, 'jobs': 0,
                       'dtim3': 0, 'terminal': False, 'panel_lit': 0,
-                      'source': 'setPixel'}
+                      'source': 'setPixel', 'wall_ips': 0.0, 'real': 0.0}
         self._uc = None             # set once the machine is built
         self.error = None
         self._seen = set()
@@ -410,12 +428,21 @@ class Emulator(threading.Thread):
             def handover(uc, a, s_, d):
                 pits.release()
                 self.use_panel = True
+                if self._post_intro_ips:
+                    # Applied at the next chunk boundary, like --ips-at.
+                    self._pending_ips.append((self.stats['instrs'],
+                                              self._post_intro_ips))
             if profile.intro_done is not None:
                 at(profile.intro_done, handover)
             else:
                 print('[gui] WARNING: intro_done did not resolve for this '
                       'image; timers will stay held and the intro will '
                       'never hand over', flush=True)
+        elif self._post_intro_ips:
+            self._pending_ips.append((0, self._post_intro_ips))
+        print('[gui] timer rate %d, after intro %s'
+              % (pits.sources[0].ips, self._post_intro_ips or 'unchanged'),
+              flush=True)
 
         # Progress markers, so the status line can say what the firmware is
         # actually doing rather than only how many pixels it drew. Resolved
@@ -461,6 +488,7 @@ class Emulator(threading.Thread):
         while not self.stop_flag.is_set():
             if self.pause.is_set():
                 self.stats['status'] = 'paused'
+                self._rate_t = None
                 time.sleep(0.05)
                 continue
             # Work out the status BEFORE blocking, not after: spin sits
@@ -478,6 +506,16 @@ class Emulator(threading.Thread):
                 self.stats['status'] = 'running, no frame for %.0fs' % idle
             else:
                 self.stats['status'] = 'running'
+            due_ips, self._pending_ips[:] = (
+                [e for e in self._pending_ips
+                 if e[0] <= self.stats['instrs']],
+                [e for e in self._pending_ips
+                 if e[0] > self.stats['instrs']])
+            for when, n in due_ips:
+                for source in pits.sources:
+                    source.ips = n
+                print('[gui] ips -> %d at %d' % (n, self.stats['instrs']),
+                      flush=True)
             pc = self._drain_input(m, profile, pc)
             pc, executed, stop = spin(m, pc, BUDGET, pits=pits, fast=self.fast)
             if stop != 'limit':
@@ -490,15 +528,24 @@ class Emulator(threading.Thread):
                       % (stop, pc, total // 1_000_000), flush=True)
                 break
             self.stats['instrs'] += executed
+            now = time.time()
+            if self._rate_t is None:
+                self._rate_t, self._rate_instrs = now, self.stats['instrs']
+            elif now - self._rate_t >= 1.0:
+                rate = ((self.stats['instrs'] - self._rate_instrs)
+                        / (now - self._rate_t))
+                self.stats['wall_ips'] = rate
+                self.stats['real'] = rate / pits.sources[0].ips
+                self._rate_t, self._rate_instrs = now, self.stats['instrs']
             if self.realtime:
-                # Sleep off whatever we are ahead of the hardware by. The
-                # budget is in instructions and INSTR_PER_SEC converts it, the
-                # same constant the timer models pace themselves with, so the
-                # emulated clock and the wall clock agree. Capped per sleep so
-                # pause and stop stay responsive.
-                ahead = (self._paced + executed) / INSTR_PER_SEC - (
-                    time.time() - self._pace_t0)
-                self._paced += executed
+                # Sleep off whatever we are ahead of the hardware by. _paced
+                # accumulates emulated seconds at the timers' live rate, so a
+                # rate change from --ips-at is reflected immediately instead
+                # of leaving the pacing keyed to the instruction count at the
+                # old rate. Capped per sleep so pause and stop stay
+                # responsive.
+                self._paced += executed / pits.sources[0].ips
+                ahead = self._paced - (time.time() - self._pace_t0)
                 if ahead > 0.003:
                     time.sleep(min(ahead, 0.05))
             self._publish_panel(m)
@@ -645,11 +692,13 @@ class Emulator(threading.Thread):
                 except Exception:
                     pass
         print('[gui] %5.0fM instr  PIT0/2/3 %d/%d/%d  DTIM3 %d  '
-              'mainloop %d  jobs %d  tasks %d  %s %d%s'
+              'mainloop %d  jobs %d  tasks %d  %s %d  %.2fM instr/s  '
+              '%.0f%% of real time%s'
               % (s['instrs'] / 1e6, s['pit'][0], s['pit'][1], s['pit'][2],
                  s['dtim3'], s['mainloop'], s['jobs'], s['tasks'],
                  s['source'], s['panel_lit'] if s['source'] == 'panel'
-                 else s['px'], note), flush=True)
+                 else s['px'], s['wall_ips'] / 1e6, 100.0 * s['real'],
+                 note), flush=True)
 
 
 class Controls(tk.Frame):
@@ -870,7 +919,8 @@ class App(tk.Tk):
     def __init__(self, snapshot, weakptr=False, slc=False, scale=None,
                  syx=None, fast=True, realtime=True, patch_machine=False,
                  patch_eighth=7, patch_machine_spec=None,
-                 panel_dwell=PANEL_DWELL_CHUNKS):
+                 panel_dwell=PANEL_DWELL_CHUNKS, ips_at=(),
+                 post_intro_ips=4 * INSTR_PER_SEC):
         super().__init__()
         self.title('Digi emulator')
         self.configure(bg='#15181d')
@@ -922,6 +972,8 @@ class App(tk.Tk):
         self.patch_eighth = patch_eighth
         self.patch_machine_spec = patch_machine_spec
         self.panel_dwell = panel_dwell
+        self.ips_at = ips_at
+        self.post_intro_ips = post_intro_ips
         self.shown = -1
         self.replay = None          # (frames, index, next_due) while replaying
         self.start()
@@ -935,7 +987,9 @@ class App(tk.Tk):
                             patch_machine=self.patch_machine,
                             patch_eighth=self.patch_eighth,
                             patch_machine_spec=self.patch_machine_spec,
-                            panel_dwell=self.panel_dwell)
+                            panel_dwell=self.panel_dwell,
+                            ips_at=self.ips_at,
+                            post_intro_ips=self.post_intro_ips)
         self.emu.start()
 
     def send_input(self, kind, code, arg):
@@ -1039,9 +1093,10 @@ class App(tk.Tk):
                     self.shown = e.version
                 s = e.stats
                 self.frames_lbl.configure(
-                    text='frame %d   %.1f / %.1f fps  (%.0f%% of real time)'
+                    text='frame %d   %.1f / %.1f fps   %.2fM instr/s  '
+                         '(%.0f%% of real time)'
                          % (s['frames'], s['fps'], FRAME_HZ,
-                            100.0 * s['fps'] / FRAME_HZ))
+                            s['wall_ips'] / 1e6, 100.0 * s['real']))
                 extra = ('  HUNG: terminal loop 0x4012d2fa (try --weakptr)'
                          if s['terminal'] else '')
                 self.status.configure(
@@ -1072,6 +1127,12 @@ class App(tk.Tk):
         self.destroy()
 
 
+def parse_count(s):
+    if s and s[-1] in ('M', 'm'):
+        return int(float(s[:-1]) * 1_000_000)
+    return int(s, 0)
+
+
 if __name__ == '__main__':
     # --weakptr steps over the weak-pointer branches that otherwise freeze the
     # main task in the terminal loop after 153 messages. It is a diagnostic,
@@ -1087,9 +1148,10 @@ if __name__ == '__main__':
     fast = '--exact' not in argv
     realtime = '--unthrottled' not in argv
     # --patch-machine installs the experimental eighth machine (PLACEHOLDER)
-    # into the machine list. Bare, it applies all five parts (list, dispatch,
-    # group, name, rank); --patch-machine=list, =dispatch, =group, =name, or
-    # =rank applies just that part, and a +-separated combination
+    # into the machine list. Bare, it applies all nine parts (list, dispatch,
+    # group, name, rank, permit, hint, pertype, clone); --patch-machine=list,
+    # =dispatch, =group, =name, =rank, =permit, =hint, =pertype, or =clone
+    # applies just that part, and a +-separated combination
     # (--patch-machine=list+dispatch) applies exactly those, for bisecting.
     # An optional :N suffix on the parts value (e.g. --patch-machine=list:6)
     # sets the 8th list entry's value, default 7.
@@ -1099,7 +1161,8 @@ if __name__ == '__main__':
     patch_machine_spec = None
     for a in argv:
         if a == '--patch-machine':
-            patch_machine = ('list', 'dispatch', 'group', 'name', 'rank')
+            patch_machine = ('list', 'dispatch', 'group', 'name', 'rank',
+                              'permit', 'hint', 'pertype', 'clone')
         elif a.startswith('--patch-machine='):
             value = a.split('=', 1)[1]
             if ':' in value:
@@ -1128,6 +1191,33 @@ if __name__ == '__main__':
         i = argv.index('--syx')
         syx = argv[i + 1]
         del argv[i:i + 2]
+    # --ips-at WHEN:N (repeatable) changes the timer rate to N instructions
+    # per emulated second once instruction count WHEN is reached. WHEN and N
+    # both accept a plain integer or an M-suffixed count (80M, 18.72M).
+    ips_at = []
+    while '--ips-at' in argv or any(a.startswith('--ips-at=') for a in argv):
+        if '--ips-at' in argv:
+            i = argv.index('--ips-at')
+            spec = argv[i + 1]
+            del argv[i:i + 2]
+        else:
+            i = next(j for j, a in enumerate(argv)
+                     if a.startswith('--ips-at='))
+            spec = argv[i].split('=', 1)[1]
+            del argv[i:i + 1]
+        if ':' not in spec:
+            raise SystemExit('--ips-at expects WHEN:N, got %r' % spec)
+        when_str, n_str = spec.split(':', 1)
+        ips_at.append((parse_count(when_str), parse_count(n_str)))
+    ips_at.sort()
+    # --post-intro-ips N sets the timer rate applied once the intro hands
+    # over (default 4x INSTR_PER_SEC, which keeps the UI queue drained); 0
+    # keeps the default rate. Ignored when --ips-at is given.
+    post_intro_ips = 4 * INSTR_PER_SEC
+    if '--post-intro-ips' in argv:
+        i = argv.index('--post-intro-ips')
+        post_intro_ips = max(0, parse_count(argv[i + 1]))
+        del argv[i:i + 2]
     args = [a for a in argv if not a.startswith('--')]
     snap = args[0] if args else 'snapshots/boot400M.snap'
     if not os.path.exists(snap):
@@ -1137,4 +1227,5 @@ if __name__ == '__main__':
     App(snap, weakptr=weakptr, slc=slc, scale=scale, syx=syx, fast=fast,
         realtime=realtime, patch_machine=patch_machine,
         patch_eighth=patch_eighth, patch_machine_spec=patch_machine_spec,
-        panel_dwell=panel_dwell).mainloop()
+        panel_dwell=panel_dwell, ips_at=ips_at,
+        post_intro_ips=post_intro_ips).mainloop()

@@ -46,7 +46,10 @@ ambiguous REQUIRED symbol raises SymbolResolutionError naming exactly which
 symbol(s) and why, at `resolve()` time -- not five minutes into a run.
 
 Everything else is OPTIONAL: diagnostic (task_create_sites, call_sites,
-idle_spins) or late-boot/GUI (panel_diff, fb_front, fb_back). An unresolved
+idle_spins), late-boot/GUI (panel_diff, fb_front, fb_back), or the UI-trace
+hook points (queue_send, ui_queue, ui_key_dispatch, view_offer,
+view_activate, view_close, view_closed_mark, view_request_pop, view_sweep,
+ui_tick_inc, ui_tick_counter). An unresolved
 OPTIONAL symbol is simply None on the Profile; every caller of one must
 degrade gracefully (install no hook) rather than crash -- see dspboot.py,
 longrun.py and panel.py for the pattern.
@@ -519,6 +522,9 @@ SYMBOLS = [
     # into each. emu/tasks.py and emu/gui.py used to hardcode Digitakt's.
     # ----------------------------------------------------------------
     ('ctx_switch', Fixed(0x40000410, verify='46fc27002f48fffc2079'), False),
+    # move.l a0,current_tcb inside ctx_switch: the variable still holds the
+    # outgoing task, A0 the incoming one (emu/taskprof.py).
+    ('ctx_switch_load', Fixed(0x4000044a, verify='23c847d9adb42288'), False),
     ('current_tcb', Operand('ctx_switch', at=0x0a), False),
     ('ready_cursor', Operand('ctx_switch', at=0x16), False),
 
@@ -568,6 +574,14 @@ SYMBOLS = [
                        '588f2ebc3f000000'), False),
     ('display_wait', Sig('588f60ec48794029e1f82a3c000000804879'
                          '4029e274487800144878001f486e'), False),
+
+    # The display module's own PIT3 ISR (0x40125f3c) posts the progress
+    # screen's frame semaphore here (`pea.l display_sem` before the give);
+    # the progress-screen task pends on it once per frame at 0x40126132 as
+    # well as at display_wait.
+    ('display_frame_post', Fixed(0x40125f4e, verify='487944e2d1488081'), False),
+    ('display_sem', Operand('display_frame_post', at=2), False),
+
     ('pump_wait', Sig('42002f43002849f94018c0a41f40002c2f034e96'
                       '7001266a002c1f4000304200'), False),
     ('sleep_pend', Offset('pend_call', 6), False),
@@ -777,6 +791,23 @@ SYMBOLS = [
     ('main_queue', Operand('mainloop', at=2), False),
     ('job_pump', Sig('4fefffcc48d77c3c246f0038240f2a0a260a068500000014'), False),
     ('display_start', Sig('701041f9fc08c000245f13c1fc050050722313c0fc05001d'), False),
+
+    # ----------------------------------------------------------------
+    # UI-trace hook points: the UI queue, key dispatch to views, and view
+    # activate/close. Verified by disassembly on Digitakt II 1.15C (see
+    # emu/uitrace.py).
+    # ----------------------------------------------------------------
+    ('queue_send',       Fixed(0x40001896, verify='2f0a2f02206f000c'), False),
+    ('ui_queue',         Operand('mainloop', at=2), False),
+    ('ui_key_dispatch',  Fixed(0x40033518, verify='4eb9401072bc2f02'), False),
+    ('view_offer',       Fixed(0x4010ed64, verify='4e90508f4a0067c2'), False),
+    ('view_activate',    Fixed(0x4010dc8a, verify='42004fefffd048d7'), False),
+    ('view_close',       Fixed(0x4010daa2, verify='2f0a246f00084878'), False),
+    ('view_closed_mark', Fixed(0x4010daba, verify='15400030202a002c'), False),
+    ('view_request_pop', Fixed(0x4010e52c, verify='7001206f00041140'), False),
+    ('view_sweep',       Fixed(0x4010ec44, verify='4fefffd048d77c7c'), False),
+    ('ui_tick_inc',      Fixed(0x40110828, verify='52b947dc5a6c2039'), False),
+    ('ui_tick_counter',  Operand('ui_tick_inc', at=2), False),
 
     # Every `bra.b $self` (opcode 60FE) -- the RTOS idiom for "nothing to do,
     # wait for the scheduler's timer tick to preempt me". dspboot.py already

@@ -80,10 +80,123 @@ class PlanBTest(unittest.TestCase):
         self.img = StaticImage(_MAIN_IMAGE)
 
     def test_default_plan_matches_verified_patch(self):
-        writes = mp.plan_b(self.img.read, 0x40303e5c)
+        writes = mp.plan_b(self.img.read, 0x40303e5c,
+                            parts=('list', 'dispatch', 'group', 'name', 'rank'))
         lines = tuple('%#010x  %s -> %s' % (addr, old.hex(), new.hex())
                       for addr, old, new in writes)
         self.assertEqual(lines, GOLDEN_ALL5)
+
+    def test_permit_raises_bound_and_relocates_mask_table(self):
+        cave_b = 0x40303e5c
+        writes = mp.plan_b(self.img.read, cave_b, parts=('permit',))
+        self.assertEqual(len(writes), 3)
+
+        slot = cave_b + mp.PERMIT_TABLE_OFF
+        expected_new = (self.img.read(0x401fbda6, 28)
+                         + self.img.read(0x401fbda6 + 24, 4))
+        self.assertEqual(writes[0], (slot, b'\x00' * 32, expected_new))
+
+        self.assertEqual(writes[1], (
+            0x400dcad0,
+            bytes.fromhex('41f9401fbda6'),
+            bytes.fromhex('41f9') + struct.pack('>I', slot)))
+
+        self.assertEqual(writes[2], (
+            0x400dcaba, bytes.fromhex('7406'), bytes.fromhex('7407')))
+
+    def test_all_parts_plan_ends_with_permit_writes(self):
+        cave_b = 0x40303e5c
+        writes = mp.plan_b(self.img.read, cave_b,
+                            parts=('list', 'dispatch', 'group', 'name',
+                                   'rank', 'permit'))
+        self.assertEqual(len(writes), 21)
+        lines = tuple('%#010x  %s -> %s' % (addr, old.hex(), new.hex())
+                      for addr, old, new in writes[:18])
+        self.assertEqual(lines, GOLDEN_ALL5)
+
+        permit_writes = mp.plan_b(self.img.read, cave_b, parts=('permit',))
+        self.assertEqual(writes[18:], permit_writes)
+
+    def test_hint_fills_short_name_and_hint_accessors(self):
+        cave_b = 0x40303e5c
+        base = mp.plan_b(self.img.read, cave_b, parts=('name',))
+        writes = mp.plan_b(self.img.read, cave_b, parts=('name', 'hint'))
+        self.assertEqual(writes[:len(base)], base)
+
+        extra = writes[len(base):]
+        self.assertEqual([(a, o, n) for a, o, n in extra[:-1]], [
+            (0x400dcc77, b'\x06', b'\x07'),
+            (0x400dcc8a, struct.pack('>I', 0x401fbc54),
+             struct.pack('>I', cave_b + 0x204)),
+            (0x400dcc9d, b'\x06', b'\x07'),
+            (0x400dccb0, struct.pack('>I', 0x401fbc58),
+             struct.pack('>I', cave_b + 0x208)),
+        ])
+        last_addr, last_old, last_new = extra[-1]
+        self.assertEqual(last_addr, cave_b + 0x25c)
+        self.assertEqual(last_new, struct.pack('>I', 0x4022c7cb))
+
+        with self.assertRaises(SystemExit):
+            mp.plan_b(self.img.read, cave_b, parts=('hint',))
+
+    def test_pertype_relocates_byte_table(self):
+        cave_b = 0x40303e5c
+        writes = mp.plan_b(self.img.read, cave_b, parts=('pertype',))
+        self.assertEqual(writes[0], (
+            cave_b + mp.PERTYPE_TABLE_OFF, bytes(8),
+            bytes.fromhex('cdd6dfe8f100fbfb')))
+
+        bounds_leas = (
+            (0x400166fc, 0x40016702), (0x400178c6, 0x400178d0),
+            (0x40017d46, 0x40017d50), (0x40017d9a, 0x40017da8),
+            (0x4001709e, 0x400170a4), (0x40016628, 0x40016648))
+        expected = [(
+            cave_b + mp.PERTYPE_TABLE_OFF, bytes(8),
+            bytes.fromhex('cdd6dfe8f100fbfb'))]
+        for bound, lea in bounds_leas:
+            expected.append((
+                bound + 1, b'\x06', b'\x07'))
+            expected.append((
+                lea + 2, struct.pack('>I', 0x401d9f30),
+                struct.pack('>I', cave_b + mp.PERTYPE_TABLE_OFF)))
+        self.assertEqual(len(writes), 13)
+        self.assertEqual(writes, expected)
+
+    def test_clone_shims_for_slice(self):
+        cave_b = 0x40303e5c
+        writes = mp.plan_b(self.img.read, cave_b, parts=('clone',))
+        self.assertEqual(len(writes), 12)
+
+        self.assertEqual(writes[0], (
+            cave_b + 0x300, bytes(30),
+            bytes.fromhex('7206b280' '67000012' '0c8000000007' '67000008'
+                          '4ef94005f1a8' '4ef94005f288')))
+        self.assertEqual(writes[1], (
+            0x4005f1a0, bytes.fromhex('7206b280670000e2'),
+            bytes.fromhex('4ef9') + struct.pack('>I', cave_b + 0x300)
+            + bytes.fromhex('4e71')))
+        self.assertEqual(writes[3], (
+            0x4005eeac, bytes.fromhex('7206b2806622'),
+            bytes.fromhex('4ef9') + struct.pack('>I', cave_b + 0x31e)))
+        self.assertEqual(writes[8][0], cave_b + 0x378)
+        self.assertEqual(writes[8][2], bytes.fromhex(
+            '7006b082' '67000012' '0c8200000007' '67000008'
+            '4ef94005bf04' '4ef94005bef0'))
+        self.assertEqual(writes[10], (
+            cave_b + 0x396, bytes(34),
+            bytes.fromhex('0c8000000007' '6602' '7006'
+                          '72fdc0817204b280' '67000008'
+                          '4ef94005d020' '4ef94005d0b6')))
+        self.assertEqual(writes[11], (
+            0x4005d014, bytes.fromhex('72fdc0817204b28067000098'),
+            bytes.fromhex('4ef9') + struct.pack('>I', cave_b + 0x396)
+            + bytes.fromhex('4e71') * 3))
+
+    def test_clone_without_known_sites_writes_nothing(self):
+        cave_b = 0x40303e5c
+        spec = mp.MachineSpec(clone_of=3, fields=(0,) * 9)
+        writes = mp.plan_b(self.img.read, cave_b, parts=('clone',), spec=spec)
+        self.assertEqual(list(writes), [])
 
     def test_position_zero_puts_new_machine_first(self):
         spec = mp.MachineSpec(position=0)

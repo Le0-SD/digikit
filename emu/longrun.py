@@ -39,7 +39,7 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
           unblock_except=(), edma=True, real_sleep=False, dsp=False,
           srtrap=False, weakptr=False, slc=False, sdgate=True, esdhc=True,
           trace=None, trace_path=None, trace_ranges=(), trace_registers=None,
-          deferred_components=()):
+          deferred_components=(), idle_yield=20000):
     """Stand up a hooked Machine and restore `snapshot` onto it.
 
     -> (m, ev, st, pc, inq, at) where `at(addr, fn)` registers a further
@@ -53,6 +53,9 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     timers)`` before ``spin`` or ``run_until``. The claim also registers it in
     ``ev['checkpoint_components']`` for the next save. Unclaimed saved state
     fails at execution rather than silently running with a fresh timer clock.
+
+    idle_yield: raise vector 32 (reschedule) every N passes through an idle
+    spin (bra.b $self); 20000 is the long-standing value.
 
     isa='scoped' pre-scans MAIN OS for the FF1/MOVEC addresses and hooks only
     those, instead of running a Python callback on every instruction. This is
@@ -71,7 +74,9 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     ordering is not the hardware's. `unblock_except` lists semaphore objects
     to leave alone, for waits you want to drive properly instead -- the intro
     frame semaphore 0x43131200 is the case that matters, since satisfying it
-    is what makes the animation run unpaced.
+    is what makes the animation run unpaced. The progress screen's frame
+    semaphore (`display_sem`) is always excluded too, since the PIT3 ISR
+    that posts it is modelled.
 
     `unblock` never satisfies a pend from any of `recheck` -- call sites
     that re-check a condition after the wait and loop, so satisfying them
@@ -203,7 +208,8 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
     m = Machine(); st = {'seen': set(), 'n': 0, 'task_create_hits': {}}
     ev = {'tasks': [], 'prints': [], 'setpixel': 0, 'pxcopy': 0,
           'switch': collections.Counter(), 'switch_seq': [],
-          'uart_out': bytearray(), 'satisfied': 0, 'depack_clamps': 0}
+          'uart_out': bytearray(), 'satisfied': 0, 'satisfied_by': collections.Counter(),
+          'depack_clamps': 0}
     inq = collections.deque(send)
     with open(config.main_image(), 'rb') as fh:
         main_img = fh.read()
@@ -353,12 +359,13 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
         install_dsp(m, ev)
 
     spins = {'n': 0}
+    ev['idle_spins'] = spins
 
     def do_halt(uc, a, s, d):
         spins['n'] += 1
         if tx is not None:
             tx.deliver()
-        if spins['n'] % 20000 == 0:
+        if spins['n'] % idle_yield == 0:
             m.raise_vector(32)
     for spin_addr in db.find_idle_spins(main_img, db.MAIN_LOAD):
         at(spin_addr, do_halt)
@@ -389,6 +396,14 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
         # of the system. That handoff is wired up below rather than left to
         # each caller -- getting it wrong is silent, it just looks like a hang.
         skip = set(unblock_except)
+        # The progress screen's frame semaphore is posted by the display
+        # module's own PIT3 ISR at ~7.5 Hz, and PIT3 is modelled, so it must
+        # never be faked. `display_wait` only covers the task's first pend;
+        # its per-frame pend (0x40126132) was being force-satisfied, so the
+        # prio-6 task drew about 40 frames per real one and starved the prio-2
+        # job worker doing +Drive initialization.
+        if profile.display_sem is not None:
+            skip.add(profile.display_sem)
         ev['unblock_skip'] = skip
         skip_callers = set(recheck)
         if real_sleep:
@@ -404,6 +419,7 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
                 if struct.unpack('>i', uc.mem_read(sem, 4))[0] <= 0:
                     uc.mem_write(sem, struct.pack('>I', 1))
                     ev['satisfied'] += 1
+                    ev['satisfied_by'][ret] += 1
             except Exception:
                 pass
         at(profile.sem_pend, satisfy); maybe_at(profile.pend_b, satisfy)

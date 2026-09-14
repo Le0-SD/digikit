@@ -56,7 +56,28 @@ in `std::terminate`. The patch redirects the map's one-time range insert
 at `0x40051872` to a cave shim that supplies eight `(type, position)`
 pairs instead of seven.
 
-`--parts both` (the default) applies all five parts. `--eighth`
+`--parts permit` patches `FUN_400dcab8`, the permission check used by the
+machine setter `FUN_40050cd6` and six other callers (assign, list
+availability, sound load, paste, sound locks). It rejects type > 6 with
+`moveq #6,D2` and reads a 7-long mask table at `0x401fbda6`; the patch
+raises the bound to 7 and points the lea at an 8-long copy in cave B at
+`+0x1a0` whose eighth entry is `clone_of`'s. Without it, selecting the
+machine calls the commit with type 7 but the track keeps its old type.
+
+`--parts hint` bounds and repoints the other two accessors of the name table,
+`FUN_400dcc76` (short name) and `FUN_400dcc9c` (the header hint shown after a
+trig, e.g. "Y:Slice Menu"; type 7 got "ERROR"), and gives row 8 `clone_of`'s
+hint. It needs `name`. `--parts pertype` moves the 7-byte table at
+`0x401d9f30` to cave B `+0x1c0` with `clone_of`'s byte as the eighth and
+raises the `moveq #6` bound in its six readers. `--parts clone` sends each
+firmware test of `type == clone_of` through a cave shim at `+0x300` that also
+accepts 7: the Slice menu entry (`FUN_4005f0c0`), the page layout test
+`(type & ~2) == 4` (`FUN_4005cb7c`), the step count (`FUN_4005be94`),
+parameter 0xfc (`FUN_4003065a`, `FUN_40048660`) and a per-track loop
+(`FUN_4005edd6`). Only SLICE's tests are known; for another `clone_of` the
+part writes nothing.
+
+`--parts both` (the default) applies all nine parts. `--eighth`
 exists to tell "eight entries is too many" apart from "the value 7 is the
 problem": run with `--parts list --eighth N` for some other N.
 
@@ -158,7 +179,47 @@ RANK_GUARD = 0x40984ce8
 RANK_SHIM_OFF = 0x2a0
 RANK_TABLE_OFF = 0x2c0
 
-PARTS = ('list', 'dispatch', 'group', 'name', 'rank')
+PERMIT_BOUND_ADDR = 0x400dcaba   # FUN_400dcab8: moveq #6,D2 -- rejects type > 6
+PERMIT_BOUND_WANT = bytes.fromhex('7406')
+PERMIT_LEA_ADDR = 0x400dcad0     # lea (0x401fbda6).l,A0 -- per-type mask table
+PERMIT_TABLE_SRC = 0x401fbda6    # 7 longs; the first word of each is a track mask
+PERMIT_LEA_WANT = bytes.fromhex('41f9') + struct.pack('>I', PERMIT_TABLE_SRC)
+PERMIT_TABLE_OFF = 0x1a0         # 8 longs, between TABLE_B_OFF's 32 bytes and NAME_TABLE_OFF
+
+# 'hint': the other two accessors of the name table, short name (+4) and
+# header hint (+8). Same head as FUN_400dcc50, but `addi.l #table+column,D0`.
+LABEL_FUNCS = ((0x400dcc76, 4), (0x400dcc9c, 8))
+LABEL_ADDI_OFF = 0x12
+
+# 'pertype': a 7-byte per-type table; byte 7 is the start of an unrelated string.
+PERTYPE_TABLE_SRC = 0x401d9f30
+PERTYPE_TABLE_OFF = 0x1c0
+PERTYPE_SITES = (   # (moveq #6,Dn bound, lea (0x401d9f30).l,An) in each reader
+    (0x400166fc, 0x40016702),   # FUN_400166b8
+    (0x400178c6, 0x400178d0),   # FUN_40017828
+    (0x40017d46, 0x40017d50),   # FUN_40017b56
+    (0x40017d9a, 0x40017da8),   # FUN_40017b56, second read
+    (0x4001709e, 0x400170a4),   # FUN_40017080
+    (0x40016628, 0x40016648),   # FUN_40016624
+)
+
+# 'clone': code that tests `type == clone_of`, keyed by clone_of. Each site is
+# (addr, original bytes, compare replayed in the shim, type register, match
+# address, no-match address). Only SLICE's (6) are known so far.
+CLONE_SHIM_OFF = 0x300
+CLONE_EQ_SITES = {
+    6: (
+        (0x4005f1a0, '7206b280670000e2', '7206b280', 0, 0x4005f288, 0x4005f1a8),  # FUN_4005f0c0: Slice menu
+        (0x4005eeac, '7206b2806622', '7206b280', 0, 0x4005eeb2, 0x4005eed4),      # FUN_4005edd6: per-track loop
+        (0x40030766, '7206b2806600016c', '7206b280', 0, 0x4003076e, 0x400308d8),  # FUN_4003065a: param 0xfc
+        (0x400488ec, '588fbc806622', '588fbc80', 0, 0x400488f2, 0x40048914),      # FUN_40048660: param 0xfc
+        (0x4005beea, '7006b0826614', '7006b082', 2, 0x4005bef0, 0x4005bf04),      # FUN_4005be94: step count
+    ),
+}
+# FUN_4005cb7c: `(type & ~2) == 4` matches types 4 and 6. (addr, original, match, no-match)
+CLONE_MASK_SITE = (0x4005d014, '72fdc0817204b28067000098', 0x4005d0b6, 0x4005d020)
+
+PARTS = ('list', 'dispatch', 'group', 'name', 'rank', 'permit', 'hint', 'pertype', 'clone')
 
 NEW_TYPE = 7    # the one new machine type this tool installs
 
@@ -300,6 +361,28 @@ def build_rank_shim(cave_b, table_len):
     )
 
 
+def build_eq_shim(prefix, reg, match, nomatch):
+    """Replay a site's 4-byte compare; go to `match` if it matched or the type is 7."""
+    assert len(prefix) == 4
+    return (prefix
+            + bytes.fromhex('67000012')                     # beq.w match
+            + struct.pack('>HI', 0x0c80 | reg, NEW_TYPE)    # cmpi.l #7,Dreg
+            + bytes.fromhex('67000008')                     # beq.w match
+            + bytes.fromhex('4ef9') + struct.pack('>I', nomatch)
+            + bytes.fromhex('4ef9') + struct.pack('>I', match))
+
+
+def build_mask_shim(clone_of, match, nomatch):
+    """FUN_4005cb7c: turn type 7 into clone_of, then replay (type & ~2) == 4."""
+    return (struct.pack('>HI', 0x0c80, NEW_TYPE)            # cmpi.l #7,D0
+            + bytes.fromhex('6602')                         # bne.b +2
+            + bytes([0x70, clone_of])                       # moveq #clone_of,D0
+            + bytes.fromhex('72fdc0817204b280')             # moveq #-3,D1; and.l D1,D0; moveq #4,D1; cmp.l D0,D1
+            + bytes.fromhex('67000008')                     # beq.w match
+            + bytes.fromhex('4ef9') + struct.pack('>I', nomatch)
+            + bytes.fromhex('4ef9') + struct.pack('>I', match))
+
+
 def check_parts(parts):
     unknown = [p for p in parts if p not in PARTS]
     if unknown or not parts:
@@ -354,6 +437,17 @@ def plan_b(read, cave_b, parts=PARTS, eighth=None, spec=DEFAULT_SPEC):
             raise SystemExit(
                 'machinepatch: %#010x holds %s, expected %s'
                 % (RANK_CALL, cur.hex(), RANK_CALL_WANT.hex()))
+    if 'permit' in parts:
+        cur = read(PERMIT_BOUND_ADDR, len(PERMIT_BOUND_WANT))
+        if cur != PERMIT_BOUND_WANT:
+            raise SystemExit(
+                'machinepatch: %#010x holds %s, expected %s'
+                % (PERMIT_BOUND_ADDR, cur.hex(), PERMIT_BOUND_WANT.hex()))
+        cur = read(PERMIT_LEA_ADDR, len(PERMIT_LEA_WANT))
+        if cur != PERMIT_LEA_WANT:
+            raise SystemExit(
+                'machinepatch: %#010x holds %s, expected %s'
+                % (PERMIT_LEA_ADDR, cur.hex(), PERMIT_LEA_WANT.hex()))
 
     if spec.fields is not None:
         fields = spec.fields
@@ -424,6 +518,86 @@ def plan_b(read, cave_b, parts=PARTS, eighth=None, spec=DEFAULT_SPEC):
 
     if 'dispatch' in parts:
         add(DISPATCH, b'\x4e\xf9' + struct.pack('>I', cave_b))
+
+    if 'permit' in parts:
+        slot = cave_b + PERMIT_TABLE_OFF
+        old = read(slot, 32)
+        if old != b'\x00' * 32:
+            raise SystemExit(
+                'machinepatch: cave slot %#010x is not free (holds %s)'
+                % (slot, old.hex()))
+        stock = read(PERMIT_TABLE_SRC, 28)
+        table = stock + stock[spec.clone_of * 4:spec.clone_of * 4 + 4]
+        writes.append((slot, old, table))
+        writes.append((PERMIT_LEA_ADDR, PERMIT_LEA_WANT,
+                       bytes.fromhex('41f9') + struct.pack('>I', slot)))
+        writes.append((PERMIT_BOUND_ADDR, PERMIT_BOUND_WANT,
+                       bytes([0x74, NEW_TYPE])))
+
+    if 'hint' in parts:
+        if 'name' not in parts:
+            raise SystemExit('machinepatch: hint needs name, whose relocated '
+                             'table it fills')
+        table_addr = cave_b + NAME_TABLE_OFF
+        for func, column in LABEL_FUNCS:
+            addi = bytes.fromhex('0680') + struct.pack('>I', NAME_TABLE_SRC + column)
+            for addr, want in ((func, NAME_HEAD_WANT), (func + LABEL_ADDI_OFF, addi)):
+                cur = read(addr, len(want))
+                if cur != want:
+                    raise SystemExit('machinepatch: %#010x holds %s, expected %s'
+                                     % (addr, cur.hex(), want.hex()))
+            add(func + 1, bytes([NEW_TYPE]))
+            add(func + LABEL_ADDI_OFF + 2, struct.pack('>I', table_addr + column))
+        # The name part leaves row 8's hint 0; give it clone_of's.
+        add(table_addr + NAME_TABLE_ROWS * NAME_TABLE_ROW_BYTES + 8,
+            read(NAME_TABLE_SRC + spec.clone_of * NAME_TABLE_ROW_BYTES + 8, 4))
+
+    if 'pertype' in parts:
+        slot = cave_b + PERTYPE_TABLE_OFF
+        old = read(slot, 8)
+        if old != bytes(8):
+            raise SystemExit('machinepatch: cave slot %#010x is not free (holds %s)'
+                             % (slot, old.hex()))
+        for bound, lea in PERTYPE_SITES:
+            cur = read(bound, 2)
+            if cur[0] & 0xf1 != 0x70 or cur[1] != 6:
+                raise SystemExit('machinepatch: %#010x holds %s, expected moveq #6,Dn'
+                                 % (bound, cur.hex()))
+            cur = read(lea, 6)
+            if (cur[0] & 0xf1 != 0x41 or cur[1] != 0xf9
+                    or cur[2:] != struct.pack('>I', PERTYPE_TABLE_SRC)):
+                raise SystemExit('machinepatch: %#010x holds %s, expected lea (%#010x).l,An'
+                                 % (lea, cur.hex(), PERTYPE_TABLE_SRC))
+        stock = read(PERTYPE_TABLE_SRC, 7)
+        add(slot, stock + stock[spec.clone_of:spec.clone_of + 1])
+        for bound, lea in PERTYPE_SITES:
+            add(bound + 1, bytes([NEW_TYPE]))
+            add(lea + 2, struct.pack('>I', slot))
+
+    if 'clone' in parts:
+        sites = [(addr, bytes.fromhex(want),
+                  build_eq_shim(bytes.fromhex(prefix), reg, match, nomatch))
+                 for addr, want, prefix, reg, match, nomatch
+                 in CLONE_EQ_SITES.get(spec.clone_of, ())]
+        if spec.clone_of in CLONE_EQ_SITES:
+            addr, want, match, nomatch = CLONE_MASK_SITE
+            sites.append((addr, bytes.fromhex(want),
+                          build_mask_shim(spec.clone_of, match, nomatch)))
+        shim = cave_b + CLONE_SHIM_OFF
+        total = sum(len(code) for _, _, code in sites)
+        old = read(shim, total)
+        if old != bytes(total):
+            raise SystemExit('machinepatch: cave slot %#010x is not free (holds %s)'
+                             % (shim, old.hex()))
+        for addr, want, code in sites:
+            cur = read(addr, len(want))
+            if cur != want:
+                raise SystemExit('machinepatch: %#010x holds %s, expected %s'
+                                 % (addr, cur.hex(), want.hex()))
+            add(shim, code)
+            jump = bytes.fromhex('4ef9') + struct.pack('>I', shim)
+            add(addr, jump + bytes.fromhex('4e71') * ((len(want) - len(jump)) // 2))
+            shim += len(code)
 
     return writes
 
@@ -757,13 +931,16 @@ def main(argv=None):
                      help='cave address for --milestone b (default: '
                           '0x40303e5c)')
     ap.add_argument('--parts',
-                     choices=('list', 'dispatch', 'group', 'name', 'rank', 'both'),
+                     choices=('list', 'dispatch', 'group', 'name', 'rank',
+                              'permit', 'hint', 'pertype', 'clone', 'both'),
                      default='both',
                      help='which part of --milestone b to apply: the list '
                           'relocation, the dispatch trampoline, the group-id '
                           'range fix, the display-name table, the sort '
-                          'comparator ranking, or both/all five (default: '
-                          'both)')
+                          'comparator ranking, the permission-table bound, '
+                          'the short-name and hint accessors, the per-type '
+                          'byte table, the clone_of type tests, or both/all '
+                          'nine (default: both)')
     ap.add_argument('--eighth', type=lambda s: int(s, 0), default=None,
                      help='value to write as the 8th entry of the relocated '
                           'machine list for --milestone b (default is the '
