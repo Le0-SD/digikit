@@ -46,6 +46,11 @@ switch and prints a per-task window summary with each progress line (see
 emu/taskprof.py).
 `--idle-yield N` raises the reschedule vector every N idle-spin passes
 instead of 20000 (see emu/longrun.py build).
+`--save-at WHEN:PATH` saves a snapshot (emu/snapshot.py, via
+emu.checkpoint.save_longrun) at the first chunk boundary at or after
+instruction count WHEN. It can be resumed with this tool or
+emu.longrun.build. With --patch-machine the patch is already in the
+saved memory, so do not pass --patch-machine again when resuming.
 """
 import argparse
 import collections
@@ -59,6 +64,7 @@ sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
 
 from emu.longrun import build, spin
+from emu.checkpoint import save_longrun
 from emu.dtim import Dtims, Timers
 from emu import config, panel, symbols, taskprof, uitrace
 from emu import device as devices, panelin
@@ -111,6 +117,7 @@ def parse_args(argv):
     p.add_argument('--input', action='append', default=[])
     p.add_argument('--feed', action='append', default=[])
     p.add_argument('--png-at', action='append', default=[])
+    p.add_argument('--save-at', action='append', default=[])
     # same as emu/gui.py's PANEL_DWELL_CHUNKS
     p.add_argument('--panel-dwell', type=int, default=16)
     return p.parse_args(argv)
@@ -141,6 +148,11 @@ def parse_ips_at(spec):
 
 
 def parse_png_at(spec):
+    when_str, path = spec.split(':', 1)
+    return parse_when(when_str), path
+
+
+def parse_save_at(spec):
     when_str, path = spec.split(':', 1)
     return parse_when(when_str), path
 
@@ -385,6 +397,7 @@ def main():
         at(profile.panel_diff, latch_frame)
 
     pending_pngs = [parse_png_at(spec) for spec in args.png_at]
+    pending_saves = [parse_save_at(spec) for spec in args.save_at]
     pending_feeds = [parse_feed(s) for s in args.feed]
 
     at_targets = [parse_at(spec) for spec in args.at]
@@ -560,6 +573,11 @@ def main():
             else:
                 panel.write_png(latched['buf'], path)
                 print('[guirun] png ~%dM -> %s' % (when // 1_000_000, path))
+        due, pending_saves[:] = ([e for e in pending_saves if e[0] <= state['instrs']],
+                                 [e for e in pending_saves if e[0] > state['instrs']])
+        for when, path in due:
+            save_longrun(m, ev, pits, path, extra={'instrs': state['instrs']})
+            print('saved snapshot at %d instrs -> %s' % (state['instrs'], path), flush=True)
         if stop != 'limit':
             print('[guirun] HALTED: %s at pc=0x%08x' % (stop, pc))
             break
