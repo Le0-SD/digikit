@@ -789,27 +789,61 @@ charges instructions to RTOS tasks at each context switch.
   200-264M instructions per second, from docs/HANDOVER.md lines 31-58 and
   separately from the Dhrystone figure; `INSTR_PER_SEC` is 4.68M. **[D]**
 
-### Selecting PLACEHOLDER in the GUI **[V][O]**
+### The rate rises automatically after the intro; where wall time goes **[V][O]**
+
+`tools/guirun.py` and `emu/gui.py` raise the timer rate to 18.72M (4x
+`INSTR_PER_SEC`) at the first chunk boundary after the intro hands over.
+`--post-intro-ips N` sets the rate and 0 turns it off; an explicit `--ips`
+or `--ips-at` disables it. Progress lines and the GUI label show wall-clock
+instructions per second and the percentage of real time.
+
+- `--post-intro-ips 0` matches a default run from before the change, and
+  `--ips-at 80M:18720000` matches the earlier `--ips-at` run, in every
+  emulated field of the progress and end lines to 200M. **[V]**
+- Default, headless from `snapshots/boot400M.snap` with the five parts:
+  the rate changes at 52999788, UI queue depth stays 0-1 (max 2) to 500M,
+  +Drive init finishes at about 360-380M, no exception. **[V]**
+- After init, 76-77% of each 20M window is the init task at the parking
+  loop `0x400cf3e0`; the UI task takes about 23%. **[V]**
+- Wall-clock rate in that run on an Apple M3 Max: about 10M instructions
+  per second while the job worker runs (about 53% of real time at 4x), and
+  4.0-4.1M per second once idle (21-22%). `idle-spins` rises from 0 to
+  about 3.9M per 20M window at the same point. **[V]**
+- Whether the idle-spin hook is what halves the wall-clock rate. Needs an
+  A/B with that hook disabled before building idle skipping. **[O]**
+- An earlier baseline on the same machine ran at load average 18-25, so
+  its absolute numbers are not comparable: 0-80M at about 2.5M per second
+  at every rate, 80-200M at 8.4M per second at 1x and 6.0M at 4x.
+  `--trace-tasks` and `--trace-ui` changed the rate by about 1%. **[V]**
+- The GUI label was not checked (no Tk in the agent sandbox). **[O]**
+
+### Selecting PLACEHOLDER in the GUI **[V][O][C]**
 
 - In `emu.gui --patch-machine --ips-at 80M:18.72M`, FUNC+SRC opens MACHINE
   SEL and DOWN scrolls to PLACEHOLDER. With FUNC released, the
   first YES marks PLACEHOLDER as selected and a second YES closes the
-  menu. Track 1's SRC page then shows LEV, STRT, LEN and LOOP instead of
-  ONESHOT's TUNE, PLAY, SAMP and LEV. There is no exception and the main
-  loop keeps up with DTIM3. **[V]**
+  menu. There is no exception and the main loop keeps up with DTIM3.
+  **[V]**
+- An earlier version of this section said track 1's SRC page then shows
+  SLICE's parameters. That was wrong: LEV, STRT, LEN and LOOP is
+  ONESHOT's page, and a run that never opens MACHINE SEL shows the same
+  page. With the five parts the track keeps type 0; see "Type 7 did not
+  stick" below. **[C]**
 - Reaching PLACEHOLDER took 7 DOWN taps from ONESHOT headless, but 4 taps
   in two GUI sessions (in one of them FUNC was latched). Whether FUNC+DOWN
   moves further, or the cursor started on a lower row, is not known. **[O]**
 - PLACEHOLDER is machine type 7. The default `MachineSpec` copies the
-  nine descriptor fields of type 6, SLICE, so the new machine shows
-  SLICE's parameter page. **[V]**
+  nine descriptor fields of type 6, SLICE. With only the five parts those
+  fields were never used, because the track's type stayed 0. **[C]**
 - Headless, YES on a row that is not the current machine calls
   `0x40035e90` once with (object, track 0, machine type): 7 for
   PLACEHOLDER, 1 for WERP, 4 for GRID. The list stays open afterwards,
   with or without the machine patch. YES on the current machine's row
   closes the list (View::close returns to `0x40060e3c`). **[V]**
-- Not checked yet: the `PLC: ---` header popup, and whether a trig on
-  the new machine plays or throws. **[O]**
+- A trig and PLAY on the new machine throw no exception (headless,
+  `cxa_throw` hook at `0x401d5680`). Whether it makes sound is not
+  checked. The `PLC: ---` popup was not seen after pressing SRC on the SRC
+  page. **[V][O]**
 - In an earlier GUI session FUNC was still latched, so YES on
   PLACEHOLDER was a FUNC+YES chord. The screen showed "Prj must be
   re-saved!", later a "<project> >> +DRIVE..." screen, and it did not
@@ -852,7 +886,8 @@ different mechanism from the descriptor's own name fields: **[V]**
 
 Row 5 reuses one pointer for both columns, mirroring MIDI's irregularity in
 the descriptor array. Row 6 has a third non-null pointer (`0x4022c7cb`) that
-the others lack; unexplained. **[O]**
+the others lack. It is the header hint `Y:Slice Menu`, read by
+`FUN_400dcc9c`; see "Copying SLICE's behaviour to type 7". **[V][C]**
 
 `ONESHOT` was not findable by grep because the stored literal is `Oneshot` —
 the UI upper-cases it at draw time.
@@ -905,6 +940,87 @@ against the static image (`tests/test_machinepatch_plan.py`). With
 follow it, boot completes with no exception, and MACHINE SEL shows LOFI as its
 first row. The fields copied live from REPITCH's descriptor are
 `0, 0xe7, 0, 0xe8, 0xe9, 0xea, 0xeb, 0xec, 0x0a`. **[V]**
+
+### Type 7 did not stick: a permission check was the sixth bound **[V][C]**
+
+The five parts above make the machine visible and selectable, but not
+used. YES on PLACEHOLDER calls the commit `0x40035e90` with type 7, and the
+track keeps type 0 (ONESHOT). A trig shows the header `Oneshot`, and the
+descriptor dispatch `0x400caf48`, called from `0x40017674`
+(`FUN_4001762c`), gets type 0 for all 1467 calls in the run. Selecting
+SLICE changes that argument to 6 on the first call after the second YES.
+SLICE runs with and without the patch give identical screens and commit
+calls. **[V]**
+
+- The commit calls the setter `FUN_40050cd6(slot, type, track, flag)`
+  with `slot = obj + track*0x3c0 + 0x6c`. The setter asks
+  `FUN_400dcab8(type, FUN_400dcb5e(track))` whether the type is allowed.
+  On 0 it returns at `0x40050cfe`, before it stores the type byte at
+  `+0xa2` of the object returned by the slot's vtable `+0x28`. **[V]**
+- `FUN_400dcab8` rejects type > 6 (`moveq #6,D2` at `0x400dcaba`, then
+  `bcs`), then tests bit `mask` of the first word of a 7-long table at
+  `0x401fbda6`. All seven entries are `0xffff`, so only the bounds reject
+  anything today. The slot after type 6 overlaps the track table at
+  `0x401fbdc0`. **[V]**
+- Headless, selecting SLICE writes `0x00` -> `0x06` at `0x4263b1a2`
+  (track 0) at instruction 190283779. Selecting PLACEHOLDER takes the
+  early return at 223538984 and writes nothing. **[V]**
+- `FUN_400dcab8` has six other callers: `FUN_4002cd90` (assign a
+  machine), `FUN_40035a34` (per-type track availability), `FUN_400361b4`
+  (sound load), `FUN_4004fc52`, `FUN_400513f6` (paste sound) and
+  `FUN_400d8f26` (sound locks). **[V]**
+- The `permit` part copies the table to cave B `+0x1a0` with an eighth
+  entry from `clone_of`, repoints the `lea` at `0x400dcad0` and raises the
+  bound to 7. With it the dispatch gets type 0 for the 396 calls before the
+  second YES and type 7 for all 1026 after, the setter never takes the
+  early return, and the SRC page shows SLICE's LEV, SLICE, LEN and `---`.
+  **[V]**
+- `FUN_4001762c` pushes one argument to `0x400caf48`. The second and third
+  stack words seen by a hook there are left over from an outer frame.
+  **[V]**
+
+### Copying SLICE's behaviour to type 7 **[V][O]**
+
+With type 7 stored, the track still differed from SLICE where the firmware
+tests the type number. Three more parts in `tools/machinepatch.py`, driven
+by `MachineSpec.clone_of`, cover the differences found so far. Bare
+`--patch-machine` applies all nine parts.
+
+- `hint`: the name table at `0x401fbc50` has a third column, the header
+  hint shown after a trig. The accessors `FUN_400dcc76` (short name, `+4`)
+  and `FUN_400dcc9c` (hint, `+8`) have the same `moveq #6` bound as
+  `FUN_400dcc50`, and use `addi.l #table+column,D0` at `+0x12`. Out of
+  range the hint is `"READ ERROR"+5` (`ERROR`, drawn as `ERR`) and the
+  short name is `ERR/ERR`. The part raises both bounds, points both at the
+  relocated table and gives row 8 `clone_of`'s hint. **[V]**
+- `pertype`: a 7-byte table at `0x401d9f30` (`cd d6 df e8 f1 00 fb`; the
+  next byte starts an unrelated string) is read behind a `moveq #6` bound
+  by `FUN_400166b8`, `FUN_40017828`, `FUN_40017b56` (twice),
+  `FUN_40017080` and `FUN_40016624`; type 7 gets 0. The part moves it to
+  cave B `+0x1c0` with `clone_of`'s byte as the eighth and raises the six
+  bounds. What the bytes mean is not known. **[V][O]**
+- `clone`: each firmware test of `type == 6` jumps to a shim in cave B at
+  `+0x300` that repeats the compare and also accepts 7: `FUN_4005f0c0`
+  (the Slice menu entry), `FUN_4005cb7c` (`(type & ~2) == 4`, types 4 and
+  6), `FUN_4005be94` (step count), `FUN_4003065a` and `FUN_40048660`
+  (parameter `0xfc`) and `FUN_4005edd6` (a per-track loop). Only SLICE's
+  tests are listed; for another `clone_of` the part writes nothing. **[V]**
+- Headless with all nine parts, a trig shows `Placeholder  Y:Slice Me`
+  (cut at the screen edge), and YES on the SRC page opens the Slice menu
+  (EDIT SLICE POINTS, CREATE SLICE GRID, CREATE LINEAR LOCKS, CREATE
+  RANDOM LOCKS) through the `FUN_4005f0c0` shim. No exception. **[V]**
+- Not exercised: the `FUN_4005cb7c` shim was not reached, and the
+  step-count, parameter-`0xfc` and per-track-loop sites were not hit.
+  `FUN_40017080` has its own type-6 case (object `+0x13c`) that is not
+  patched. After a trig SLICE draws a horizontal line that PLACEHOLDER
+  does not. **[O]**
+- Tests for other types (`== 4` in `FUN_4003065a`, `FUN_40048660`,
+  `FUN_4005be94`, `FUN_4005e788` and `FUN_4005f0c0`) are known but not in
+  the part. The search covered the 32 callers of the type reader
+  `FUN_4004fc02` and the xrefs of the two tables, not every read of
+  `+0xa2`. **[O]**
+- What the SHARC is told about a type-7 track, and whether saving a
+  project with type 7 works, are not checked. **[O]**
 
 ## Emulation
 
