@@ -80,10 +80,40 @@ class PlanBTest(unittest.TestCase):
         self.img = StaticImage(_MAIN_IMAGE)
 
     def test_default_plan_matches_verified_patch(self):
-        writes = mp.plan_b(self.img.read, 0x40303e5c)
+        writes = mp.plan_b(self.img.read, 0x40303e5c,
+                            parts=('list', 'dispatch', 'group', 'name', 'rank'))
         lines = tuple('%#010x  %s -> %s' % (addr, old.hex(), new.hex())
                       for addr, old, new in writes)
         self.assertEqual(lines, GOLDEN_ALL5)
+
+    def test_permit_raises_bound_and_relocates_mask_table(self):
+        cave_b = 0x40303e5c
+        writes = mp.plan_b(self.img.read, cave_b, parts=('permit',))
+        self.assertEqual(len(writes), 3)
+
+        slot = cave_b + mp.PERMIT_TABLE_OFF
+        expected_new = (self.img.read(0x401fbda6, 28)
+                         + self.img.read(0x401fbda6 + 24, 4))
+        self.assertEqual(writes[0], (slot, b'\x00' * 32, expected_new))
+
+        self.assertEqual(writes[1], (
+            0x400dcad0,
+            bytes.fromhex('41f9401fbda6'),
+            bytes.fromhex('41f9') + struct.pack('>I', slot)))
+
+        self.assertEqual(writes[2], (
+            0x400dcaba, bytes.fromhex('7406'), bytes.fromhex('7407')))
+
+    def test_all_parts_plan_ends_with_permit_writes(self):
+        cave_b = 0x40303e5c
+        writes = mp.plan_b(self.img.read, cave_b, parts=mp.PARTS)
+        self.assertEqual(len(writes), 21)
+        lines = tuple('%#010x  %s -> %s' % (addr, old.hex(), new.hex())
+                      for addr, old, new in writes[:18])
+        self.assertEqual(lines, GOLDEN_ALL5)
+
+        permit_writes = mp.plan_b(self.img.read, cave_b, parts=('permit',))
+        self.assertEqual(writes[18:], permit_writes)
 
     def test_position_zero_puts_new_machine_first(self):
         spec = mp.MachineSpec(position=0)

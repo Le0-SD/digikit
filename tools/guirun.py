@@ -80,7 +80,7 @@ def parse_args(argv):
     p.add_argument('--exact', action='store_true')
     p.add_argument('--syx')
     p.add_argument('--patch-machine', nargs='?',
-                    const='list+dispatch+group+name+rank', default=None)
+                    const='list+dispatch+group+name+rank+permit', default=None)
     p.add_argument('--machine', default=None,
                     help='NAME:SHORT[:CLONE_OF[:POSITION]] for the new '
                          'machine (see machinepatch.MachineSpec); default '

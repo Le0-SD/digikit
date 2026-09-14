@@ -23,11 +23,12 @@ the same point the timers are released.
     uv run python -m emu.gui [snapshot]
 
 --patch-machine installs the experimental eighth machine (PLACEHOLDER) into
-the running emulator's machine list. Bare, it applies all five parts of the
-patch (list, dispatch, group, name, rank); --patch-machine=list, =dispatch,
-=group, =name, or =rank applies just one, and a +-separated combination
-(--patch-machine=list+dispatch) applies exactly those, for bisecting a boot
-failure. An optional :N suffix on the parts value (--patch-machine=list:6)
+the running emulator's machine list. Bare, it applies all six parts of the
+patch (list, dispatch, group, name, rank, permit); --patch-machine=list,
+=dispatch, =group, =name, =rank, or =permit applies just one, and a
++-separated combination (--patch-machine=list+dispatch) applies exactly
+those, for bisecting a boot failure. An optional :N suffix on the parts
+value (--patch-machine=list:6)
 sets the 8th list entry's value, default 7, to distinguish "eight entries is
 too many" from "the value 7 is the problem". This patches guest memory in
 the running emulator only -- it modifies no file on disk and is not a
@@ -1146,10 +1147,11 @@ if __name__ == '__main__':
     fast = '--exact' not in argv
     realtime = '--unthrottled' not in argv
     # --patch-machine installs the experimental eighth machine (PLACEHOLDER)
-    # into the machine list. Bare, it applies all five parts (list, dispatch,
-    # group, name, rank); --patch-machine=list, =dispatch, =group, =name, or
-    # =rank applies just that part, and a +-separated combination
-    # (--patch-machine=list+dispatch) applies exactly those, for bisecting.
+    # into the machine list. Bare, it applies all six parts (list, dispatch,
+    # group, name, rank, permit); --patch-machine=list, =dispatch, =group,
+    # =name, =rank, or =permit applies just that part, and a +-separated
+    # combination (--patch-machine=list+dispatch) applies exactly those, for
+    # bisecting.
     # An optional :N suffix on the parts value (e.g. --patch-machine=list:6)
     # sets the 8th list entry's value, default 7.
     # Unknown part names are refused by machinepatch.patch_b.
@@ -1158,7 +1160,7 @@ if __name__ == '__main__':
     patch_machine_spec = None
     for a in argv:
         if a == '--patch-machine':
-            patch_machine = ('list', 'dispatch', 'group', 'name', 'rank')
+            patch_machine = ('list', 'dispatch', 'group', 'name', 'rank', 'permit')
         elif a.startswith('--patch-machine='):
             value = a.split('=', 1)[1]
             if ':' in value:

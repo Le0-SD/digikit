@@ -56,7 +56,15 @@ in `std::terminate`. The patch redirects the map's one-time range insert
 at `0x40051872` to a cave shim that supplies eight `(type, position)`
 pairs instead of seven.
 
-`--parts both` (the default) applies all five parts. `--eighth`
+`--parts permit` patches `FUN_400dcab8`, the permission check used by the
+machine setter `FUN_40050cd6` and six other callers (assign, list
+availability, sound load, paste, sound locks). It rejects type > 6 with
+`moveq #6,D2` and reads a 7-long mask table at `0x401fbda6`; the patch
+raises the bound to 7 and points the lea at an 8-long copy in cave B at
+`+0x1a0` whose eighth entry is `clone_of`'s. Without it, selecting the
+machine calls the commit with type 7 but the track keeps its old type.
+
+`--parts both` (the default) applies all six parts. `--eighth`
 exists to tell "eight entries is too many" apart from "the value 7 is the
 problem": run with `--parts list --eighth N` for some other N.
 
@@ -158,7 +166,14 @@ RANK_GUARD = 0x40984ce8
 RANK_SHIM_OFF = 0x2a0
 RANK_TABLE_OFF = 0x2c0
 
-PARTS = ('list', 'dispatch', 'group', 'name', 'rank')
+PERMIT_BOUND_ADDR = 0x400dcaba   # FUN_400dcab8: moveq #6,D2 -- rejects type > 6
+PERMIT_BOUND_WANT = bytes.fromhex('7406')
+PERMIT_LEA_ADDR = 0x400dcad0     # lea (0x401fbda6).l,A0 -- per-type mask table
+PERMIT_TABLE_SRC = 0x401fbda6    # 7 longs; the first word of each is a track mask
+PERMIT_LEA_WANT = bytes.fromhex('41f9') + struct.pack('>I', PERMIT_TABLE_SRC)
+PERMIT_TABLE_OFF = 0x1a0         # 8 longs, between TABLE_B_OFF's 32 bytes and NAME_TABLE_OFF
+
+PARTS = ('list', 'dispatch', 'group', 'name', 'rank', 'permit')
 
 NEW_TYPE = 7    # the one new machine type this tool installs
 
@@ -354,6 +369,17 @@ def plan_b(read, cave_b, parts=PARTS, eighth=None, spec=DEFAULT_SPEC):
             raise SystemExit(
                 'machinepatch: %#010x holds %s, expected %s'
                 % (RANK_CALL, cur.hex(), RANK_CALL_WANT.hex()))
+    if 'permit' in parts:
+        cur = read(PERMIT_BOUND_ADDR, len(PERMIT_BOUND_WANT))
+        if cur != PERMIT_BOUND_WANT:
+            raise SystemExit(
+                'machinepatch: %#010x holds %s, expected %s'
+                % (PERMIT_BOUND_ADDR, cur.hex(), PERMIT_BOUND_WANT.hex()))
+        cur = read(PERMIT_LEA_ADDR, len(PERMIT_LEA_WANT))
+        if cur != PERMIT_LEA_WANT:
+            raise SystemExit(
+                'machinepatch: %#010x holds %s, expected %s'
+                % (PERMIT_LEA_ADDR, cur.hex(), PERMIT_LEA_WANT.hex()))
 
     if spec.fields is not None:
         fields = spec.fields
@@ -424,6 +450,21 @@ def plan_b(read, cave_b, parts=PARTS, eighth=None, spec=DEFAULT_SPEC):
 
     if 'dispatch' in parts:
         add(DISPATCH, b'\x4e\xf9' + struct.pack('>I', cave_b))
+
+    if 'permit' in parts:
+        slot = cave_b + PERMIT_TABLE_OFF
+        old = read(slot, 32)
+        if old != b'\x00' * 32:
+            raise SystemExit(
+                'machinepatch: cave slot %#010x is not free (holds %s)'
+                % (slot, old.hex()))
+        stock = read(PERMIT_TABLE_SRC, 28)
+        table = stock + stock[spec.clone_of * 4:spec.clone_of * 4 + 4]
+        writes.append((slot, old, table))
+        writes.append((PERMIT_LEA_ADDR, PERMIT_LEA_WANT,
+                       bytes.fromhex('41f9') + struct.pack('>I', slot)))
+        writes.append((PERMIT_BOUND_ADDR, PERMIT_BOUND_WANT,
+                       bytes([0x74, NEW_TYPE])))
 
     return writes
 
@@ -757,13 +798,14 @@ def main(argv=None):
                      help='cave address for --milestone b (default: '
                           '0x40303e5c)')
     ap.add_argument('--parts',
-                     choices=('list', 'dispatch', 'group', 'name', 'rank', 'both'),
+                     choices=('list', 'dispatch', 'group', 'name', 'rank',
+                              'permit', 'both'),
                      default='both',
                      help='which part of --milestone b to apply: the list '
                           'relocation, the dispatch trampoline, the group-id '
                           'range fix, the display-name table, the sort '
-                          'comparator ranking, or both/all five (default: '
-                          'both)')
+                          'comparator ranking, the permission-table bound, '
+                          'or both/all six (default: both)')
     ap.add_argument('--eighth', type=lambda s: int(s, 0), default=None,
                      help='value to write as the 8th entry of the relocated '
                           'machine list for --milestone b (default is the '
