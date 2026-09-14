@@ -1138,7 +1138,9 @@ Ghidra or disassembly output and it was not re-checked.
   `move.l MACSR,Rx` keeps bits 31..12, and `move.l ACCy,ACCx` takes an
   exception. **[V]** A linear sweep finds no `move ACC,ACC` and no MAC with
   load in either handler (the 31 and 24 uses are elsewhere), so the
-  handlers can run in Unicorn. **[D]**
+  handlers can run in Unicorn. **[D]** The frame build, though, reaches a
+  MAC with load in `FUN_400db9aa` at `0x400db9e0`, which Unicorn cannot run
+  (see "The frame capture runs; the frame build is switched off"). **[C]**
 
 ### Digitone II 1.11: the same link and the same machine table shape **[V][D][O]**
 
@@ -1199,7 +1201,7 @@ Ghidra or disassembly output and it was not re-checked.
   `0x401b6316` is that class's `ctor_dtor`. The earlier raw search above
   read the vtable one word late, as `0x402015f0` with 4 slots. **[V]**
 
-### The frame capture runs; the frame build is switched off **[V][D][O]**
+### The frame capture runs; the frame build is switched off **[V][D][O][C]**
 
 - `tools/sharcframe.py snapshots/boot400M.snap --passes 3` takes 0.5 s.
   Vector 191 holds `0x4002d652`. Each pass returns through the handler's
@@ -1210,19 +1212,59 @@ Ghidra or disassembly output and it was not re-checked.
   and the per-track tables are zero. `FUN_4002d5b2` writes exactly those
   two values and is called from the SHARC boot routine `FUN_400cef6c`.
   **[V]**
-- The only instruction found that clears `0x4094e4f4` by its address is in
-  `FUN_4002d5c4`, whose only caller is the console command parser
-  `FUN_400cd594` on `EXIT TEST MODE`. `FUN_4002d602(n)` starts a 5-pass
-  countdown at `0x4094e4f0` that ends by setting `0x4094e4f4` to 1; its five
-  callers are in project and sample loading. **[D]**
-- So the writer that clears `0x4094e4f4` in normal use is not known. It may
-  write through a pointer, which a scan for literal addresses cannot see.
-  **[O]**
+- `FUN_4002d5c4` clears `0x4094e4f4`; its only caller is the console
+  command parser `FUN_400cd594` on `#EXIT_TEST_MODE` (`0x400cda98`). **[V]**
+- `FUN_4002d602(n)` has two branches. With n != 0 it writes 2 to
+  `0x4094e4f8` and 5 to `0x4094e4f0`; the handler counts `0x4094e4f0` down
+  once per pass (`0x4002ecaa`-`0x4002ecbe`) and writes 1 to `0x4094e4f4`
+  when it reaches 0. With n == 0 it clears `0x4094e4f4` and `0x4094e4f0`
+  with interrupts masked (`0x4002d61c`-`0x4002d630`). **[V]** An earlier
+  reading here, that only `FUN_4002d5c4` clears the gate, was wrong. **[C]**
+- `tools/refscan.py` finds nine call and jump sites to `FUN_4002d602`
+  (96.75% of the image decoded); the argument is the last value pushed.
+  Argument 1, stop after five passes: `0x40043692` and `0x40046008` in the
+  two `OnScopeExit::ctor_dtor` functions (`0x40043654`, `0x40045fc4`), and
+  `0x400faa98` in `FUN_400faa86` (`Waiting for SysEx`) **[V]**; and the
+  trampoline `0x400323d6` **[D]**. Argument 0, open now: `0x400330f6` in
+  `FUN_40032f5a` and `0x400323f2` in `FUN_400323e2` **[V]**; and the
+  trampolines `0x400407c8`, `0x400407de` and `0x400fa6c2` **[D]**. Ghidra's
+  call graph lists five of the nine: the trampolines are not in functions.
+- The two `OnScopeExit` functions load `0x400407c8` and `0x400407de` as
+  pointers (`0x400436b8`, `0x4004602e`) next to their argument-1 call, and
+  `OsUpgradeMenuView::ctor_dtor` loads `0x400faa86` and `0x400fa6c2`
+  (`0x400fb07c`, `0x400fb0b2`). This suggests the frame build stops while a
+  kit or project change, a sample reload or an OS upgrade runs, and a
+  callback reopens it afterwards. Where the callbacks are invoked was not
+  traced. **[D][O]**
+- `FUN_40032f5a` is a task body: `FUN_400329ee` pushes `$40032f5a(pc)` at
+  `0x40032a16` and calls `0x400012c8` with a `0x28000` size and 6. **[V]**
+  It references `Factory reset`, `Migrate presets`, `Update MMC Caches`,
+  `MAINTENANCE MODE` and `MMC NOT IN SLC MODE`. Its `FUN_4002d602(0)` at
+  `0x400330f6` follows the `Update MMC Caches` step with no branch in
+  between. **[D]** It is the only argument-0 call that is not a callback, so
+  it is the best candidate for opening the gate in normal use. Whether a
+  normal boot runs it is not known. **[O]**
+- `0x4094e4ec` is a stop flag: when it is non-zero, the handler writes 1 to
+  `0x4094e4f4` and `0x4094e4f8` (`0x4002d6ce`-`0x4002d6de`). Its only
+  writer, `0x4002d632` (`moveq #1,d0; move.l d0,$4094e4ec.l; rts`), has no
+  static caller and no copy of its address in the image, and is not in a
+  Ghidra function. **[V]**
+- In `boot60M`, `boot120M` and `boot200M.snap`, `0x4094e4ec`, `0x4094e4f0`,
+  `0x4094e4f4` and `0x4094e4f8` are all 0. In `boot280M` and
+  `boot400M.snap`, `0x4094e4f4` and `0x4094e4f8` are 1 and the other two
+  are 0. **[V]** `FUN_4002d5b2` or the end of a countdown could each
+  produce that; a write watch on `0x4094e4f4` between 200M and 280M would
+  tell. **[O]**
 - Forcing `0x4094e4f4` to 0 before a pass enters the build path and ends in
   the firmware's exception dump `FUN_4010fcae` (vector 64 at PC
   `0x400db9e0`), which executes `halt`; Unicorn reports that as exception
-  257. A memory poke does not produce a valid
-  frame. **[D]**
+  257. **[D]** The instruction at `0x400db9e0`, in `FUN_400db9aa`, is
+  `a891 00c6`, `mac.w D6u,D0u,(A1),D4,ACC0`: a MAC with load. **[V]** On
+  those two words alone Unicorn 2.1.4 (CFV4E) stops with `UC_ERR_EXCEPTION`
+  and leaves PC, A1 and D4 unchanged, where the CPU adds D6u*D0u to ACC0
+  and loads `(A1)` into D4. **[V]** So the exception dump comes from the
+  emulator, not the firmware, and an emulated frame needs MAC with load in
+  Unicorn first. **[C]**
 
 ## Emulation
 
