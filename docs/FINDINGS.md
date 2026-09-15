@@ -1565,6 +1565,36 @@ Ghidra or disassembly output and it was not re-checked.
   unknown word, 4.4% in; forced to continue, it cannot name 9.6%. One cause is
   traced: our `15b` entry fixes 3 bits where the manual fixes 7, so 1,928
   words decode as `17b`. **[D]**
+- `tools/sharc_visa_tables.py` now loads `tools/sharcspec/decode_table.json`
+  and picks a form by the same rule as the sharc-spec decoder, and
+  `tools/sharc_disasm.py` still stops at the first word it cannot classify.
+  `tools/sharcldr.py --main` writes the final application's code, and
+  `tools/sharccompare.py` sweeps a region with both decoders. The main
+  programs of 1.15C and 1.16 are both 104,848 bytes at `0x28382670`, from
+  the same five blocks, with the entry at offset 0. The two decoders agree
+  on the length and form of all 22,147 instructions that both decode:
+
+  | | 1.15C | 1.16 |
+  |---|---|---|
+  | sharc-spec decoder: instructions, unknown words | 22,148, 249 (1.11%) | 22,147, 252 (1.12%) |
+  | rebuilt decoder: instructions, unknown words | 22,147, 250 | 22,147, 252 |
+  | first unknown word, both decoders | `0xbb0` (2.9% in) | `0xbb0` |
+  | old decoder: walk stops at | `0x122c` (4.4% in) | `0x122c` |
+  | old decoder: instructions at the spec decoder's offsets | 57.2% | 57.2% |
+  | old decoder: instructions it cannot name | 1,962 (9.4%) | 1,950 (9.3%) |
+  | old decoder: `17b` where the spec decoder has `15b` | 1,928 | 1,926 |
+
+  The one difference on 1.15C is the last instruction, a `21a` at `0x1998e`
+  whose 6 bytes run past the region: the rebuilt decoder refuses it, the
+  sharc-spec decoder pads with zeros. After `15b`, the old decoder's largest
+  confusions are `5a_move` for `5b_move` (797) and `18a` for `19a` (442).
+  `tools/ghidra/gen-sharc-slaspec.py` still expects the old form names
+  (`8a`, `9a`, `9b`) and fails on the rebuilt table; the SHARC language is to
+  be regenerated from `tools/sharcspec/ghidra/gen_sleigh.py`. A second
+  check rebuilt both regions from the boot-stream blocks, counted the mask
+  bits, and reproduced the sharc-spec decoder's counts, first unknown and
+  last instruction with its own sweep. **[V]** The old decoder's numbers
+  come from `tools/sharccompare.py` alone. **[D]**
 - `docs/sharc/structure-1.16.md` maps the 1.16 DSP program: FreeRTOS tasks, a
   task proposed as the command dispatcher for the ColdFire, and a command block
   at `0x82a00000`. These were found on 1.16 and are hypotheses. **[D][O]**
