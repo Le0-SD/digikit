@@ -1409,6 +1409,60 @@ Ghidra or disassembly output and it was not re-checked.
   A method can still hand the handler data through shared state, which a
   call graph does not show. **[V][O]**
 
+### The emulator boots Digitakt II 1.16 **[V][D][O]**
+
+- `emu/symbols.py` resolves all seven required symbols on 1.16, and 57 of
+  72 in all. Its `transport` signature matches the wrong function there,
+  `0x40134200`; Version Tracking maps 1.15C's `0x40128c7c` to `0x40136268`.
+  `call_sites` therefore lists 25 sites instead of 4; the cold boot only
+  logs them. **[D]**
+- `DT2_SECTIONS=out/sections/dt2-1.16 DT2_SNAPSHOTS=out/snapshots/dt2-1.16
+  uv run python -m emu.checkpoint make
+  60000000,120000000,200000000,280000000,400000000
+  out/snapshots/dt2-1.16/boot Digitakt_II_OS1.16.syx` builds a 1.16 ladder
+  in about 6 minutes:
+
+  | rung | 1.15C tasks | 1.16 tasks | 1.16 PC |
+  |---|---|---|---|
+  | 60M | 5 | 5 | `0x401382aa` |
+  | 120M | 5 | 5 | `0x4011e8bc` |
+  | 200M | 5 | 5 | `0x400dc4f6` |
+  | 280M | 9 | 5 | `0x401e55e0` |
+  | 400M | 9 | 9 | `0x40182e0e` |
+
+  The four late tasks, among them the Main OS task `FUN_400337ba` (1.15C
+  `FUN_40032f5a`), start at about instruction 291.4M in 1.16 and 257.6M in
+  1.15C. **[D]**
+- `tools/bootwatch.py --frame-gate` boots from reset with write watches on
+  the stop flag, countdown, gate and mode of the image's profile. In both
+  versions there are six writes. The startup code clears all four at
+  instruction 1,752,605-1,752,609 (`0x400004d2`, a loop in
+  `FUN_400004b2`). Then the SHARC boot routine calls the helper
+  `moveq #1,d0; move.l d0,gate; move.l d0,mode; bra.w <vector-191
+  installer>` once: in 1.15C `FUN_4002d5b2`, called from `0x400cf320` in
+  `FUN_400cef6c` at instruction 257,643,827; in 1.16 `FUN_4002dc62`,
+  called from `0x400ccc18` in `FUN_400cc864` at instruction 291,415,290.
+  That call site is the helper's only caller in each image. The stop flag
+  and the countdown stay 0. So a normal boot leaves the gate at 1, which
+  keeps the frame build off, and installs the handler right after. **[V]**
+- `tools/sharcframe.py out/snapshots/dt2-1.16/boot400M.snap` (with
+  `DT2_SECTIONS=out/sections/dt2-1.16`) enters the 1.16 handler
+  `0x4002dd0c`, which returns after one driver call with TX `0x802` bytes at
+  `0x80005348` and RX `0xabc` bytes at `0x8000488c`. With the gate closed,
+  both passes send `eabdd389…`, the same as pass 0 with `--open-gate`;
+  passes 1 and 2 with `--open-gate` send `d674f76c…`. Against 1.15C, pass 0
+  and pass 1 each differ in one byte, offset 1: `0x01` and `0x03` in 1.16,
+  `0x00` and `0x02` in 1.15C. The 1.16 installer's `move.w` of 1 to
+  `0x80005348` sets that byte. **[V]** The bytes that change from pass 0 to
+  pass 1 are at the same 41 places in both versions. **[D]**
+- The frame capture does not use the 1.15C addresses still written as
+  literals in the emulator: `PRINT` and `SWITCH_TO` in `emu/longrun.py`,
+  `TX_STATE` `0x4094cd74` and `WAIT_LOOP` in `emu/edma.py`, the weak-pointer
+  patch, and the addresses in `emu/panel.py`, `emu/screen.py`,
+  `emu/hle.py`, `emu/serial.py` and the terminal hook in `emu/gui.py`. A GUI
+  run on 1.16 would. Why pass 0 sends no track data, and what the slot words
+  mean, are still open. **[O]**
+
 ### The frame capture runs; the frame build is switched off **[V][D][O][C]**
 
 - `tools/sharcframe.py snapshots/boot400M.snap --passes 3` takes 0.5 s.
@@ -1461,8 +1515,10 @@ Ghidra or disassembly output and it was not re-checked.
   `0x4094e4f4` and `0x4094e4f8` are all 0. In `boot280M` and
   `boot400M.snap`, `0x4094e4f4` and `0x4094e4f8` are 1 and the other two
   are 0. **[V]** `FUN_4002d5b2` or the end of a countdown could each
-  produce that; a write watch on `0x4094e4f4` between 200M and 280M would
-  tell. **[O]**
+  produce that. A write watch during a cold boot answers it: the SHARC boot
+  routine calls `FUN_4002d5b2` at instruction 257,643,827, and nothing else
+  writes 1 to either variable (see "The emulator boots Digitakt II 1.16").
+  **[V]**
 - Forcing `0x4094e4f4` to 0 before a pass enters the build path and ends in
   the firmware's exception dump `FUN_4010fcae` (vector 64 at PC
   `0x400db9e0`), which executes `halt`; Unicorn reports that as exception
