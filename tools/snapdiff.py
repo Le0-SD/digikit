@@ -7,8 +7,9 @@ Reads the page map that emu/snapshot.py pickles, so it builds no Machine.
 Without --range it compares the MCF5441x on-chip SRAM
 (0x80000000-0x80010000), where the ColdFire keeps the tables it streams to
 the SHARC. Changed bytes separated by at most --gap unchanged bytes are
-reported as one run. A run that starts in a known Digitakt II 1.15C table is
-labelled with the table, the track row and the offset in the row (see
+reported as one run. A run that starts in a known Digitakt II table (the same
+in 1.15C and 1.16, tools/framelink.py) is labelled with the table, the track
+row and the offset in the row (see
 docs/FINDINGS.md, "The ColdFire tells the SHARC through a periodic DSPI2
 frame").
 """
@@ -23,21 +24,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from emu.harness import PAGE  # noqa: E402
 from emu.snapshot import _load_blob  # noqa: E402
+import framelink  # noqa: E402
 
 SRAM = (0x80000000, 0x80010000, 'sram')
 
-# (base, row size, rows, name): the DSPI2 buffers and the per-track tables
-# FUN_4002d652 reads when it builds the frame, plus the two flag arrays
-# FUN_4002ed16 sets when a track becomes MIDI.
-TABLES = (
-    (0x80005348, 0x802, 1, 'tx_frame'),
-    (0x8000488c, 0xabc, 1, 'rx_frame'),
-    (0x800047fc, 4, 16, 'track_long'),
-    (0x80003340, 0x9a, 16, 'track_9a'),
-    (0x80005b50, 0x8e, 16, 'track_8e'),
-    (0x80004684, 4, 16, 'midi_flag_a'),
-    (0x800046c4, 4, 16, 'midi_flag_b'),
-)
+# (base, row size, rows, name), from tools/framelink.py.
+TABLES = framelink.TABLES
 
 
 def read(blob, lo, hi):
