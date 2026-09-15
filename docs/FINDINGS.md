@@ -41,7 +41,8 @@ generation, and three things separate them from 1.15C/1.10E:
 
 Retargeting the machine work to 1.16 is therefore not an address rebase. It
 needs a fresh snapshot ladder built by cold boot, a re-import to Ghidra, and
-every address in "The ColdFire machine dispatch" re-derived. **[O]**
+every address in "The ColdFire machine dispatch" re-derived. **[O]** The
+re-import is done; see "Digitakt II 1.16 in Ghidra" below. **[V]**
 
 ## Container
 
@@ -1204,6 +1205,136 @@ Ghidra or disassembly output and it was not re-checked.
   `std::_Sp_counted_ptr_inplace<Digisharc::rpcMsgHeader_t, ...>`, and
   `0x401b6316` is that class's `ctor_dtor`. The earlier raw search above
   read the vtable one word late, as `0x402015f0` with 4 slots. **[V]**
+
+### Digitakt II 1.16 in Ghidra: the same layout, 14743 functions **[V]**
+
+- `uv run python -m emu.extract Digitakt_II_OS1.16.syx -o out/sections/dt2-1.16`
+  writes a MAIN OS of 3,275,616 bytes for `0x40000400`, sha-256 `57bb4dfa…`
+  (1.15C: 3,177,312 bytes). Digitone II 1.11 and 1.10E are extracted to
+  `out/sections/dn2-1.11/` and `out/sections/dn2-1.10E/`. **[V]**
+- `~/ghidra-projects/elektron-emac` holds two programs.
+  `/dt2-1.15C/section_3_MAIN_OS.bin` is a copy of the `dt2-emac` program made
+  by `tools/ghidracopy.py`; a dump of the copy matches
+  `out/ghidra/dt2-1.15C-emac/` in every count and in each function's entry,
+  name, size, body, signature, callers and callees.
+  `/dt2-1.16/section_3_MAIN_OS.bin` is a ColdfireEMAC import
+  (`GHIDRA_FOLDER=dt2-1.16 tools/ghidra.sh import`, 115 s), and
+  `McfLabels.java` added 87 labels and 19 blocks to it. `dt2-emac` stays the
+  1.15C project. **[V]**
+- A headless `-postScript` cannot pack the program it processes:
+  `saveToPackedFile` fails with "Unable to lock due to active transaction",
+  and the analyzer then saves the program anyway. That happened once to
+  `dt2-emac`; a dump made afterwards matched the 2026-09-14 dump exactly.
+  `tools/ghidracopy.py` packs the stored file and never opens the program. **[V]**
+- The image has the 1.15C layout, moved. Main code ends with an `rts` at
+  `0x401e97a8` (1.15C `0x401d6108`), and the next `0x400` bytes are a
+  numeric table with no `rts` or `link` word. The typeinfos and vtables start
+  at `0x401ec324` (1.15C `0x401d8c84`). Near the end, the `0x4305` bytes from
+  `0x4030ccfc` equal those from `0x402f4c4c` in 1.15C, a shift of `+0x180b0`;
+  they hold the 60 functions at `0x4030cd04-0x4030f89e`. The last byte that
+  is neither `0x00` nor `0xff` is at `0x403117c3` (1.15C `0x402f9c13`). **[V]**
+- `tools/entryhist.py` over a dump made before the seeds gives the code
+  ranges `0x40000400-0x401f0400` and `0x40300400-0x40310400`: 10915
+  functions, none in between. On the 1.15C dump it gives
+  `0x40000400-0x401e0400` and `0x402f0400-0x40300400`. The 1.15C defaults in
+  `tools/codeseeds.py` are wider, and their `0x402c0400-0x402f4400` holds no
+  `rts` or `link` word. **[V]**
+- Before the seeds, the 1.16 program has 10915 functions and 40 Error
+  bookmarks. With the ranges above, `tools/codeseeds.py` finds 31726 calls to
+  5345 targets and 22 vector-table writes, and `tools/rttiscan.py` finds 1066
+  typeinfo objects (class 122, si_class 738, vmi_class 129, pointer 50,
+  fundamental 23, function 4), 1933 vtables, 4852 vtable loads, and 47
+  `Class::method` strings, 41 of them loaded by code. **[V]**
+- `tools/ghidraapply.py seeds --analyze` created 32 functions, rolled back 7,
+  skipped 56 targets inside data, and named 19 interrupt handlers (1.15C,
+  with its wider ranges: 32, 34, 466, 19). `tools/ghidraapply.py rtti` created
+  3773 functions and renamed 6970: 5918 `Class::vfunc_N`, 1032
+  `Class::ctor_dtor`, and 20 from `Class::method` strings, among them all
+  eight `updateMirror` methods. 153 slot functions shared by several classes
+  stay unnamed. Functions went from 10915 to 14743, and Error bookmarks
+  stayed at 40. **[V]**
+- The two vector-191 handlers are `0x4002dd0c` and `0x400cec70` (1.15C
+  `0x4002d652` and `0x400d1378`). Each is installed by `move.l #handler,dN`
+  then `move.l dN,$400002fc`. **[V]**
+- The dump is `out/ghidra/dt2-1.16-emac/`; `ghidradump.py --image` names the
+  image under `out/sections/`, so `image_matches_sections` is true. It is
+  complete, with 16 decompile failures: the same 15 `MidiRpc*Response`
+  `ctor_dtor` functions as in 1.15C, and one large function in each version
+  (`FUN_401bdee2`; 1.15C `FUN_401ac1be`) that overflows the decompiler's
+  response buffer. **[V]**
+
+### Version Tracking carries 1.15C addresses to 1.16 **[V][D][O]**
+
+- `tools/ghidravt.py run` runs Ghidra's AutoVersionTrackingTask from
+  pyghidra with the options of `AutoVersionTrackingScript.java` and a 32 GB
+  heap, and exports the matches. The headless script, with its 2 GB heap, ran
+  out of memory after 30 minutes in the duplicate function correlator on
+  1.15C -> 1.16 and left the destination unchanged. The sessions are in
+  `/vt/` of `~/ghidra-projects/elektron-emac`, the exports in `out/vt/`.
+  **[V]**
+- Digitone II 1.10E and 1.11 were imported the same way, with 13448 and
+  14017 functions after seeds and RTTI; the dumps are
+  `out/ghidra/dn2-1.10E-emac/` and `out/ghidra/dn2-1.11-emac/`. The
+  Digitakt-to-Digitone run writes to a copy of 1.11,
+  `/dn2-1.11-from-dt2/section_3_MAIN_OS.bin`. **[D]**
+- Each accepted function association is one-to-one:
+
+  | pair | seconds | accepted matches | function associations | source functions matched |
+  |---|---|---|---|---|
+  | Digitakt II 1.15C -> 1.16 | 1092 | 50,741 | 9778 | 68.6% of 14257 |
+  | Digitone II 1.10E -> 1.11 | 897 | 47,267 | 9090 | 67.6% of 13448 |
+  | Digitakt II 1.15C -> Digitone II 1.11 | 1046 | 43,414 | 8126 | 57.0% of 14257 |
+
+  **[V]** All three runs end "with some apply markup errors", and the task
+  logs nothing more about them in headless mode. **[D]**
+- `tools/vtcheck.py` checks the associations against the images and against
+  dumps made before Version Tracking. For 1.15C -> 1.16, 2365 function bodies
+  are byte-identical, 7332 differ at the same size, and 81 changed size. Ten
+  sampled same-size pairs differ only in addresses and in branch targets that
+  are themselves matched; five resized pairs are the same functions with real
+  code changes. **[V]** Where both dumps give a name, 7 of 5097 names differ,
+  and the callees agree for 5913 of 5925 functions. **[D]**
+- Some matches are wrong. `TransposeConfigMenuView::vfunc_2` ->
+  `BreakOutBoxRoutingMenuView::vfunc_2` (in both Digitone runs) and
+  `SamplerLedView::vfunc_17` -> `ArpSetupMenuView::vfunc_18` (1.15C ->
+  Digitone II 1.11) differ in size by 43-50% and share only boilerplate.
+  Check a match before relying on it. **[V]**
+- `Velocity::vfunc_18` in 1.15C is `Velocity::vfunc_19` in 1.16: the
+  function is unchanged, and Velocity's vtable grew from 23 to 24 slots. A
+  `vfunc_N` number can shift between versions. **[V]**
+- Other name differences are storage structures with new version numbers:
+  `projectStorage_v4_t` -> `projectStorage_v5_t` and `projectStorage_v15_t`
+  -> `projectStorage_v16_t` in Digitakt II 1.16, `kitStorage_v3_t` ->
+  `kitStorage_v4_t` and `patternStorage_v3_t` -> `patternStorage_v4_t` in
+  Digitone II 1.11. **[D]**
+- The frame link on 1.16, carried by the 1.15C -> 1.16 run and checked
+  against both images:
+
+  | 1.15C | 1.16 | evidence |
+  |---|---|---|
+  | `0x4002d652` vector-191 handler | `0x4002dd0c` | calls the driver at `0x4002dd74` (1.15C `0x4002d6ba`) |
+  | `0x400d1378` vector-191 handler | `0x400cec70` | calls the driver at `0x400ceccc` (1.15C `0x400d13d4`) |
+  | `FUN_400cf9c4` DSPI2 driver | `FUN_400cd2bc` | its callers are the two handlers, in both |
+  | `FUN_400cef6c` SHARC boot routine | `FUN_400cc864` | 1162 bytes in both |
+  | `FUN_4002d602` | `FUN_4002dcb2` | 48 bytes in both |
+  | call at `0x400330f6` in `FUN_40032f5a` | `0x4003395c` in `FUN_400337ba` | `jsr` to the function above; the task changed size |
+  | `FUN_400db9aa` | `FUN_400d92a2` | both return `0x80005b50` |
+
+  `FUN_4002d63e` -> `FUN_4002dcee`, called by the vector-191 handler, gains
+  a bound check (`cmp #0xf`) in 1.16. **[V]**
+- Not carried: the stop-flag writer `0x4002d632` lies outside any function,
+  and `FUN_400caf48` has no match. The gate variables and the frame tables are
+  RAM addresses, outside the image; they are to be re-found from the
+  functions above. **[O]**
+- The 1.15C -> Digitone II 1.11 run agrees with "Digitone II 1.11: the same
+  link and the same machine table shape": 1.15C's `0x400d1378` maps to the
+  1.11 test handler `0x400d0f90`, and `FUN_400db9aa` maps to `FUN_400db12a`,
+  which returns `0x800068e4`. 1.15C's handler `0x4002d652` and driver
+  `FUN_400cf9c4` have no match there, although 1.11's `FUN_40025e36` and
+  `FUN_400cf7be` have the same roles, and the driver's callers are the two
+  handlers in both. The 1.11 handler is 7582 bytes against 5796, and its
+  driver compares the TX length with `0xaf0` where 1.15C uses `0xbc0`.
+  **[V]**
 
 ### The frame capture runs; the frame build is switched off **[V][D][O][C]**
 
