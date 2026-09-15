@@ -60,6 +60,11 @@ is the publicly downloadable "SHARC+ Core Programming Reference"
 Usage:
     uv run python tools/sharcldr.py section_7_digitakt.bin --json out.json
     uv run python tools/sharcldr.py section_7_digitakt.bin --dump-blocks blocks/
+    uv run python tools/sharcldr.py section_7_digitakt.bin --main out/sharc/dt2-1.16-main.bin
+
+--main writes the final application's code as one file: the run of blocks
+that starts at the last BFLAG_FIRST entry (as a byte address) and continues
+while each block starts where the previous one ends, FILL blocks included.
 """
 import argparse, hashlib, json, math, os, struct, sys
 from collections import defaultdict
@@ -220,6 +225,36 @@ def entry_points(blocks):
     return [b["target_address"] for b in blocks if "FIRST" in b["flags"]]
 
 
+def main_program(data, blocks):
+    """-> (byte address, bytes, [block indices]) of the final application's code,
+    or (None, b"", []) if there is none.
+
+    The run starts at the non-FILL block whose target is the last BFLAG_FIRST
+    entry as a byte address, and takes each following block, FILL blocks
+    included, while it starts where the previous one ends. A FILL block gives
+    byte_count bytes of its 32-bit argument, little-endian."""
+    firsts = entry_points(blocks)
+    if not firsts:
+        return None, b"", []
+    entry = sw_to_byte(firsts[-1])
+    start = next((i for i, b in enumerate(blocks)
+                  if not b["fill"] and b["byte_count"] and b["target_address"] == entry), None)
+    if start is None:
+        return None, b"", []
+    code, used, end = bytearray(), [], None
+    for b in blocks[start:]:
+        if end is not None and b["target_address"] != end:
+            break
+        if b["fill"]:
+            pattern = struct.pack("<I", b["argument"])
+            code += (pattern * (b["byte_count"] // 4 + 1))[:b["byte_count"]]
+        else:
+            code += data[b["payload_offset"]:b["payload_offset"] + b["payload_len"]]
+        used.append(b["index"])
+        end = b["target_address"] + b["byte_count"]
+    return entry, bytes(code), used
+
+
 def entropy(data):
     """Shannon entropy in bits/byte over `data`. 0.0 for empty input."""
     if not data:
@@ -377,6 +412,7 @@ def main():
                     help="characterisation window size in bytes")
     ap.add_argument("--json", help="write the full result dict as JSON")
     ap.add_argument("--dump-blocks", help="write each block's payload here")
+    ap.add_argument("--main", help="write the final application's code region to this file")
     ap.add_argument("--align", action="store_true",
                     help="run alignment() over regions and block payloads")
     ap.add_argument("--addr", action="append", default=[],
@@ -402,6 +438,16 @@ def main():
             with open(os.path.join(args.dump_blocks, name), "wb") as f:
                 f.write(data[b["payload_offset"]:
                              b["payload_offset"] + b["payload_len"]])
+
+    if args.main:
+        base, code, used = main_program(data, blocks)
+        if base is None:
+            raise SystemExit("no code region at the last BFLAG_FIRST entry")
+        os.makedirs(os.path.dirname(os.path.abspath(args.main)), exist_ok=True)
+        with open(args.main, "wb") as f:
+            f.write(code)
+        print("main program: %d bytes at byte address 0x%x, sha256 %s, blocks %s -> %s" % (
+            len(code), base, hashlib.sha256(code).hexdigest(), used, args.main))
 
     result = {
         "summary": summary,

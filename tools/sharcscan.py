@@ -75,7 +75,7 @@ def _cjump_prefix(type_name, expected):
     """
     try:
         import sharc_visa_tables as _t
-        entry = _t.TYPES[type_name]
+        entry = _t.get_type(type_name)
         got = (entry['opcode_value'] >> 24) & 0xFFFFFF
     except Exception:
         return expected
