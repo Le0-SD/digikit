@@ -6,6 +6,7 @@ hand-encoded instructions. Needs no firmware and no Ghidra."""
 
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -210,6 +211,26 @@ class Compare(unittest.TestCase):
         reg, notes = sharcpcode.compare_lint(old, new, 0.25)
         self.assertEqual(reg, ['dead_temp 0 -> 1'])
         self.assertIn('nop 47 -> 40', notes)
+
+
+class Dump(unittest.TestCase):
+
+    def test_field_value_assembles_and_sign_extends(self):
+        self.assertEqual(sharcpcode.field_value({'addr[23:16]': 0x1c, 'addr[15:0]': 0x1400}, 'addr'), 0x1C1400)
+        self.assertEqual(sharcpcode.field_value({'reladdr[5:5]': 1, 'reladdr[4:0]': 0x1f}, 'reladdr', signed=True), -1)
+        self.assertEqual(sharcpcode.field_value({'cond[4:0]': 8}, 'cond'), 8)
+        self.assertIsNone(sharcpcode.field_value({'b': 1}, 'addr'))
+
+    def test_decoder_rows(self):
+        data = encode('17b') + branch('8a_abs', cond=sharcpcode.COND_TRUE, b=0, target=0x1002) + encode('17b')
+        db = sqlite3.connect(':memory:')
+        db.executescript(sharcpcode.SCHEMA)
+        sharcpcode.write_decoder(db, None, data, 0x1000, min_depth=1)
+        rows = dict(db.execute('SELECT sw, form FROM decoder WHERE aligned = 1'))
+        self.assertEqual(rows, {0x1000: '17b', 0x1002: '8a_abs', 0x1005: '17b'})
+        target, target_aligned, cond = db.execute(
+            'SELECT target_sw, target_aligned, cond FROM decoder WHERE sw = 0x1002').fetchone()
+        self.assertEqual((target, target_aligned, cond), (0x1002, 1, sharcpcode.COND_TRUE))
 
 
 if __name__ == '__main__':

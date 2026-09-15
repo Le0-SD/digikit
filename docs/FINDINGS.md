@@ -1853,6 +1853,40 @@ Ghidra or disassembly output and it was not re-checked.
 - `FUN_001c136a` now has 55 instructions (38 before) and still stops at the
   `8a_rel` decode at SW `0x1c13bc`. **[O]**
 
+### Where the new Error bookmarks and overlap warnings come from **[D][O]**
+
+- `tools/sharcpcode.py measure --ghidra` writes `OUT/<image>.sqlite`: our
+  decoder at every decodable offset of the main program (form, fields, depth,
+  aligned, computed target, the pypcode lift) and Ghidra's instructions,
+  references, bookmarks, functions, decompiled C and decompiler warnings. Two
+  runs compare with sqlite's `ATTACH`; the queries below are
+  `tools/sharcpcode.sql`. **[D]**
+- The conditional-flow change does not create the new Error bookmarks. Ghidra
+  reaches more code, and that code meets decode problems the old language
+  never walked into. Of the 53 new bookmarks inside the 1.16 main program: 23
+  flow into memory the image does not load (17 are CJUMP calls to SW
+  `0xb8xxxx`, which `FUN_001c136a` makes as well; 3 are `8a_abs` calls; 3 are
+  `8a_rel` jumps whose target comes out negative), 24 are "unable to resolve
+  constructor" on the fall-through of a three-word instruction (mostly `21a`,
+  `1a`, `2a`), where our own linear sweep stops too, and 6 are branch targets
+  inside an existing instruction. Digitone II 1.11 has 52 in the same
+  proportions. **[D]**
+- 65 of the 70 "overlaps instruction" warnings in 1.16 are `8a_rel` or
+  `9a_rel` targets one or two words inside an aligned instruction. By the form
+  they land inside: `21a` 62 (54 two words in, 8 one word in), `2a` 14,
+  `6a_mem` 11; in 1.11, `21a` 70, `2a` 12, `6a_mem` 8. **[D]**
+- Of the 552 aligned `8a_rel` instructions in 1.16 whose target is inside the
+  main program, 434 land on an instruction start; 104 of the 118 misses land
+  inside one. `25a_direct` lands on a start 314 times of 318. **[D]**
+- Open: `21a` decodes as a 48-bit nop matching any first word `0x0000` to
+  `0x007f`, 904 of them in 1.16, and the instructions those targets land
+  inside carry nonzero later words (`0010 9b52 aa01`, `0069 4dfe 0e3f`). If
+  those words are shorter instructions, `21a` swallows the one or two that
+  follow, which would explain both the mid-instruction targets and the
+  fall-throughs that do not decode. Check Type21a and the `21a`/`22c`
+  crossing resolver in `tools/sharcspec/ghidra/gen_sleigh.py` against the PRM.
+  Not checked. **[O]**
+
 ## Emulation
 
 Function-level works well and is the practical path. Full boot was pushed as far

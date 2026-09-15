@@ -23,6 +23,13 @@ measure writes OUT/lint.json and OUT/<image>.json:
           installed by tools/ghidra/install-sharc.sh, and refuses an install
           that differs from the slaspec.
 
+  Each image also gets OUT/<image>.sqlite: our decoder's view of the main
+  program (every decodable offset, with form, fields, depth, aligned flag,
+  computed target and the pypcode lift), and with --ghidra Ghidra's view of
+  the whole program (instructions, references, bookmarks, functions,
+  decompiled C and decompiler warnings). Addresses are short words (SW);
+  lengths are bytes. Compare two runs with sqlite3's ATTACH.
+
 compare OLD NEW prints what changed and exits 1 on a regression. Timings
 compare only between runs on the same machine, measured back to back.
 
@@ -41,6 +48,7 @@ import os
 import platform
 import re
 import shutil
+import sqlite3
 import statistics
 import subprocess
 import sys
@@ -53,6 +61,7 @@ if TOOLS not in sys.path:
     sys.path.insert(0, TOOLS)
 
 import sharcflow  # noqa: E402
+import sharcimm  # noqa: E402
 
 LANG_DIR = os.path.join(TOOLS, 'sharcspec', 'ghidra', 'SHARC_VISA', 'data', 'languages')
 LANGUAGE_FILES = ('sharc_visa.ldefs', 'sharc_visa.pspec', 'sharc_visa.cspec')
@@ -317,6 +326,140 @@ def _time_lift(ctx, data, rows, base_sw):
     return time.perf_counter() - t0
 
 
+# --- sqlite dump ------------------------------------------------------------
+
+SCHEMA = """
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+-- our decoder (tools/sharc_disasm.py) at every offset of the main program that decodes
+CREATE TABLE decoder (
+    sw INTEGER PRIMARY KEY, form TEXT, length INTEGER, kind TEXT, raw TEXT,
+    fields TEXT, depth INTEGER, sweep INTEGER, aligned INTEGER,
+    b INTEGER, j INTEGER, cond INTEGER,
+    target_sw INTEGER,          -- addr, or sw + signed reladdr
+    target_aligned INTEGER,
+    sleigh_length INTEGER, pcode TEXT);   -- pypcode lift, aligned rows only
+-- Ghidra, whole program
+CREATE TABLE insn (
+    sw INTEGER PRIMARY KEY, length INTEGER, mnemonic TEXT, raw TEXT, flow TEXT,
+    fallthrough_sw INTEGER, pcode TEXT, function_sw INTEGER, in_main INTEGER);
+CREATE TABLE refs (from_sw INTEGER, to_sw INTEGER, type TEXT, op_index INTEGER);
+CREATE TABLE bookmarks (
+    sw INTEGER, type TEXT, category TEXT, text TEXT,
+    at_sw INTEGER, flow_from_sw INTEGER);   -- parsed from text
+CREATE TABLE functions (sw INTEGER PRIMARY KEY, name TEXT, instructions INTEGER, in_main INTEGER);
+CREATE TABLE decompiled (function_sw INTEGER PRIMARY KEY, seconds REAL, completed INTEGER, error TEXT, c TEXT);
+CREATE TABLE warnings (
+    function_sw INTEGER, message TEXT, normalised TEXT,
+    addr1 INTEGER, addr2 INTEGER);          -- first two 0x numbers, as printed
+CREATE INDEX refs_to ON refs(to_sw);
+CREATE INDEX refs_from ON refs(from_sw);
+CREATE INDEX bookmarks_sw ON bookmarks(sw);
+CREATE INDEX insn_function ON insn(function_sw);
+"""
+
+LABEL = re.compile(r'^(\w+)(?:\[(\d+):(\d+)\])?$')
+
+
+def open_db(path):
+    if os.path.exists(path):
+        os.remove(path)
+    db = sqlite3.connect(path)
+    db.executescript(SCHEMA)
+    return db
+
+
+def field_value(fields, base, signed=False):
+    """-> field `base` assembled from its labelled chunks ('reladdr[23:16]',
+    'reladdr[15:0]'), sign-extended when signed; None when the form has none."""
+    value = width = 0
+    found = False
+    for label, v in fields.items():
+        m = LABEL.match(label)
+        if not m or m.group(1) != base:
+            continue
+        found = True
+        hi = int(m.group(2)) if m.group(2) else 0
+        lo = int(m.group(3)) if m.group(3) else 0
+        value |= v << lo
+        width = max(width, hi + 1)
+    if not found:
+        return None
+    if signed and value & (1 << (width - 1)):
+        value -= 1 << width
+    return value
+
+
+def write_decoder(db, ctx, data, base_sw, min_depth=8):
+    """Fill the decoder table for a main program; ctx None skips the lift."""
+    table = sharcimm.decode_all(data)
+    depth = sharcimm.depths(table, len(data))
+    sweep = sharcimm.sweep_offsets(table, len(data))
+    aligned = {base_sw + off // 2 for off in sweep if depth.get(off, 0) >= min_depth}
+    rows = []
+    for off in sorted(table):
+        insn = table[off]
+        sw = base_sw + off // 2
+        f = insn.fields
+        target = field_value(f, 'addr')
+        if target is None:
+            rel = field_value(f, 'reladdr', signed=True)
+            target = None if rel is None else sw + rel
+        sleigh_length = pcode = None
+        if ctx is not None and sw in aligned:
+            sleigh_length, ops = lift_one(ctx, data[off:off + MAX_INSN_BYTES], 2 * sw)
+            pcode = ' '.join(op.opcode.name for op in ops)
+        rows.append((sw, insn.type_name, insn.length_bytes, insn.kind,
+                     None if insn.raw is None else '%x' % insn.raw,
+                     json.dumps(f, sort_keys=True), depth.get(off), int(off in sweep),
+                     int(sw in aligned), f.get('b'), f.get('j'), field_value(f, 'cond'), target,
+                     None if target is None else int(target in aligned), sleigh_length, pcode))
+    db.executemany('INSERT INTO decoder VALUES (%s)' % ','.join('?' * 16), rows)
+
+
+def write_program(db, program, lo_sw, hi_sw):
+    """Fill insn, refs, bookmarks and functions from an open Ghidra program."""
+    listing, fm = program.getListing(), program.getFunctionManager()
+
+    def sw_of(address):
+        return address.getOffset() // 2
+
+    def in_main(sw):
+        return int(lo_sw <= sw < hi_sw)
+
+    insns, refs = [], []
+    for ins in listing.getInstructions(True):
+        sw = sw_of(ins.getAddress())
+        ft = ins.getFallThrough()
+        f = fm.getFunctionContaining(ins.getAddress())
+        insns.append((sw, ins.getLength(), str(ins.getMnemonicString()),
+                      ''.join('%02x' % (b & 0xff) for b in ins.getBytes()),
+                      str(ins.getFlowType()), None if ft is None else sw_of(ft),
+                      ' '.join(str(op.getMnemonic()) for op in ins.getPcode()),
+                      None if f is None else sw_of(f.getEntryPoint()), in_main(sw)))
+        for ref in ins.getReferencesFrom():
+            to = ref.getToAddress()
+            refs.append((sw, sw_of(to) if to.isMemoryAddress() else None,
+                         str(ref.getReferenceType()), ref.getOperandIndex()))
+    db.executemany('INSERT INTO insn VALUES (?,?,?,?,?,?,?,?,?)', insns)
+    db.executemany('INSERT INTO refs VALUES (?,?,?,?)', refs)
+
+    marks = []
+    for mark in program.getBookmarkManager().getBookmarksIterator():
+        text = str(mark.getComment() or '')
+        at = re.search(r'\bat ([0-9a-fA-F]{6,})', text)
+        src = re.search(r'flow from ([0-9a-fA-F]{6,})', text)
+        marks.append((sw_of(mark.getAddress()), str(mark.getTypeString()), str(mark.getCategory()), text,
+                      int(at.group(1), 16) if at else None, int(src.group(1), 16) if src else None))
+    db.executemany('INSERT INTO bookmarks VALUES (?,?,?,?,?,?)', marks)
+
+    funcs = []
+    for f in fm.getFunctions(True):
+        sw = sw_of(f.getEntryPoint())
+        n = sum(1 for _ in listing.getInstructions(f.getBody(), True))
+        funcs.append((sw, str(f.getName()), n, in_main(sw)))
+    db.executemany('INSERT INTO functions VALUES (?,?,?,?)', funcs)
+
+
 # --- ghidra -----------------------------------------------------------------
 
 def start_pyghidra():
@@ -339,7 +482,7 @@ def timed_run(argv):
     return proc, round(time.perf_counter() - t0, 2)
 
 
-def measure_ghidra(image, spec, out_dir, timeout, max_functions):
+def measure_ghidra(image, spec, out_dir, timeout, max_functions, db=None):
     """Import, analyse and run the sharcflow pass in a throwaway project -> ghidra record."""
     project = os.path.join(out_dir, 'ghidra-project')
     os.makedirs(project, exist_ok=True)
@@ -363,7 +506,7 @@ def measure_ghidra(image, spec, out_dir, timeout, max_functions):
     lo_sw = spec['base_sw']
     hi_sw = lo_sw + os.path.getsize(region) // 2
     record = ghidra_metrics(project, PROJECT_NAME, '/' + name, lo_sw, hi_sw,
-                            spec['probes'], timeout, max_functions)
+                            spec['probes'], timeout, max_functions, db)
     record.update({
         'import_analyze_seconds': import_seconds,
         'flow_pass_seconds': flow_seconds,
@@ -372,12 +515,12 @@ def measure_ghidra(image, spec, out_dir, timeout, max_functions):
     return record
 
 
-def ghidra_metrics(project_dir, project_name, program_path, lo_sw, hi_sw, probes, timeout, max_functions):
+def ghidra_metrics(project_dir, project_name, program_path, lo_sw, hi_sw, probes, timeout, max_functions, db=None):
     pyghidra = start_pyghidra()
     project = pyghidra.open_project(project_dir, project_name, create=False)
     try:
         with pyghidra.program_context(project, program_path) as program:
-            return collect(program, lo_sw, hi_sw, probes, timeout, max_functions)
+            return collect(program, lo_sw, hi_sw, probes, timeout, max_functions, db)
     finally:
         project.close()
 
@@ -391,7 +534,7 @@ def normalise_message(text):
     return ' '.join(text.split())[:120]
 
 
-def collect(program, lo_sw, hi_sw, probes, timeout, max_functions):
+def collect(program, lo_sw, hi_sw, probes, timeout, max_functions, db=None):
     """Function, p-code and decompiler metrics over [lo_sw, hi_sw) of an open program."""
     from ghidra.app.decompiler import DecompInterface
     from ghidra.program.model.address import AddressSet
@@ -419,6 +562,10 @@ def collect(program, lo_sw, hi_sw, probes, timeout, max_functions):
         functions.append(f)
         sizes[size_bucket(n)] += 1
 
+    if db is not None:
+        write_program(db, program, lo_sw, hi_sw)
+    decompiled_rows, warning_rows = [], []
+
     ifc = DecompInterface()
     ifc.openProgram(program)
 
@@ -438,6 +585,13 @@ def collect(program, lo_sw, hi_sw, probes, timeout, max_functions):
             res, seconds, c = decompile(f)
             times.append(seconds)
             slowest.append((seconds, sw))
+            if db is not None:
+                decompiled_rows.append((sw, seconds, int(c is not None),
+                                        None if c is not None else str(res.getErrorMessage() or ''), c))
+                for m in DECOMPILER_WARNING.finditer(c or ''):
+                    nums = [int(x, 16) for x in re.findall(r'0x([0-9a-fA-F]+)', m.group(1))]
+                    warning_rows.append((sw, m.group(1).strip(), normalise_message(m.group(1)),
+                                         nums[0] if nums else None, nums[1] if len(nums) > 1 else None))
             if c is None:
                 timeouts += bool(res.isTimedOut())
                 failed[normalise_message(res.getErrorMessage())] += 1
@@ -449,6 +603,10 @@ def collect(program, lo_sw, hi_sw, probes, timeout, max_functions):
             hf = res.getHighFunction()
             if hf is not None:
                 high_ops += sum(1 for _ in hf.getPcodeOps())
+
+        if db is not None:
+            db.executemany('INSERT INTO decompiled VALUES (?,?,?,?,?)', decompiled_rows)
+            db.executemany('INSERT INTO warnings VALUES (?,?,?,?,?)', warning_rows)
 
         probe_results = []
         for p in probes:
@@ -655,14 +813,25 @@ def cmd_measure(args):
                   image, lift['decoded'], lift['aligned'], _total(lift['length_mismatch']),
                   _total(lift['conditional_without_fallthrough']), lift['ops_total'],
                   lift['instructions_per_second']))
+        db_path = os.path.join(args.out, image + '.sqlite')
+        db = open_db(db_path)
+        db.executemany('INSERT INTO meta VALUES (?,?)', [
+            ('image', image), ('base_sw', hex(spec['base_sw'])),
+            ('region_sha256', record['region_sha256']), ('sla_sha256', lint['sla_sha256']),
+            ('slaspec_sha256', lint['slaspec_sha256']), ('git_head', record['meta']['git_head'])])
+        write_decoder(db, ctx, data, spec['base_sw'])
+        db.commit()
         if args.ghidra:
-            g = record['ghidra'] = measure_ghidra(image, spec, args.out, args.timeout, args.max_functions)
+            g = record['ghidra'] = measure_ghidra(image, spec, args.out, args.timeout, args.max_functions, db)
             print('%s: import+analysis %.1fs, sharcflow pass %.1fs, %d functions %s, decompile %.1fs '
                   '(%d failed, %d timeouts, %d halt_baddata), probes %s' % (
                       image, g['import_analyze_seconds'], g['flow_pass_seconds'], g['main_functions'],
                       g['function_sizes'], g['decompile_seconds']['total'],
                       sum(g['decompile_failed'].values()), g['decompile_timeouts'], g['halt_baddata'],
                       {p['name']: p['ok'] for p in g['probes']}))
+        db.commit()
+        db.close()
+        print('%s: wrote %s' % (image, db_path))
         write_json(os.path.join(args.out, image + '.json'), record)
     return 0
 
