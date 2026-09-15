@@ -1,8 +1,8 @@
 # fmt: off
 """Import a SHARC blob (container section 7) into Ghidra with its real memory map.
 
-    GHIDRA_INSTALL_DIR=/opt/homebrew/Cellar/ghidra/12.1.3/libexec \
-    uv run python tools/sharc_import.py sections/section_7_BLOB.bin --name dt2_SHARC
+    uv run python tools/sharc_import.py out/sections/dt2-1.16/section_7_BLOB.bin \
+        --name dt2-1.16_SHARC --seed-calls --analyze
 
 The blob is an ADI boot stream: tools/sharcldr.py parses it into blocks that
 each name a target address and carry (or zero-fill) that many bytes. Those
@@ -11,13 +11,14 @@ one Ghidra memory block per loaded ADI block rather than dumping the file flat.
 
 ADDRESSING. The core executes at 16-bit short-word addresses (0x1cxxxx,
 0x12xxxx) while the loader writes byte addresses (0x28xxxxxx, 0x80xxxxxx),
-related by byte = 2 * sw + 0x28000000. The SLEIGH spec resolves branch targets
-by doubling the short-word value it decodes, so this program's addresses are
+related by byte = 2 * sw + 0x28000000. The language, SHARC_VISA:LE:32:default
+(tools/ghidra/install-sharc.sh), has a code space with wordsize 2: an address
+offset counts bytes, Ghidra shows it as a short-word address, and a decoded
+branch target is a short-word address. So the program's byte offsets are
 
-    ghidra_address = 2 * short_word_address = byte_address - 0x28000000
+    ghidra_offset = 2 * short_word_address = byte_address - 0x28000000
 
-which makes a decoded branch land where the loader put its target. A pointer
-STORED in the image still holds the undoubled short-word value, so use
+A pointer STORED in the image holds the short-word value, so use
 --label-table to lay one out as function pointers; it doubles each entry.
 
 FILL blocks reserve address space without supplying bytes (one of them clears
@@ -34,10 +35,10 @@ import sharcldr as L                                              # noqa: E402
 import sharcscan as S                                             # noqa: E402
 sys.path[:] = [p for p in sys.path if os.path.abspath(p or '.') != _here]
 
-LANGUAGE_ID = 'SHARC:LE:32:VISA'
-SPACE_BASE = 0x28000000          # byte_address - this == ghidra address
-DEFAULT_PROJECT = os.path.expanduser('~/ghidra-projects/dt2')
-DEFAULT_PROJECT_NAME = 'dt2'
+LANGUAGE_ID = 'SHARC_VISA:LE:32:default'
+SPACE_BASE = 0x28000000          # byte_address - this == ghidra byte offset
+DEFAULT_PROJECT = os.path.expanduser('~/ghidra-projects/elektron-sharc')
+DEFAULT_PROJECT_NAME = 'elektron-sharc'
 DEFAULT_GHIDRA = '/opt/homebrew/Cellar/ghidra/12.1.3/libexec'
 MAX_UNINIT = 0x400000            # skip absurd fill blocks (a 32 MB DDR clear)
 
@@ -103,7 +104,11 @@ def main(argv):
     from ghidra.program.model.symbol import SourceType
 
     lang = DefaultLanguageService.getLanguageService().getLanguage(LanguageID(LANGUAGE_ID))
-    project = GhidraProject.openProject(args.project, args.project_name, False)
+    if os.path.exists(os.path.join(args.project, args.project_name + '.gpr')):
+        project = GhidraProject.openProject(args.project, args.project_name, False)
+    else:
+        os.makedirs(args.project, exist_ok=True)
+        project = GhidraProject.createProject(args.project, args.project_name, False)
     try:
         existing = project.getProject().getProjectData().getFile('/' + name)
         if existing is not None:

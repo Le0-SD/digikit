@@ -841,6 +841,7 @@ def main():
     for ctor in all_ctors:
         lines.append(ctor.emit())
 
+    os.makedirs(OUT_DIR, exist_ok=True)
     slaspec_path = os.path.join(OUT_DIR, "sharc_visa.slaspec")
     with open(slaspec_path, "w") as f:
         f.write("\n".join(lines) + "\n")
@@ -893,7 +894,7 @@ def main():
   <global>
     <range space="ram"/>
   </global>
-  <stackpointer register="I6" space="ram"/>
+  <stackpointer register="I7" space="ram"/>
   <default_proto>
     <prototype name="asm" extrapop="0" stackshift="0" strategy="register">
       <input>
