@@ -1800,6 +1800,59 @@ Ghidra or disassembly output and it was not re-checked.
   `0x1c3c4f`, `0x1c3d34` and `0x1c3f16`, jump back to `0x1c3c1d`. Both need
   the language: delay slots and indirect jump targets. **[D][O]**
 
+### Delay slots as one Ghidra instruction **[D][O]**
+
+- A throwaway copy of the generated SHARC+ language, installed as
+  `SHARC_SPIKE`, models a delayed branch and its two delay-slot instructions
+  as one instruction: two identical slot subtables, each a copy of every
+  constructor with an empty body, follow the branch pattern, and the body
+  builds both before its `call`, `return` or `goto`. It was applied to
+  CJUMP, delayed `9a_abs` and `9b_abs` jumps, and delayed `8a_abs` jumps. On
+  the 1.16 main program, SW `0x1c80a2` is one 14-byte instruction (CJUMP,
+  `3c`, `16a`) with p-code `CALL` to `0x1c7bd4` and fall-through
+  `0x1c80a9`; `0x1c2c9a` is 18 bytes (CJUMP, `3a`, `16a`); and the return at
+  `0x1c1496` is 10 bytes (`9b_abs`, `17b` R0=`0xabc`, `25c_rframe`) with
+  p-code `RETURN`. **[D]**
+- SLEIGH limits met: one subtable cannot appear twice in a pattern; a
+  subtable must be defined before it is used; bare mnemonic words in
+  subtable constructors must be quoted; a field cannot be both displayed and
+  constrained in one constructor. `delayslot(n)` counts bytes, so it cannot
+  express two SHARC+ instructions of varying length. **[D]**
+- Not yet in the generator, and function boundaries were not measured: the
+  test program was seeded only from the entry and the CJUMP targets. Its
+  `FUN_001c136a` stops at SW `0x1c13bc`, where our decoder and Ghidra both
+  read an `8a_rel` jump to a nonsensical target (raw `00 07 3e 02 30 00`),
+  with the current language as well. **[O]**
+
+### Conditional jumps, calls and returns in the generated language **[D][O]**
+
+- The generated language lifted every jump, call and return that has a
+  `cond` field as unconditional: with cond EQ, an `8a_abs` jump was a `goto`
+  with no fall-through. In the 1.16 main program 499 such instructions have a
+  cond other than TRUE (`8a_rel` 404, `11a` 37, `8a_abs` 22, `9a_abs` 15,
+  `9a_rel` 15, `11c` 5, `9b_rel` 1); in Digitone II 1.11, 478. **[D]**
+- `tools/sharcspec/ghidra/gen_sleigh.py` now gives each of these forms two
+  constructors: cond TRUE keeps the old p-code, and any other cond tests
+  `condition(cond)`, a user-defined p-code op, and falls through when it
+  does not hold. `tools/sharcpcode.py` measured the old and new language back
+  to back, each in a throwaway project (`sharc_import.py --seed-calls
+  --analyze`, then `sharcflow.py --cover --analyze`):
+
+| | DT2 1.16 old / new | DN2 1.11 old / new |
+|---|---|---|
+| main-program functions after the pass | 1,875 / 1,211 | 1,666 / 1,084 |
+| ... with one instruction | 168 / 114 | 124 / 94 |
+| ... with two to five | 806 / 496 | 691 / 448 |
+| functions the decompiler truncates at bad instruction data | 309 / 280 | 346 / 335 |
+| Error bookmarks, whole program | 106 / 165 | 113 / 172 |
+
+- The new Error bookmarks are Bad Instruction bookmarks at addresses that had
+  none before, outside the main program (Ghidra shows `0012058c`, `001208fa`),
+  reached through the new fall-throughs. The decompiler's "Instruction
+  overlaps" warning in 1.16 went from 5 to 70. Neither is examined yet. **[O]**
+- `FUN_001c136a` now has 55 instructions (38 before) and still stops at the
+  `8a_rel` decode at SW `0x1c13bc`. **[O]**
+
 ## Emulation
 
 Function-level works well and is the practical path. Full boot was pushed as far

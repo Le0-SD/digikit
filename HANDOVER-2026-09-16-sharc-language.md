@@ -1,14 +1,17 @@
-# Handover 2026-09-15: the SHARC side of the 1.16 retarget
+# Handover 2026-09-16: SHARC+ semantics in the generated Ghidra language
 
-Replaces `HANDOVER-2026-09-15-after-1.16-steps-1-4.md` (deleted). Results
-are in `docs/FINDINGS.md`; this file holds state and next steps only.
+Replaces `HANDOVER-2026-09-15-sharc-side.md`. Results are in
+`docs/FINDINGS.md`; this file holds state and next steps only.
 
 ## State
 
 - Branch `sharc-pcode`, from `main` after PR #13 (`machine-engine-link`,
-  merged). The branch adds CJUMP as a call in the generated SHARC+ language,
-  the rewritten call finder in `tools/sharcflow.py`, `tools/refstext.py`, and
-  FINDINGS: the CJUMP correction.
+  merged), pushed to `origin`. Commit `ad2ec98`: CJUMP as a call in the
+  generated SHARC+ language, the rewritten call finder in
+  `tools/sharcflow.py`, `tools/refstext.py`, FINDINGS: the CJUMP
+  correction. Uncommitted: this handover (renamed from
+  `HANDOVER-2026-09-15-sharc-side.md`) and FINDINGS: "Delay slots as one
+  Ghidra instruction".
 - Tests: 193 passed, 5 skipped.
 - Analysis targets are Digitakt II 1.16 and Digitone II 1.11; Em asked on
   2026-09-15 to stop cross-checking 1.15C.
@@ -44,7 +47,8 @@ are in `docs/FINDINGS.md`; this file holds state and next steps only.
     re-imported with the CJUMP language and after `tools/sharcflow.py
     --cover` (1,999 and 1,776 functions);
     `/dt2-1.15C_SHARC` (352 functions, not covered); test copies in
-    `/flowtest/`, `/flowtest2/` and `/flowtest3/`, which can be deleted.
+    `/flowtest/`, `/flowtest2/`, `/flowtest3/` and `/flowtest5/`, which can
+    be deleted.
   - `~/ghidra-projects/backup-2026-09-15-sharc`: `/dt2-1.16_SHARC`,
     `/dt2-1.15C_SHARC` and `/dn2-1.11_SHARC` from before the flow pass.
   - `~/ghidra-projects/dt2-emac` (1.15C ColdFire, unchanged content),
@@ -104,30 +108,68 @@ DT2_SECTIONS=out/sections/dt2-1.16 DT2_SYX=Digitakt_II_OS1.16.syx \
 ## Next steps, in order
 
 Put the semantics in the generated language and let Ghidra's analysis draw
-function boundaries; stop adding boundary heuristics to
-`tools/sharcflow.py` (a delay-slot and switch "tidy" step was written and
-dropped). In `tools/sharcspec/ghidra/gen_sleigh.py`, in order:
+function boundaries; do not add boundary heuristics to `tools/sharcflow.py`
+(a delay-slot and switch "tidy" step was written and dropped). Work in
+`tools/sharcspec/ghidra/gen_sleigh.py`. `tools/ghidra/install-sharc.sh`
+regenerates, compiles and installs the language; then
+`tools/sharc_import.py ... --overwrite --seed-calls --analyze` and
+`tools/sharcflow.py ... --cover --analyze --save` rebuild a program (about
+15 s per image; commands under "How to run"). Stages:
 
-1. A test of whether Ghidra accepts one instruction that holds a delayed
-   jump or call plus its two delay-slot instructions (up to 18 bytes: `25a`,
-   `3a`, `16a`), built from a slot subtable that repeats every constructor.
-   SLEIGH's `delayslot(n)` counts bytes, and the two SHARC+ slot instructions
-   vary in length, so it cannot model them. The result decides how delay
-   slots are modelled.
-2. Attach the ureg register names; define the status and system registers.
-   Add a test that compiles the generated SLEIGH.
-3. Delay slots, per step 1, for CJUMP, the return and every delayed jump.
-4. P-code for the move and memory forms (`17a`, `17b`, `14a`, `15a`, `15b`,
-   `16a`, `3a`-`3c`, `5a`, `5b`, `19a`) and a calling convention (R4, R8, R12
-   in, R0 out, I7 stack).
-5. Indirect jumps: `9a`/`9b` jumps to I + M; only the I4/M6 jump is a return.
-6. ALU and multiplier compute (`4a`, `2c`, `1a`, `1b`) with flags; then
+1. Done 2026-09-16 (FINDINGS, "Delay slots as one Ghidra instruction"): a
+   delayed branch plus its two delay-slot instructions compiles and
+   disassembles as one instruction. The throwaway module and script lived
+   in that session's scratchpad and are gone; rebuild the approach in the
+   generator from these rules:
+   - Two structurally identical slot subtables `s1` and `s2`, each a copy of
+     every root constructor with an empty body; one subtable cannot appear
+     twice in a pattern. Define them before the constructors that use them.
+   - In subtable constructors, quote the mnemonic text (`s1:"jump" ...`):
+     bare words there must be operands.
+   - A field cannot be both a display operand and constrained (`j=1`) in the
+     same constructor: drop it from the display of the split halves.
+   - Shapes that compiled: CJUMP (0x1804, 0x1844) as `<pattern> ; s1 ; s2`
+     with `build s1; build s2; call target;`; `9a_abs` and `9b_abs` jumps
+     split on j, j=1 as `build s1; build s2; return [0:4];` (j=0 unchanged);
+     `8a_abs` jump with j=1 as `... goto target;`. RFRAME bodies emptied: it
+     restores I7 and I6 and is not a return.
+   - With compute p-code, a conditional delayed branch must evaluate its
+     condition before the slots run.
+   - Remove the test install: `rm -rf
+     /opt/homebrew/Cellar/ghidra/12.1.3/libexec/Ghidra/Processors/SHARC_SPIKE
+     ~/ghidra-projects/spike-sharc ~/ghidra-projects/spike-sharc.rep
+     ~/ghidra-projects/spike-sharc-baseline
+     ~/ghidra-projects/spike-sharc-baseline.rep`.
+2. Attach the ureg register names (SHARC+ Core Programming Reference, UREG
+   class table: 0x00-0x0f R, 0x10 I, 0x20 M, 0x30 L, 0x40 B, 0x50 S, 0x60 and
+   up system registers) and define the status and system registers (ASTAT,
+   STKY, PCSTK, LPSTK, loop registers). Add a test that runs Ghidra's sleigh
+   compiler on the generated module.
+3. Delay slots in the generator per stage 1: CJUMP, the return and every
+   delayed `8a`/`9a`/`9b` jump, and `11a`/`11c` with j=1 if they compile.
+   Re-import both programs, re-run the pass, and compare with the FINDINGS
+   table (1.16: 1,875 main-program functions, 168 with one instruction, 806
+   with two to five).
+4. SW `0x1c13bc` in 1.16: our decoder and Ghidra both read an `8a_rel` jump
+   with reladdr `0x3e0030` (raw `00 07 3e 02 30 00`), a nonsensical target,
+   and `FUN_001c136a` stops there, so the function that returns 2748 cannot
+   be decompiled. Check the bytes and the candidate forms against the manual
+   (`out/refs/sc58x-2158x-prm/`) and the unconfirmed forms in
+   `docs/sharc/SPEC-FINDINGS.md`.
+5. P-code for the move and memory forms (`17a`, `17b`, `14a`, `15a`, `15b`,
+   `16a`, `3a`-`3c`, `5a`, `5b`, `19a`) and a calling convention (R4, R8,
+   R12 in, R0 out, I7 stack, I6 frame).
+6. Indirect jumps: `9a`/`9b` jumps go to I + M (pre-modify); only the I4/M6
+   jump (raw `0x083f343f`) is a return. The test is the RPC dispatcher's jump
+   at `0x1c3c3c` and its cases that jump back to `0x1c3c1d`.
+7. ALU and multiplier compute (`4a`, `2c`, `1a`, `1b`) with flags; then
    condition codes, the shifter and float operations.
 
 Measure each stage by function boundaries and by the decompiler on known
-functions: `0x1c136a` returns 2748 (R0 set in a return's delay slot), and
+functions: `0x1c136a` returns 2748 (R0 is set in a return's delay slot), and
 the RPC dispatcher `0x1c3bef` with its cases should be one function. Mark
-unconfirmed forms unimplemented instead of guessing.
+unconfirmed forms unimplemented instead of guessing. After stage 5, take up
+step 1 below (the SPI2 trace) again with the decompiler.
 
 ### 1. Where the SHARC receives the ColdFire's frame
 
@@ -312,6 +354,21 @@ TRIG1=25.
 - Shell is zsh (an unquoted `$VAR` is one word), there is no `timeout`
   binary, and the rtk hook shortens `git log` and `ls` and rejects
   `find -newer` (use `rtk proxy`).
+- Every SHARC+ CJUMP (`25a`) is a delayed call: the push of R2 and the store
+  of the return address - 1 after it are its delay slots, and the return
+  lands after them. Returns and other delayed jumps also run the two
+  instructions after them. Read listings with that in mind.
+- SLEIGH's `delayslot(n)` counts bytes, so it cannot model two SHARC+
+  delay-slot instructions of varying length (Next steps, stage 1).
+  `getMaximumInstructionLength()` is empty for the generated language, and
+  18-byte instructions work.
+- Manual text is in `out/refs/<pdf stem>/` (`toc.md`, `pages/pNNNN.txt`,
+  `all.txt`) from `tools/refstext.py`: grep there, do not extract the PDFs
+  again.
+- Em wants strict delegation: scout reads, coder edits, general-purpose
+  agents run every process, including short commands and git.
+- Analyse Digitakt II 1.16 and Digitone II 1.11 only; use 1.15C only when a
+  hardware test needs it.
 
 ## Workflow
 

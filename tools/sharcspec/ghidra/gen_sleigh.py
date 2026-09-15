@@ -97,6 +97,16 @@ SCOPE (disassembly-first, per task spec)
    control-flow edge for Ghidra's function/block analysis; target is NOT
    resolved). Every other form gets an empty (but present, i.e.
    "implemented") {} body.
+ - A jump, call or return with a cond field (Type8a, Type9a, Type9b jumps
+   and calls with p-code, Type11a, Type11c) gets two constructors. With cond
+   TRUE (0x1f, PGR Table 10-4) it keeps the p-code above. With any other
+   cond it acts only when `condition(cond)` holds and otherwise falls
+   through: a goto becomes `if (holds) goto`, and a call or return is preceded
+   by `if (!holds) goto inst_next;`. `condition` is a user-defined p-code op
+   because the status flags are not modelled yet. The TRUE constructor
+   constrains `condtrue`, a second field over the cond bits, because a field
+   cannot be both displayed and constrained in one constructor; the extra
+   constraint makes it the more specific match.
  - Compute/shiftimm/short-compute fields and every other non-address operand
    are rendered as raw hex annotations (their own SLEIGH field, printed in
    hex) -- decompiler-grade arithmetic p-code for the 23-bit compute field is
@@ -391,6 +401,27 @@ RETURN_FORMS = {
 # High-confidence real mnemonics for otherwise-generic forms.
 NOP_FORMS = {"Type21a": "nop"}
 
+COND_TRUE = 0x1F   # PGR Table 10-4: TRUE (FOREVER)
+
+
+def cond_chunk(field_info):
+    """-> (word, field name, lo, nbits) of a form's cond field, or None."""
+    for base, _shift, chunks, _hi, _lo in field_info.values():
+        if base == "cond" and len(chunks) == 1:
+            return chunks[0]
+    return None
+
+
+def conditional_semantics(cond_fname, semantic):
+    """-> p-code lines running the single flow statement in `semantic` only
+    when condition(cond) holds, falling through otherwise."""
+    (stmt,) = semantic
+    head = [f"local code:4 = {cond_fname};", "local holds:1 = condition(code);"]
+    if stmt.startswith("goto "):
+        return head + [f"if (holds) {stmt}"]
+    return head + ["if (!holds) goto inst_next;", stmt]
+
+
 # Shared branch-target subtables, keyed by (mode, bit-shape) -- NOT by mode
 # alone, because "pcrel" now covers two unrelated field shapes: Type25a_pcrel/
 # Type8a_rel's 24-bit reladdr (words 1-2) and Type9a_rel/Type9b_rel's 6-bit
@@ -613,78 +644,90 @@ def gen_constructor(form):
     # words a target subtable swallows past its own start word (see above).
     active_words = [w for w in range(nwords) if w not in swallowed]
 
+    cond = cond_chunk(field_info)
     ctors = []
     for mnem, split_override in variants:
-        wt = {w: list(terms) for w, terms in word_terms.items()}
-        disp_ops = list(display_ops)
-        semantic = []
-        if split_override:
-            w, fname, val = split_override
-            wt[w].append(f"{fname}=0x{val:x}")
+        has_flow = (bool(branch_cfg) or (bool(indirect_cfg) and mnem == "jump")
+                    or name in RETURN_FORMS)
+        cond_cases = ((True, False) if has_flow and cond and cond[1] in display_ops
+                      else (None,))
+        for cond_true in cond_cases:
+            wt = {w: list(terms) for w, terms in word_terms.items()}
+            disp_ops = list(display_ops)
+            semantic = []
+            if split_override:
+                w, fname, val = split_override
+                wt[w].append(f"{fname}=0x{val:x}")
+            if cond_true:
+                w, _fname, clo, nbits = cond
+                alias = FIELDS.get(w, clo + nbits - 1, clo, "condtrue")
+                wt.setdefault(w, []).append(f"{alias}=0x{COND_TRUE:x}")
 
-        if branch_cfg:
-            # A bare subtable reference in the pattern links the LOCAL symbol
-            # to the GLOBAL table symbol of the same name (sec 7.4.3), so the
-            # display/semantic operand identifier must be the subtable's own
-            # name (target_abs / target_pcrel), not an arbitrary alias.
-            #
-            # The subtable spans target_span tokens (word_target..word_target
-            # +target_span-1) while any sibling terms already in this word
-            # (e.g. Type8a_abs's j/ci) are only 1 token wide, so '&' can't
-            # combine them directly ("Error: Mismatched pattern sizes"). The
-            # '...' operator (sec 7.4.4.2) extends the shorter (sibling) side
-            # to match before ANDing; any word AFTER target_word that the
-            # subtable also swallows gets no separate group of its own (see
-            # active_words above), and any word still further out (e.g.
-            # Type9a_rel's word2 `compute`) keeps its normal group.
-            #
-            # A swallowed word can still carry its own FIXED (mask) bits
-            # that a sibling form needs to stay distinguishable -- e.g.
-            # Type9b_rel's word1 fixes bits[6:0]=0x3f (the same sentinel
-            # that marks the ISA's narrower 32-bit Type9b family) even
-            # though the subtable placed at word0 already claims word1's
-            # reladdr bits. Dropping that fixed constraint entirely would
-            # make Type9b_rel's pattern identical to Type9a_rel's (both
-            # start 0x09 at word0). SLEIGH won't let the OUTER pattern glue
-            # a word1-only term onto the subtable reference via '...' from
-            # here ("Mismatched tokens when combining patterns"), so instead
-            # fold it into the subtable's OWN word1 group (get_target_
-            # subtable's `extra_by_word`) -- a plain, same-token '&', which
-            # gives Type9b_rel its own distinct subtable instance while
-            # Type9a_rel keeps sharing the plain one.
-            extra_by_word = {}
-            for w in sorted(swallowed):
-                terms = [t for t in wt.pop(w, []) if t.startswith("fx_")]
-                if terms:
-                    extra_by_word[w] = terms
-            subtable_name = target_subtable_name
-            if extra_by_word:
-                subtable_name, _, _ = get_target_subtable(
-                    branch_cfg["mode"], frag_list, extra_by_word)
-            siblings = wt.setdefault(target_word, [])
-            combined = f"({' & '.join(siblings)}) ... & {subtable_name}" if siblings else subtable_name
-            wt[target_word] = [combined]
-            disp_ops = [subtable_name] + disp_ops
-            semantic.append(f"call {subtable_name};" if mnem == "call"
-                             else f"goto {subtable_name};")
-        elif indirect_cfg:
-            # Register-indirect jump/call: no statically resolvable target
-            # (needs the DAG pointer/modify register file -- out of scope
-            # for this pass). A call always falls through after it returns,
-            # which is exactly SLEIGH/Ghidra's default behavior for an
-            # instruction with NO control-flow p-code at all, so the call
-            # variant is correctly left empty. A jump never falls through,
-            # so it gets the same "flow leaves via an unresolved target"
-            # marker as the register-indirect RETURN_FORMS below, so Ghidra
-            # doesn't treat whatever bytes follow as this instruction's
-            # fallthrough.
-            if mnem == "jump":
+            if branch_cfg:
+                # A bare subtable reference in the pattern links the LOCAL symbol
+                # to the GLOBAL table symbol of the same name (sec 7.4.3), so the
+                # display/semantic operand identifier must be the subtable's own
+                # name (target_abs / target_pcrel), not an arbitrary alias.
+                #
+                # The subtable spans target_span tokens (word_target..word_target
+                # +target_span-1) while any sibling terms already in this word
+                # (e.g. Type8a_abs's j/ci) are only 1 token wide, so '&' can't
+                # combine them directly ("Error: Mismatched pattern sizes"). The
+                # '...' operator (sec 7.4.4.2) extends the shorter (sibling) side
+                # to match before ANDing; any word AFTER target_word that the
+                # subtable also swallows gets no separate group of its own (see
+                # active_words above), and any word still further out (e.g.
+                # Type9a_rel's word2 `compute`) keeps its normal group.
+                #
+                # A swallowed word can still carry its own FIXED (mask) bits
+                # that a sibling form needs to stay distinguishable -- e.g.
+                # Type9b_rel's word1 fixes bits[6:0]=0x3f (the same sentinel
+                # that marks the ISA's narrower 32-bit Type9b family) even
+                # though the subtable placed at word0 already claims word1's
+                # reladdr bits. Dropping that fixed constraint entirely would
+                # make Type9b_rel's pattern identical to Type9a_rel's (both
+                # start 0x09 at word0). SLEIGH won't let the OUTER pattern glue
+                # a word1-only term onto the subtable reference via '...' from
+                # here ("Mismatched tokens when combining patterns"), so instead
+                # fold it into the subtable's OWN word1 group (get_target_
+                # subtable's `extra_by_word`) -- a plain, same-token '&', which
+                # gives Type9b_rel its own distinct subtable instance while
+                # Type9a_rel keeps sharing the plain one.
+                extra_by_word = {}
+                for w in sorted(swallowed):
+                    terms = [t for t in wt.pop(w, []) if t.startswith("fx_")]
+                    if terms:
+                        extra_by_word[w] = terms
+                subtable_name = target_subtable_name
+                if extra_by_word:
+                    subtable_name, _, _ = get_target_subtable(
+                        branch_cfg["mode"], frag_list, extra_by_word)
+                siblings = wt.setdefault(target_word, [])
+                combined = f"({' & '.join(siblings)}) ... & {subtable_name}" if siblings else subtable_name
+                wt[target_word] = [combined]
+                disp_ops = [subtable_name] + disp_ops
+                semantic.append(f"call {subtable_name};" if mnem == "call"
+                                 else f"goto {subtable_name};")
+            elif indirect_cfg:
+                # Register-indirect jump/call: no statically resolvable target
+                # (needs the DAG pointer/modify register file -- out of scope
+                # for this pass). A call always falls through after it returns,
+                # which is exactly SLEIGH/Ghidra's default behavior for an
+                # instruction with NO control-flow p-code at all, so the call
+                # variant is correctly left empty. A jump never falls through,
+                # so it gets the same "flow leaves via an unresolved target"
+                # marker as the register-indirect RETURN_FORMS below, so Ghidra
+                # doesn't treat whatever bytes follow as this instruction's
+                # fallthrough.
+                if mnem == "jump":
+                    semantic.append("return [0:4];")
+            elif name in RETURN_FORMS:
                 semantic.append("return [0:4];")
-        elif name in RETURN_FORMS:
-            semantic.append("return [0:4];")
 
-        ctors.append(Constructor(mnem, disp_ops, wt, nwords,
-                                  semantic_lines=semantic, active_words=active_words))
+            if cond_true is False:
+                semantic = conditional_semantics(cond[1], semantic)
+            ctors.append(Constructor(mnem, disp_ops, wt, nwords,
+                                      semantic_lines=semantic, active_words=active_words))
     return ctors
 
 
@@ -819,6 +862,8 @@ def main():
     lines.append("define register offset=0x140 size=4 [ " +
                   " ".join(f"B{i}" for i in range(16)) + " ];")
     lines.append("define register offset=0x180 size=4 [ PC ];")
+    lines.append("")
+    lines.append("define pcodeop condition;   # cond code (PGR Table 10-4) holds; flags not modelled yet")
     lines.append("")
 
     for w in range(3):
