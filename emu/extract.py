@@ -1,27 +1,29 @@
 """Extract a firmware .syx into decompressed sections, with no outside tool.
 
-    uv run python -m emu.extract [firmware.syx] [-o DIR]
+    uv run python -m emu.extract [firmware.syx] [-o DIR] [--oracle]
 
-The device's aPLib depacker sits at 0x80000432 inside section 2 -- which is
-itself compressed, so it cannot bootstrap itself. That is why extraction used
-to send you to elektron-firmware-tool. It does not have to: section 4 is the
-*updater*, it is stored raw, and an updater has to unpack the image it
-installs, so it carries its own copy of the same routine. This runs that copy
-under Unicorn, and it decompresses everything -- section 2 included.
+Packed sections are decompressed with dt2/elz.py, a byte-level decoder for
+the device's aPLib-style codec. It reads every firmware in the repo root,
+Digitakt II 1.16 and Digitone II 1.11 included, in about a second.
 
-The address was found by scanning section 4 for function prologues and keeping
-the one that reproduced section 2's known first output bytes; `find_depacker`
-does that search again if the constant ever stops matching. The result is
+--oracle uses the device's own routine instead, as a cross-check. The aPLib
+depacker sits at 0x80000432 inside section 2 -- which is itself compressed,
+so it cannot bootstrap itself. Section 4 is the *updater*, it is stored raw,
+and an updater has to unpack the image it installs, so it carries its own
+copy of the same routine; --oracle runs that copy under Unicorn. The address
+was found by scanning section 4 for function prologues and keeping the one
+that reproduced section 2's known first output bytes; `find_depacker` does
+that search again if the constant ever stops matching. Its output is
 byte-identical to `emu.oracle.depack` -- the device's own section-2 routine --
-for every compressed section of both Digitakt II 1.15C and Digitone II 1.10E.
+for every compressed section of both Digitakt II 1.15C and Digitone II 1.10E,
+and so is dt2/elz.py's. It fails on the 1.16 and 1.11 updaters
+(docs/FINDINGS.md). Section 3 takes about a minute this way.
 
 A section's 8-byte header is [u32 compressed_len][u32 sum of those bytes], big
 endian, and the sum is checked here. Two sections opt out of it:
 
     4  updater  header present, sum 0, payload stored raw
     5  meta     15 ASCII bytes of build stamp, no header at all
-
-Section 3 is three megabytes and takes about a minute. The rest are seconds.
 """
 import glob
 import hashlib
@@ -33,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from emu.harness import Machine, call
 from dt2.container import sections
+from dt2.elz import depack_section
 
 BOOT_LOAD = 0x80000400      # where the updater image loads
 SRC       = 0x50000000      # scratch: the compressed stream
@@ -158,17 +161,18 @@ def resolve_depacker(img, stream):
     return DEPACK
 
 
-def extract(syx, outdir, progress=None):
+def extract(syx, outdir, progress=None, oracle=False):
     """Decompress every section of `syx` into `outdir`.
 
     -> [(id, kind, path, nbytes, dest)], one entry per section. Also records
     which .syx these came from, which emu/run.py checks before pairing them
     with a firmware. `progress(sid, kind, filename)` is called before each
-    section is decompressed, because section 3 takes about a minute and
-    silence for that long reads as a hang.
+    section is decompressed, because with `oracle` section 3 takes about a
+    minute and silence for that long reads as a hang. `oracle` decompresses
+    with the updater's own routine under Unicorn instead of dt2/elz.py.
     """
     c, secs = sections(syx)
-    img = updater_image(c, secs)
+    img = updater_image(c, secs) if oracle else None
     os.makedirs(outdir, exist_ok=True)
     written = []
     at = None
@@ -177,7 +181,9 @@ def extract(syx, outdir, progress=None):
         name = 'section_%d_%s.bin' % (sid, NAMES.get(sid, 'SECTION'))
         if progress:
             progress(sid, kind, name)
-        if kind == 'packed':
+        if kind == 'packed' and not oracle:
+            payload = depack_section(payload)
+        elif kind == 'packed':
             # Resolved once, from the first packed section, so a build that
             # moved the routine extracts instead of erroring.
             if at is None:
@@ -205,7 +211,7 @@ def record_source(syx, outdir):
         fh.write(h.hexdigest() + '\n')
 
 
-USAGE = """usage: python -m emu.extract [firmware.syx] [-o DIR]
+USAGE = """usage: python -m emu.extract [firmware.syx] [-o DIR] [--oracle]
 
 Decompress a firmware .syx into its sections.
 
@@ -213,6 +219,8 @@ Decompress a firmware .syx into its sections.
                  this project -- this argument, then DT2_SYX, then the only
                  .syx present (see emu/config.py)
   -o DIR         where to write them; overrides DT2_SECTIONS
+  --oracle       decompress with the updater's own routine under Unicorn
+                 (slow; 1.15C and 1.10E only) instead of dt2/elz.py
   --help         this"""
 
 
@@ -228,6 +236,7 @@ def main(argv):
             raise SystemExit('-o needs a directory')
         outdir = argv[i + 1]
         argv = argv[:i] + argv[i + 2:]
+    oracle = '--oracle' in argv
     rest = [a for a in argv if not a.startswith('-')]
     syx = config.firmware(rest[0] if rest else None)
     # -o is the "explicit argument" tier of config.py's resolution order, so
@@ -236,10 +245,10 @@ def main(argv):
     print('Extracting %s -> %s/\n' % (syx, outdir.rstrip('/')), flush=True)
 
     def started(sid, kind, name):
-        note = '  (a few megabytes, about a minute)' if kind == 'packed' and sid == 3 else ''
+        note = '  (a few megabytes, about a minute)' if oracle and kind == 'packed' and sid == 3 else ''
         print('  %-26s %-14s%s' % (name, kind + '...', note), end='', flush=True)
 
-    for sid, kind, path, n, dest in extract(syx, outdir, progress=started):
+    for sid, kind, path, n, dest in extract(syx, outdir, progress=started, oracle=oracle):
         print('\r  %-26s %-14s%9d bytes  dest=%#010x'
               % (os.path.basename(path), kind, n, dest), flush=True)
     return 0

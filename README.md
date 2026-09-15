@@ -80,15 +80,16 @@ needs an outside tool. To do it on its own:
 uv run python -m emu.extract Digitakt_II_OS1.15C.syx -o sections/
 ```
 
-The decompressor is the device's own. It lives at `0x80000432` inside section
-2 — which is itself compressed, so it cannot bootstrap itself, and that is why
-this used to need
-[elektron-firmware-tool](https://github.com/mischa85/elektron-firmware-tool).
-It does not: section 4 is the *updater*, it is stored **raw**, and an updater
-has to unpack the image it installs, so it carries its own copy of the same
-routine. `emu/extract.py` runs that copy under Unicorn. Its output is
-byte-identical to `emu.oracle.depack` — the device's own section-2 routine —
-for every compressed section of both Digitakt II 1.15C and Digitone II 1.10E.
+The decompressor is `dt2/elz.py`, a byte-level decoder for the device's codec
+written from the format in
+[elektron-firmware-tool](https://github.com/mischa85/elektron-firmware-tool)'s
+`aplib.c`. It reads every firmware in the repo root, 1.16 and 1.11 included.
+`--oracle` uses the device's own routine instead: section 4 is the *updater*,
+it is stored **raw**, and an updater has to unpack the image it installs, so
+it carries its own copy of the depacker; `emu/extract.py --oracle` runs that
+copy under Unicorn. Both are byte-identical to `emu.oracle.depack` — the
+device's own section-2 routine — for every compressed section of Digitakt II
+1.15C and Digitone II 1.10E. The oracle cannot read 1.16 or 1.11.
 
 ### Options
 
