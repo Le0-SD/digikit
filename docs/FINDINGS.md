@@ -1175,6 +1175,83 @@ Ghidra or disassembly output and it was not re-checked.
   find it there either. Not finding the machine type on either image is a
   limit of static reading, not evidence that the frame lacks it. **[O]**
 
+### LFOs and the modulation matrix are ColdFire code, in the frame ISR **[D][O]**
+
+Read statically from the image bytes of **Digitakt II 1.16** and **Digitone II
+1.11** by `angellinares/dn2_firmware_explore` (its `docs/modulation-matrix.md`),
+not run in this emulator — hence **[D]**. It names the function behind the
+MSAC-with-load instruction this project patched Unicorn for, and places both
+kinds of modulation on the ColdFire side of the DSPI2 frame link.
+
+**Neither the LFOs nor the MIDI modulation sources reach the SHARC as
+parameters.** Both are computed per audio frame on the ColdFire and applied into
+the per-track parameter value array before the frame is built. On Digitone II
+the frame carries value-array indices 25–99 only; LFO parameters are indices
+1–24 and are never sent.
+
+#### The modulation kernel and the six sources
+
+| | Digitakt II 1.16 | Digitone II 1.11 |
+|---|---|---|
+| MAC kernel, one source through four destinations | `0x400d9354` | `0x400db1dc` |
+
+The kernel heads are byte-identical. Each destination descriptor is a longword
+`depth:s16 << 16 | dest:s16`, and the kernel applies
+`msacw %d1l,%d2u,%a1@+,%d2,%acc0` — **a MSAC with load, the form Unicorn got
+wrong** — then reads, saturates and writes back the parameter at `dest`. It is
+reached as `lea %pc@(...),%a3; jsr %a3@`, so a direct-call scan finds no callers.
+
+On Digitone II 1.11 the driver `0x400db22c` runs **six sources x 4 destinations
+x 16 tracks**. The six are the MIDI performance modulators — **Velocity, Mod
+Wheel, Pitch Bend, Breath Controller, Aftertouch, Key Tracking** — identified
+from a contiguous string run before `Sound::updateMirror`, a registration
+sequence naming five of six objects, and six `*SetupView` RTTI classes; Velocity
+is pinned independently by its note-time write. Rows 2–5 are assigned by
+registration order, not individually pinned. **[D][O]**
+
+#### The LFO tick
+
+| | Digitakt II 1.16 | Digitone II 1.11 |
+|---|---|---|
+| LFO tick, generator and apply | `0x40139342` (806 B) | `0x40137726` (1,028 B) |
+| called once per frame from | `jsr` at `0x4002e91c` | `jsr` at `0x400272d4` in `FUN_40025e36` |
+| inner loop start, `moveq #2` (three LFOs) | `0x4013935e` | `0x40137784` |
+| state initialisers, 16 x 3 x 40 B | `0x40138f50`, `0x40138fa4` | `0x401372f4`, `0x40137348` |
+| waveform function table | `0x4022231c` | `0x4020b340` |
+| random-wave slew table | `0x40222334` | `0x4020b358` |
+| value-array stride per track | 142 | 202 |
+| `DEST` upper bound | 70 | 100 |
+
+Per track, per LFO, the tick reads `SPD MULT FADE DEST WAVE SPH MODE DEP` from
+the value array and:
+
+- **Tempo-synced or free.** `MULT` is clamped to 0–23. For 0–11 the rate is an
+  argument the ISR passes in; for 12–23 it subtracts 12 and uses a fixed
+  `14400`. Increment is `SPD x rate >> (11 - MULT)`, with `SPD` and `DEP` bipolar
+  about `0x4000`.
+- **Phase** wraps at 1,382,400,000 on Digitone II.
+- **Waves 0–5** are dispatched through the function table. The six entries keep
+  the same relative spacing on both images; by their arithmetic, in order:
+  triangle, parabolic sine (EMAC `x*|x|` with 0.9 and 0.194), square, inverting
+  ramp, exponential, `max(x, 0)`. Entry 6 is null.
+- **Wave 6 is sample-and-hold** from a private lagged Fibonacci generator
+  (Digitone II `0x4013739c`) — the LFO never calls `rand()` — slewed through the
+  table above, indexed by `SPH >> 8`.
+- **Apply:** `value[DEST] = clamp(value[DEST] + sample x DEP x fade, 0, 32512)`.
+
+The number of LFOs is a literal loop start with field offsets written for the
+last LFO, so a fourth needs the start, the offsets, the 120-byte state stride and
+the 1,920-byte state arrays changed, plus somewhere for its parameters. **[O]**
+
+**Why a search for it fails.** It is called from inside a function whose
+boundaries a caller heuristic misplaces; stock Ghidra stops at the `movclr` in
+that function (see the section above); its random wave uses a private
+generator; and it lives in a clock module rather than beside the kernel.
+
+**Open.** Neither is exercised in this emulator. The rate argument's source (the
+tempo) is not traced, and a second single-track tick on Digitone II 1.11
+(`0x401373dc`, its own 3 x 40 state array) is not identified. **[O]**
+
 ### Names from RTTI and code seeds in the EMAC Ghidra project **[V][D]**
 
 - `tools/codeseeds.py` finds 31016 `jsr`/`bsr` calls to 5685 targets in
