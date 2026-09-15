@@ -4,7 +4,8 @@ Every document used for the SHARC+ instruction tables in `tools/sharcspec/`
 was published by Analog Devices on analog.com. No files from any vendor
 toolchain installation (bundled manuals, library sources, linker files,
 headers) were used, and no vendor tools were run. The PDFs are not
-committed: keep local copies in `docs/refs/` (git-ignored). An earlier,
+committed: keep local copies in `docs/refs/` (git-ignored). `tools/refstext.py`
+extracts them to per-page text with each PDF's bookmarks in `out/refs/`. An earlier,
 independent list of SHARC+ manual sections is in `docs/refs/sharc-plus-isa.md`.
 
 | File | Document | Pages | Used for |

@@ -75,7 +75,11 @@ SCOPE (disassembly-first, per task spec)
    (split call/jump on their `b` bit; see decode_table.json/build_table.py
    SPLIT_FORMS for why these are separate abs/rel forms rather than one
    merged form with a live selector field), Type25a_direct (absolute),
-   Type25a_pcrel (pc-relative). PC-relative targets are computed as
+   Type25a_pcrel (pc-relative). Type25a is CJUMP, which the manual defines
+   as a delayed call only, so both forms get `call`; the two delay-slot
+   instructions that follow it (the compiler's push of R2 and store of the
+   return address) are not modelled and appear after the call.
+   PC-relative targets are computed as
    inst_start + signed(reladdr) -- relative to the branch instruction's OWN
    address, not the next instruction -- confirmed against firmware (see task
    report: this base landed 79.4% vs. 42.1% for "relative to next
@@ -359,8 +363,9 @@ BRANCH_FORMS = {
                         split_map={0: "jump", 1: "call"}),
     "Type9b_rel": dict(target_label="reladdr", mode="pcrel", split_field="b",
                         split_map={0: "jump", 1: "call"}),
-    "Type25a_direct": dict(target_label="addr", mode="abs", mnemonic="jump"),
-    "Type25a_pcrel": dict(target_label="reladdr", mode="pcrel", mnemonic="jump"),
+    # CJUMP is always a delayed call (SHARC+ Core Programming Reference, Type 25a).
+    "Type25a_direct": dict(target_label="addr", mode="abs", mnemonic="call"),
+    "Type25a_pcrel": dict(target_label="reladdr", mode="pcrel", mnemonic="call"),
 }
 
 # Register-indirect jump/call forms (Type9a_abs/Type9b_abs -- the r=0/rel=0

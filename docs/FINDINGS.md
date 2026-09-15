@@ -1738,7 +1738,7 @@ Ghidra or disassembly output and it was not re-checked.
   `0x401` or `0x55e`. The `0x802` in the `4a` at SW `0x1cb423` is part of
   its compute field, not a value. **[V]**
 
-### The DSP programs of Digitakt II 1.16 and Digitone II 1.11 in Ghidra **[D][O]**
+### The DSP programs of Digitakt II 1.16 and Digitone II 1.11 in Ghidra **[V][C][O]**
 
 - Digitone II 1.11's section 7 is a boot stream of 95 blocks. Its main
   program starts at SW `0x1c12e2` and is 105,016 bytes (`tools/sharcldr.py
@@ -1747,42 +1747,58 @@ Ghidra or disassembly output and it was not re-checked.
   `0x8045a6c8`. `tools/sharc_import.py --seed-calls --analyze` imports it as
   `/dn2-1.11_SHARC` in `~/ghidra-projects/elektron-sharc`, with 257
   functions. **[D]**
-- In a software call the `16a` pushes, through I7/M7, its own short-word
-  address + 2. Argument loads (`17a`, `17b`) can sit between the store and
-  the goto. `tools/sharcflow.py` counts an aligned `25a_direct` as a call
-  when such a store lies within the three instructions before it, with no
-  control transfer between: 145 calls in 1.16 (43 of them the strict triple
-  `3c`, `16a`, goto) and 113 in Digitone II 1.11 (23). Without the address
-  check, 4 more matches in 1.16 are `16a` instructions that store
-  constants, such as `0xbf800000`. **[D]**
-- `tools/sharcflow.py --cover --analyze --save` sets FlowOverride.CALL on
-  those gotos, disassembles every aligned instruction Ghidra has not
-  reached, starts a function after each return pair and at each run of code
-  that no function holds, and re-runs analysis. It was applied to
-  `/dt2-1.16_SHARC` and `/dn2-1.11_SHARC`; copies from before the pass are
-  in `~/ghidra-projects/backup-2026-09-15-sharc`. **[D]**
+- A software call is CJUMP followed by its two delay slots, not a push and
+  store before a goto. `25a` is CJUMP, a call that "should always use the
+  DB modifier" and does `R2=I6, I6=I7` (SHARC+ Core Programming Reference,
+  Type 25a, p.416); a delayed branch executes the two instructions after it
+  before the target, and a delayed call returns to "the seventh address
+  after the branch instruction" (pp.121-122). The classic SHARC Programming
+  Reference Rev 2.4 (p.238) gives the compiler's call as `CJUMP (DB);
+  DM(I7,M0)=R2; DM(I7,M0)=PC` (the PC store holds the return address - 1).
+  In the images, every aligned `25a_direct` is followed by a push of R2
+  through I7/M7 and a `16a` through I7/M7 that stores its own short-word
+  address + 2, so the return lands after the store: 589 of 589 in Digitakt
+  II 1.16 (490 with `3c` raw `0x9ff2`, 99 with a 48-bit `3a`) and 551 of 551
+  in Digitone II 1.11 (479 and 72). An indirect call moves I6 to R2 and I7 to
+  I6, then jumps through `9b_abs` with M5 (DB) with the same push and store:
+  12 sites in each image. **[V]**
+- This corrects the call triple above (`3c`, `16a`, `25a_direct`, "stores
+  the goto's short-word address minus 1"): the push and store belong to the
+  CJUMP before them. The triple looked right because calls often follow each
+  other. **[C]**
+- A return is the delayed `9b_abs` jump through I4/M6 (raw `0x083f343f`); its
+  two delay slots hold `25c_rframe` and one epilogue instruction, mostly `15b`
+  then `25c_rframe`: 390 of 391 returns in 1.16 and 276 of 277 in 1.11
+  contain `25c_rframe` in the slots. **[D]**
+- `tools/sharcspec/ghidra/gen_sleigh.py` now emits Type25a as `call`. Its
+  delay slots are not modelled: they follow the call in the listing.
+  `tools/sharcflow.py` lists the calls, indirect calls and returns with their
+  delay slots; with `--cover --analyze --save` it sets FlowOverride.CALL on
+  the indirect calls, disassembles every aligned instruction Ghidra has not
+  reached, starts a function after each return's delay slots and at each run
+  of code no function holds, and re-runs analysis. Both programs were
+  re-imported with the new language and the pass applied; copies from before
+  any pass are in `~/ghidra-projects/backup-2026-09-15-sharc`. **[D]**
 
   | | DT2 1.16 | DN2 1.11 |
   |---|---|---|
   | aligned instructions (our decoder) | 21,270 | 20,805 |
-  | main-program instructions in Ghidra, before / after | 4,684 / 20,844 | 4,594 / 20,839 |
-  | ... inside a function, after | 20,820 | 20,514 |
-  | aligned instructions that clash with Ghidra's instructions or data | 31 | 53 |
-  | main-program functions, before / after | 234 / 2,319 | 154 / 2,134 |
-  | call references, before / after | 114 / 732 | 78 / 686 |
+  | main-program instructions after import / after the pass | 6,575 / 20,468 | 6,191 / 20,234 |
+  | ... inside a function, after the pass | 20,443 | 19,994 |
+  | aligned instructions that clash with Ghidra's instructions or data | 36 | 60 |
+  | main-program functions after import / after the pass | 234 / 1,875 | 154 / 1,666 |
+  | call references after import / after the pass | 287 / 914 | 225 / 866 |
 
-- After the pass Ghidra lists `0x1c7bd4` with caller `0x1c80a2`,
-  `0x1c9fd5` with callers `0x1c7c14` and `0x1c7dae`, `0x1c7e02` with six
-  callers, and the function at `0x1ca17a` (which loads the SPI2 entry) with
-  caller `0x1ca077`, which the scan for direct gotos did not find. **[D]**
-- Function boundaries are too fine. The run rule made 1,708 functions in
-  1.16 and 1,627 in 1.11 and stopped at its limit of 16 rounds; 24
-  instructions in 1.16 and 325 in 1.11 are in no function. The RPC
-  dispatcher body `0x1c3bf6` ends at `0x1c3c20`, while its calls continue to
-  `0x1c3f46`. A likely cause is gotos that the call rule misses, which
-  analysis then treats as tail calls: before the pass, `0x1c3c5f` had its
-  store four instructions back, `0x1c3cf9` had an `8a_abs` between, and
-  `0x1c3d9f` and `0x1c3f46` had no store in reach. Not checked. **[O]**
+- Function boundaries are still too fine: in 1.16, 168 main-program
+  functions have one instruction and 806 have two to five. Two causes are
+  seen, and no-return marks are not one (clearing them and recomputing the
+  bodies changes nothing). The delay slots after a return become their own
+  function, such as `0x1c1498` (`17b` R0=`0xabc`, `25c_rframe`). Code reached
+  only through an indirect jump becomes separate functions: the RPC
+  dispatcher's first piece `0x1c3bef`-`0x1c3c3e` ends in a `9b` jump at
+  `0x1c3c3c`, which the language models as a return, and its cases, such as
+  `0x1c3c4f`, `0x1c3d34` and `0x1c3f16`, jump back to `0x1c3c1d`. Both need
+  the language: delay slots and indirect jump targets. **[D][O]**
 
 ## Emulation
 

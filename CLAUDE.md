@@ -63,3 +63,7 @@ in docs/FINDINGS.md, and current state and next steps in the newest
 - The rtk hook shortens some output: use `rtk proxy git log` for the full log.
 - Extract any firmware, 1.16 included: `uv run python -m emu.extract SYX -o DIR`
   (`dt2/elz.py`; `--oracle` uses the device routine, 1.15C/1.10E only).
+- Manuals: read `out/refs/<pdf stem>/` (`toc.md` bookmarks with pages,
+  `pages/pNNNN.txt`, `all.txt` for grep), not the PDFs. Build it with
+  `uv run --with pymupdf python tools/refstext.py`; `--render PDF PAGE` makes
+  a PNG of one page for figures.

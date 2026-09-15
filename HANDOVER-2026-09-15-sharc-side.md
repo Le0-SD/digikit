@@ -5,19 +5,10 @@ are in `docs/FINDINGS.md`; this file holds state and next steps only.
 
 ## State
 
-- Branch `machine-engine-link`, pushed to `origin` and tracking it, no PR.
-  Commits since `6d38794`: `1c2e64e` (ghidra.sh folders, ghidracopy,
-  ghidradump `--image`, entryhist), `ce0e014` (ghidravt, vtcheck), `5e4ac43`
-  (FINDINGS: 1.16 in Ghidra, Version Tracking), `f9f76ef` (framelink,
-  sharcframe and snapdiff per image, dspmap), `d0cd9fa` (FINDINGS: frame link
-  on 1.16), `67f90b9` (bootwatch), `a2033ea` (FINDINGS: emulator boots 1.16),
-  `77c9fa4` (SHARC decoder on the sharc-spec table, sharccompare, sharcldr
-  `--main`), `a45cc1e` (previous handover, FINDINGS: rebuilt decoder),
-  `36f50ea` (SHARC_VISA language install and import), `60c7735` (FINDINGS:
-  DSP program in Ghidra), `7a6a177` (FINDINGS: call convention, RPC
-  dispatcher, command block checked), `82f515a` (sharcimm, FINDINGS: the
-  SHARC side of the SPI frame link), and the commit after it (sharcflow,
-  Digitone II 1.11 DSP import, FINDINGS: the DSP programs in Ghidra).
+- Branch `sharc-pcode`, from `main` after PR #13 (`machine-engine-link`,
+  merged). The branch adds CJUMP as a call in the generated SHARC+ language,
+  the rewritten call finder in `tools/sharcflow.py`, `tools/refstext.py`, and
+  FINDINGS: the CJUMP correction.
 - Tests: 193 passed, 5 skipped.
 - Analysis targets are Digitakt II 1.16 and Digitone II 1.11; Em asked on
   2026-09-15 to stop cross-checking 1.15C.
@@ -50,7 +41,8 @@ are in `docs/FINDINGS.md`; this file holds state and next steps only.
     (`section_3_MAIN_OS.bin` in each), Version Tracking sessions in `/vt/`.
   - `~/ghidra-projects/elektron-sharc` (language
     `SHARC_VISA:LE:32:default`): `/dt2-1.16_SHARC` and `/dn2-1.11_SHARC`
-    after `tools/sharcflow.py --cover` (2,473 and 2,292 functions);
+    re-imported with the CJUMP language and after `tools/sharcflow.py
+    --cover` (1,999 and 1,776 functions);
     `/dt2-1.15C_SHARC` (352 functions, not covered); test copies in
     `/flowtest/`, `/flowtest2/` and `/flowtest3/`, which can be deleted.
   - `~/ghidra-projects/backup-2026-09-15-sharc`: `/dt2-1.16_SHARC`,
@@ -86,6 +78,7 @@ uv run python tools/sharccompare.py out/sharc/dt2-1.16-main.bin --json out/sharc
 uv run python tools/sharcimm.py out/sharc/dt2-1.16-main.bin --json out/sharc/imm-periph-dt2-1.16.json
 uv run python tools/sharcimm.py --words out/sections/dt2-1.16/section_7_BLOB.bin --json out/sharc/words-periph-dt2-1.16.json
 uv run python tools/sharcldr.py out/sections/dn2-1.11/section_7_BLOB.bin --main out/sharc/dn2-1.11-main.bin
+uv run --with pymupdf python tools/refstext.py            # manuals to out/refs/
 uv run python tools/sharcflow.py out/sharc/dt2-1.16-main.bin --program /dt2-1.16_SHARC --cover --analyze   # --save writes
 uv run python tools/sharcflow.py out/sharc/dn2-1.11-main.bin --base-sw 0x1c12e2 --program /dn2-1.11_SHARC --cover --analyze
 
@@ -110,16 +103,31 @@ DT2_SECTIONS=out/sections/dt2-1.16 DT2_SYX=Digitakt_II_OS1.16.syx \
 
 ## Next steps, in order
 
-This branch goes to a PR after the coverage commit. The next piece of work,
-on its own branch, is compute p-code in
-`tools/sharcspec/ghidra/gen_sleigh.py`, in stages, counting the
-main-program instructions with p-code after each: attach the ureg register
-names and define the status and system registers; p-code for the move and
-memory forms (`17a`, `17b`, `14a`, `15a`, `15b`, `16a`, `3a`-`3c`, `5a`,
-`5b`, `19a`); ALU and multiplier compute (`4a`, `2c`, `1a`, `1b`) with
-flags; then condition codes, the shifter and float operations. Add
-`delayslot` for delayed jumps, and a calling convention (R4, R8, R12 in, R0
-out, I7 stack). Mark unconfirmed forms unimplemented instead of guessing.
+Put the semantics in the generated language and let Ghidra's analysis draw
+function boundaries; stop adding boundary heuristics to
+`tools/sharcflow.py` (a delay-slot and switch "tidy" step was written and
+dropped). In `tools/sharcspec/ghidra/gen_sleigh.py`, in order:
+
+1. A test of whether Ghidra accepts one instruction that holds a delayed
+   jump or call plus its two delay-slot instructions (up to 18 bytes: `25a`,
+   `3a`, `16a`), built from a slot subtable that repeats every constructor.
+   SLEIGH's `delayslot(n)` counts bytes, and the two SHARC+ slot instructions
+   vary in length, so it cannot model them. The result decides how delay
+   slots are modelled.
+2. Attach the ureg register names; define the status and system registers.
+   Add a test that compiles the generated SLEIGH.
+3. Delay slots, per step 1, for CJUMP, the return and every delayed jump.
+4. P-code for the move and memory forms (`17a`, `17b`, `14a`, `15a`, `15b`,
+   `16a`, `3a`-`3c`, `5a`, `5b`, `19a`) and a calling convention (R4, R8, R12
+   in, R0 out, I7 stack).
+5. Indirect jumps: `9a`/`9b` jumps to I + M; only the I4/M6 jump is a return.
+6. ALU and multiplier compute (`4a`, `2c`, `1a`, `1b`) with flags; then
+   condition codes, the shifter and float operations.
+
+Measure each stage by function boundaries and by the decompiler on known
+functions: `0x1c136a` returns 2748 (R0 set in a return's delay slot), and
+the RPC dispatcher `0x1c3bef` with its cases should be one function. Mark
+unconfirmed forms unimplemented instead of guessing.
 
 ### 1. Where the SHARC receives the ColdFire's frame
 
@@ -177,13 +185,12 @@ and calls, through the software-call idiom, `0x1c7d09`, `0x1c7f45`,
 `0x1c7700` are `0x6c` lower). All 30 references to the command block
 `0x82a00000`-`0x82a001c8` are in SW `0x1c361a`-`0x1c48c3`.
 
-- Done: `tools/sharcflow.py --cover` (FINDINGS, "The DSP programs of
-  Digitakt II 1.16 and Digitone II 1.11 in Ghidra"). Function boundaries are
-  too fine where a call is not recognised: the dispatcher body `0x1c3bf6`
-  ends at `0x1c3c20`. Widen the call rule (a store further back, an `8a`
-  between, calls without a store in reach), check the misses by hand, and
-  re-run from the backups in `~/ghidra-projects/backup-2026-09-15-sharc`
-  before reading functions there.
+- `tools/sharcflow.py --cover` covers the program (FINDINGS, "The DSP
+  programs of Digitakt II 1.16 and Digitone II 1.11 in Ghidra"), but
+  function boundaries stay too fine until the language models delay slots
+  and indirect jumps (see the plan above). The dispatcher's first piece
+  ends in the `9b` jump at `0x1c3c3c`, and its cases jump back to
+  `0x1c3c1d`.
 - Candidate dispatch jump: `9a_abs` at SW `0x1c46c4`, indirect through I6/M3
   (the return idiom uses I4/M6). Read the instructions before it: what loads
   I6/M3, and is there a table of short-word pointers near it (the old 1.15C
