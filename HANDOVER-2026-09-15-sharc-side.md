@@ -15,9 +15,12 @@ are in `docs/FINDINGS.md`; this file holds state and next steps only.
   `--main`), `a45cc1e` (previous handover, FINDINGS: rebuilt decoder),
   `36f50ea` (SHARC_VISA language install and import), `60c7735` (FINDINGS:
   DSP program in Ghidra), `7a6a177` (FINDINGS: call convention, RPC
-  dispatcher, command block checked), and the commit after it (sharcimm,
-  FINDINGS: the SHARC side of the SPI frame link, this handover).
-- Tests: 190 passed, 5 skipped.
+  dispatcher, command block checked), `82f515a` (sharcimm, FINDINGS: the
+  SHARC side of the SPI frame link), and the commit after it (sharcflow,
+  Digitone II 1.11 DSP import, FINDINGS: the DSP programs in Ghidra).
+- Tests: 193 passed, 5 skipped.
+- Analysis targets are Digitakt II 1.16 and Digitone II 1.11; Em asked on
+  2026-09-15 to stop cross-checking 1.15C.
 - The device stays on 1.15C with bootstrap 2.00. Installing 1.16 upgrades the
   bootstrap to 2.01 and cannot be undone, so no hardware test of a
   1.16-based build happens without Em's decision.
@@ -39,13 +42,19 @@ are in `docs/FINDINGS.md`; this file holds state and next steps only.
   - `out/maps/`: dspmap and gatewatch outputs. `out/sharcframe/`: frames.
   - `out/sharc/dt2-{1.15C,1.16}-main.bin`: the DSP main programs (104,848
     bytes at loader byte address `0x28382670`); `compare-*.json`.
+    `out/sharc/dn2-1.11-main.bin`: Digitone II 1.11 (105,016 bytes, SW
+    `0x1c12e2`).
 - Ghidra, outside the repo:
   - `~/ghidra-projects/elektron-emac`: ColdFire programs `/dt2-1.15C`,
     `/dt2-1.16`, `/dn2-1.10E`, `/dn2-1.11`, `/dn2-1.11-from-dt2`
     (`section_3_MAIN_OS.bin` in each), Version Tracking sessions in `/vt/`.
-  - `~/ghidra-projects/elektron-sharc`: DSP programs `/dt2-1.16_SHARC` and
-    `/dt2-1.15C_SHARC` (language `SHARC_VISA:LE:32:default`, 347 and 352
-    functions). The hypothesis check may have added disassembly there.
+  - `~/ghidra-projects/elektron-sharc` (language
+    `SHARC_VISA:LE:32:default`): `/dt2-1.16_SHARC` and `/dn2-1.11_SHARC`
+    after `tools/sharcflow.py --cover` (2,473 and 2,292 functions);
+    `/dt2-1.15C_SHARC` (352 functions, not covered); test copies in
+    `/flowtest/`, `/flowtest2/` and `/flowtest3/`, which can be deleted.
+  - `~/ghidra-projects/backup-2026-09-15-sharc`: `/dt2-1.16_SHARC`,
+    `/dt2-1.15C_SHARC` and `/dn2-1.11_SHARC` from before the flow pass.
   - `~/ghidra-projects/dt2-emac` (1.15C ColdFire, unchanged content),
     `backup-2026-09-15-elektron` (`/dt2-1.16` before Version Tracking),
     `backup-2026-09-14`, `dt2cmp` (old Digitone II 1.10E import), `dt2`
@@ -76,6 +85,9 @@ uv run python tools/sharc_disasm.py out/sharc/dt2-1.16-main.bin
 uv run python tools/sharccompare.py out/sharc/dt2-1.16-main.bin --json out/sharc/compare-dt2-1.16-new.json
 uv run python tools/sharcimm.py out/sharc/dt2-1.16-main.bin --json out/sharc/imm-periph-dt2-1.16.json
 uv run python tools/sharcimm.py --words out/sections/dt2-1.16/section_7_BLOB.bin --json out/sharc/words-periph-dt2-1.16.json
+uv run python tools/sharcldr.py out/sections/dn2-1.11/section_7_BLOB.bin --main out/sharc/dn2-1.11-main.bin
+uv run python tools/sharcflow.py out/sharc/dt2-1.16-main.bin --program /dt2-1.16_SHARC --cover --analyze   # --save writes
+uv run python tools/sharcflow.py out/sharc/dn2-1.11-main.bin --base-sw 0x1c12e2 --program /dn2-1.11_SHARC --cover --analyze
 
 # ColdFire: dump, Version Tracking check, frame-table map
 uv run python tools/ghidradump.py --out out/ghidra/dt2-1.16-emac \
@@ -97,6 +109,17 @@ DT2_SECTIONS=out/sections/dt2-1.16 DT2_SYX=Digitakt_II_OS1.16.syx \
 ```
 
 ## Next steps, in order
+
+This branch goes to a PR after the coverage commit. The next piece of work,
+on its own branch, is compute p-code in
+`tools/sharcspec/ghidra/gen_sleigh.py`, in stages, counting the
+main-program instructions with p-code after each: attach the ureg register
+names and define the status and system registers; p-code for the move and
+memory forms (`17a`, `17b`, `14a`, `15a`, `15b`, `16a`, `3a`-`3c`, `5a`,
+`5b`, `19a`); ALU and multiplier compute (`4a`, `2c`, `1a`, `1b`) with
+flags; then condition codes, the shifter and float operations. Add
+`delayslot` for delayed jumps, and a calling convention (R4, R8, R12 in, R0
+out, I7 stack). Mark unconfirmed forms unimplemented instead of guessing.
 
 ### 1. Where the SHARC receives the ColdFire's frame
 
@@ -154,14 +177,13 @@ and calls, through the software-call idiom, `0x1c7d09`, `0x1c7f45`,
 `0x1c7700` are `0x6c` lower). All 30 references to the command block
 `0x82a00000`-`0x82a001c8` are in SW `0x1c361a`-`0x1c48c3`.
 
-- Ghidra has no function there, because the language models the software
-  call (`3c` push, `16a` store, `25a_direct` goto) as a plain goto and the
-  return (`9b_abs` through I4/M6, then `25c_rframe`) as an unresolved
-  return. Write a pyghidra pass (a tool under `tools/`) that finds each call
-  triple and return pair with our decoder and sets flow overrides on the
-  program: CALL on the `25a_direct` of a triple, RETURN on the `9b_abs` of a
-  pair; then create functions at the goto targets and re-run analysis.
-  Measure functions and call references before and after.
+- Done: `tools/sharcflow.py --cover` (FINDINGS, "The DSP programs of
+  Digitakt II 1.16 and Digitone II 1.11 in Ghidra"). Function boundaries are
+  too fine where a call is not recognised: the dispatcher body `0x1c3bf6`
+  ends at `0x1c3c20`. Widen the call rule (a store further back, an `8a`
+  between, calls without a store in reach), check the misses by hand, and
+  re-run from the backups in `~/ghidra-projects/backup-2026-09-15-sharc`
+  before reading functions there.
 - Candidate dispatch jump: `9a_abs` at SW `0x1c46c4`, indirect through I6/M3
   (the return idiom uses I4/M6). Read the instructions before it: what loads
   I6/M3, and is there a table of short-word pointers near it (the old 1.15C

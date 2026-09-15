@@ -1738,6 +1738,52 @@ Ghidra or disassembly output and it was not re-checked.
   `0x401` or `0x55e`. The `0x802` in the `4a` at SW `0x1cb423` is part of
   its compute field, not a value. **[V]**
 
+### The DSP programs of Digitakt II 1.16 and Digitone II 1.11 in Ghidra **[D][O]**
+
+- Digitone II 1.11's section 7 is a boot stream of 95 blocks. Its main
+  program starts at SW `0x1c12e2` and is 105,016 bytes (`tools/sharcldr.py
+  --main`). It also loads 54,792 bytes at `0x8045a6c8` and 283,032 bytes at
+  `0x80467cf4` in external memory; Digitakt II 1.16 loads 3,316 bytes at
+  `0x8045a6c8`. `tools/sharc_import.py --seed-calls --analyze` imports it as
+  `/dn2-1.11_SHARC` in `~/ghidra-projects/elektron-sharc`, with 257
+  functions. **[D]**
+- In a software call the `16a` pushes, through I7/M7, its own short-word
+  address + 2. Argument loads (`17a`, `17b`) can sit between the store and
+  the goto. `tools/sharcflow.py` counts an aligned `25a_direct` as a call
+  when such a store lies within the three instructions before it, with no
+  control transfer between: 145 calls in 1.16 (43 of them the strict triple
+  `3c`, `16a`, goto) and 113 in Digitone II 1.11 (23). Without the address
+  check, 4 more matches in 1.16 are `16a` instructions that store
+  constants, such as `0xbf800000`. **[D]**
+- `tools/sharcflow.py --cover --analyze --save` sets FlowOverride.CALL on
+  those gotos, disassembles every aligned instruction Ghidra has not
+  reached, starts a function after each return pair and at each run of code
+  that no function holds, and re-runs analysis. It was applied to
+  `/dt2-1.16_SHARC` and `/dn2-1.11_SHARC`; copies from before the pass are
+  in `~/ghidra-projects/backup-2026-09-15-sharc`. **[D]**
+
+  | | DT2 1.16 | DN2 1.11 |
+  |---|---|---|
+  | aligned instructions (our decoder) | 21,270 | 20,805 |
+  | main-program instructions in Ghidra, before / after | 4,684 / 20,844 | 4,594 / 20,839 |
+  | ... inside a function, after | 20,820 | 20,514 |
+  | aligned instructions that clash with Ghidra's instructions or data | 31 | 53 |
+  | main-program functions, before / after | 234 / 2,319 | 154 / 2,134 |
+  | call references, before / after | 114 / 732 | 78 / 686 |
+
+- After the pass Ghidra lists `0x1c7bd4` with caller `0x1c80a2`,
+  `0x1c9fd5` with callers `0x1c7c14` and `0x1c7dae`, `0x1c7e02` with six
+  callers, and the function at `0x1ca17a` (which loads the SPI2 entry) with
+  caller `0x1ca077`, which the scan for direct gotos did not find. **[D]**
+- Function boundaries are too fine. The run rule made 1,708 functions in
+  1.16 and 1,627 in 1.11 and stopped at its limit of 16 rounds; 24
+  instructions in 1.16 and 325 in 1.11 are in no function. The RPC
+  dispatcher body `0x1c3bf6` ends at `0x1c3c20`, while its calls continue to
+  `0x1c3f46`. A likely cause is gotos that the call rule misses, which
+  analysis then treats as tail calls: before the pass, `0x1c3c5f` had its
+  store four instructions back, `0x1c3cf9` had an `8a_abs` between, and
+  `0x1c3d9f` and `0x1c3f46` had no store in reach. Not checked. **[O]**
+
 ## Emulation
 
 Function-level works well and is the practical path. Full boot was pushed as far
