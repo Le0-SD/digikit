@@ -5,6 +5,7 @@
         [--project ~/ghidra-projects/dt2-emac] [--project-name dt2-emac] \
         [--program /section_3_MAIN_OS.bin] [--threads N] [--timeout 60] \
         [--rtti out/symbols/dt2-1.15C-rtti.json] \
+        [--image out/sections/dt2-1.16/section_3_MAIN_OS.bin] \
         [--only-functions ADDR ... | --limit N]
 
 Every Ghidra query starts a JVM, and only one JVM can hold a project, so
@@ -305,9 +306,12 @@ def describe(program, args, program_path, rtti):
     """-> the manifest fields known before the dump starts."""
     image_sha = program.getExecutableSHA256()
     image_sha = str(image_sha) if image_sha is not None else None
-    sections_image = os.path.join(REPO, 'sections', program_path.lstrip('/'))
+    # The image on disk, by default sections/<program path>; --image names
+    # another, such as out/sections/dt2-1.16/section_3_MAIN_OS.bin.
+    sections_image = (os.path.abspath(args.image) if args.image
+                      else os.path.join(REPO, 'sections', program_path.lstrip('/')))
     sections_sha = sha256_file(sections_image) if os.path.exists(sections_image) else None
-    source_marker = os.path.join(REPO, 'sections', '.source-sha256')
+    source_marker = os.path.join(os.path.dirname(sections_image), '.source-sha256')
     source_sha = None
     if os.path.exists(source_marker):
         with open(source_marker) as f:
@@ -506,6 +510,8 @@ def parse_args(argv=None):
     p.add_argument('--threads', type=int, default=os.cpu_count() or 4)
     p.add_argument('--timeout', type=int, default=DEFAULT_TIMEOUT, help='seconds per function')
     p.add_argument('--rtti', help='tools/rttiscan.py JSON for the typeinfos and vtables tables')
+    p.add_argument('--image', help='the image file imported into Ghidra, to check its SHA-256 '
+                   '(default: sections/ plus the program path)')
     g = p.add_mutually_exclusive_group()
     g.add_argument('--only-functions', nargs='+', metavar='ADDR',
                    help='decompile only the functions containing these addresses')
@@ -523,6 +529,8 @@ def main(argv=None):
         with open(args.rtti) as f:
             rtti = json.load(f)
     program_path = args.program if args.program.startswith('/') else '/' + args.program
+    if args.image and not os.path.exists(args.image):
+        raise SystemExit('no image at %s' % args.image)
     decomp_dir = os.path.join(out, 'decomp')
     manifest_path = os.path.join(out, 'manifest.json')
 
