@@ -1661,6 +1661,83 @@ Ghidra or disassembly output and it was not re-checked.
     an instruction boundary in our decode), and how the ColdFire reaches
     `0x82a00000`; the only confirmed link is the DSPI2 frame. **[O]**
 
+### The SHARC side of the SPI frame link **[V][O]**
+
+- `tools/sharcimm.py` lists the immediates in DSP code. It decodes one
+  instruction at every even offset and marks each hit with the longest run
+  of decoded instructions that ends there (depth) and with whether the
+  linear sweep that steps past undecodable words reaches it. `--words` scans
+  the 32-bit words of every block of a boot stream instead. Peripheral names
+  are from the ADSP-2156x SHARC+ Processor Hardware Reference Rev 1.0
+  (Appendix A; Table 27-2 for the DMA channels). **[D]**
+- No instruction in either main program carries an SPI
+  (`0x3102e000`-`0x31030fff`), SPI DMA (`0x3102d000`-`0x3102d2ff`) or SEC0
+  (`0x31089000`) address. The values in `0x30000000`-`0x31ffffff` on the
+  sweep in 1.16 are: 17 in the DAI0 page at SW `0x1cb28e`-`0x1cb2da` and 17
+  in the DAI1 page at `0x1cb2dd`-`0x1cb31a` (the 34 SPORT/DAI setup writes;
+  these pages also hold the ASRC, SPDIF and PCG registers); `14a` writes to
+  PORTA+`0x30`, PORTB+`0x30`, PORTA and PORTB at SW `0x1cb25d`-`0x1cb26c`
+  and to PADS0+`0x60` and +`0x64` at `0x1cb320` and `0x1cb323`; a `14a`
+  write to RCU0+`0x2c` (reset control unit) at `0x1c1414`; and `17a`
+  R12=`0x30c6d751` at `0x1c673e`, which is not a register. 1.15C has the
+  same, `0x6c` words lower after `0x1c7781`. `14a` with d=1 writes the
+  register to memory (Core Programming Reference, Type 14a). **[V]**
+- `docs/sharc/structure-1.16.md` section 3b gives `0x31004000` and
+  `0x3108c000` as DMA or interrupt controller candidates. They are PORTA and
+  RCU0. **[C]**
+- A decode at every offset finds 32 instructions with a value in
+  `0x82a00000`-`0x82a001ff`. The two at SW `0x1c3806` and `0x1c4562` lie
+  inside real instructions that start at `0x1c3805` and `0x1c4560`, so the
+  count of 30 above stands. **[V]**
+- The SPI base addresses are data. Loader block 35 (1.16: target
+  `0x28269250`, 1,576 bytes; 1.15C: `0x28269240`) is not part of the main
+  program. At data pointer `0x2694a0` (1.15C: `0x269490`) it holds one
+  40-byte entry per SPI instance: the SPI base, the DMA TX and DMA RX channel
+  bases, the SEC ids of TX DMA, RX DMA, status, error, TX DMA error and RX
+  DMA error, and a zero word. The ids match the SEC table of the Hardware
+  Reference (Table 6-5). Each base occurs once as a 4-aligned word in the
+  stream. **[V]**
+
+  | entry | SPI base | DMA TX | DMA RX | SEC ids |
+  |---|---|---|---|---|
+  | SPI0, `0x2694a0` | `0x3102e000` | `0x3102d000` | `0x3102d080` | 85, 86, 87, 88, 158, 159 |
+  | SPI1, `0x2694c8` | `0x3102f000` | `0x3102d100` | `0x3102d180` | 89, 90, 91, 92, 160, 161 |
+  | SPI2, `0x2694f0` | `0x31030000` | `0x3102d200` | `0x3102d280` | 69, 70, 71, 72, 156, 157 |
+
+- The same block holds SPORT0A-SPORT7B entries from `0x26955c` (stride
+  `0x28`, each with the SPORT and DMA channel base) and LP0/LP1 entries at
+  `0x269468`. Block 48 holds PORTA-PORTC, PINT0-PINT2 and PADS0 register
+  addresses from `0x2d6ea0`, and block 2 holds the CGU0 and CGU1 bases at
+  `0x242c88` and `0x242c98`. **[D]**
+- The code that receives 2748 selects the SPI2 entry. In 1.16, SW `0x1c80a0`
+  is `17b` R4=`0xabc` (2748, the bytes the ColdFire receives per frame),
+  then `25a_direct` to `0x1c7bd4`. That function sets R12=`0x261a10`
+  (`17a`, `0x1c7c0f`) and R4=2 (`17b`, `0x1c7c12`) and jumps to `0x1c9fd5`
+  (`0x1c7c14`). There: `2c` R13=R4 (`0x1c9fe7`), `17b` R2=`0x28`
+  (`0x1c9fe8`), `4a` R2=R13*R2 (`0x1c9fea`), `5a` I4=R2 (`0x1c9ff0`) and
+  `19a` I1=I4+`0x2694a0` (`0x1c9ffb`), so I1=`0x2694f0`. 1.15C does the same
+  from SW `0x1c8034` with R12=`0x261a00`, `0x1c9f69` and the table at
+  `0x269490`. `0x1c9fd5` is also reached from `0x1c7dae` with the index in
+  M6 and R12=`0x261b18`, so it serves any instance. **[V]**
+- What happens to 2748 after the call is not known. One reading has
+  `0x1c7bd4` copy R4 to R13 before it loads 2, and `0x1c9fd5` save and
+  restore R13 without using it. No write to an SPI or DMA register has been
+  found yet. **[D][O]**
+- 1.16 SW `0x1c1496`-`0x1c149a` is `9b_abs` (a delayed jump), `17b`
+  R0=`0xabc` and `25c_rframe`. The two instructions after a delayed jump
+  execute before the jump (Core Programming Reference, Table 4-7), so this
+  function returns 2748. The bytes are the same in 1.15C. **[V]** Ghidra
+  starts the function at `0x1c136a` and finds one caller, SW `0x1c0027`,
+  outside the main program. **[D]**
+- 1.16 SW `0x1c7e4f`-`0x1c7e51`, and again `0x1c7ee3`-`0x1c7ee5`, write
+  `0x401` (1025) to DM(`0x26822c`), offset `0xc` of a structure at
+  `0x268220`. **[V]** The structure is then passed in R8 to `0x1c834a` and
+  to `0x1c83ff`. **[D]** Whether 1025 is half of the 2050-byte frame is
+  not known. **[O]**
+- No 4-aligned word in either loader stream equals `0x802`, `0xabc`,
+  `0x401` or `0x55e`. The `0x802` in the `4a` at SW `0x1cb423` is part of
+  its compute field, not a value. **[V]**
+
 ## Emulation
 
 Function-level works well and is the practical path. Full boot was pushed as far

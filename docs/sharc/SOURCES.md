@@ -13,7 +13,7 @@ independent list of SHARC+ manual sections is in `docs/refs/sharc-plus-isa.md`.
 | `adsp-2136x_2137x_214xx_pgr_rev2.4.pdf` | SHARC Processor Programming Reference, Rev 2.4 (classic core) | 694 | Independent cross-check of opcode bits and computation tables |
 | `adsp-21562-21563-21565-21566-21567-21569.pdf` | ADSP-2156x datasheet, Rev D | 102 | Memory map and peripheral address ranges |
 | `2156x_EZKIT_Manual.pdf` | ADZS-21569-EZKIT manual | 36 | Board context only |
-| `adsp-2156x-hwr.pdf` | ADSP-2156x SHARC+ Processor Hardware Reference | | Boot stream block flags in `tools/sharcldr.py` |
+| `adsp-2156x-hwr.pdf` | ADSP-2156x SHARC+ Processor Hardware Reference, Rev 1.0 (December 2020) | 2331 | Boot stream block flags in `tools/sharcldr.py`; peripheral register addresses (Appendix A), DMA channel assignment (Table 27-2) and SEC ids (Table 6-5) in `tools/sharcimm.py` |
 | `sharc-plus-prm.pdf` | SHARC+ Core Programming Reference, Rev 1.4 | | Page citations in `tools/sharc_visa_tables.py` |
 
 `dt2/elz.py`, the section decompressor, follows the format of `aplib.c` in
