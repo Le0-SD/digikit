@@ -1336,6 +1336,79 @@ Ghidra or disassembly output and it was not re-checked.
   driver compares the TX length with `0xaf0` where 1.15C uses `0xbc0`.
   **[V]**
 
+### The frame link on Digitakt II 1.16 **[V][O]**
+
+- Every 1.15C address of the frame link has a 1.16 counterpart, found from
+  the Version Tracking map and checked instruction by instruction in both
+  images:
+
+  | 1.15C | 1.16 | evidence |
+  |---|---|---|
+  | installer `FUN_4002ce4a` | `FUN_4002d4f2` | `move.l #handler,dN; move.l dN,$400002fc` and `move.b #5,$fc04c07f` in both |
+  | vector-191 handler `0x4002d652` | `0x4002dd0c` | |
+  | driver call at `0x4002d6ba` | `0x4002dd74` | after `pea $8000488c`, `pea $abc`, `pea $80005348`, `pea $802` in both |
+  | DSPI2 driver `FUN_400cf9c4` | `FUN_400cd2bc` | |
+  | pacing counter `0x4028ac90` | `0x402a1488` | one read and one write each, in the handler |
+  | gate `0x4094e4f4` | `0x409664f4` | 7 references each |
+  | countdown `0x4094e4f0` | `0x409664f0` | 4 each |
+  | mode `0x4094e4f8` | `0x409664f8` | 7 each |
+  | stop flag `0x4094e4ec` | `0x409664ec` | 2 each: the writer, and `tst.l` at `0x4002d6ce` / `0x4002dd88` |
+  | stop-flag writer `0x4002d632` | `0x4002dce2` | `moveq #1,d0; move.l d0,stop; rts`, outside any function |
+  | `FUN_4002d602` | `FUN_4002dcb2` | nine sites each, below |
+  | MIDI flag writer `FUN_4002ed16` | `FUN_4002f3da` | `lea $80003340,a0`, indices `0x4d1` and `0x4e1` |
+  | `FUN_400db9aa` | `FUN_400d92a2` | `lea $80005b50,a2`, row step `0x8e` |
+
+  The gate variables moved by `+0x18000`, and their references are the
+  same instructions in the same order. The frame tables did not move: TX
+  `0x80005348` (`0x802`), RX `0x8000488c` (`0xabc`), `0x800047fc + 4*i`,
+  `0x80003340 + i*0x9a`, `0x80005b50 + i*0x8e`, and the MIDI flags
+  `0x80004684 + 4*i` and `0x800046c4 + 4*i`, each with 16 rows. The
+  instruction pattern of the stop-flag writer occurs 9 times in each image;
+  the one above is the one that writes the stop flag. **[V]**
+- The nine sites of `FUN_4002d602`, with the argument pushed before each:
+
+  | 1.15C | 1.16 | in | argument |
+  |---|---|---|---|
+  | `0x400323dc` | `0x40032c3c` | trampoline outside functions | 1 |
+  | `0x400323f2` | `0x40032c52` | `FUN_400323e2` / `FUN_40032c42` | 0 |
+  | `0x400330f6` | `0x4003395c` | task `FUN_40032f5a` / `FUN_400337ba` | 0 |
+  | `0x400407d8` | `0x400410f8` | trampoline outside functions | 0 |
+  | `0x400407ee` | `0x4004110e` | trampoline outside functions | 0 |
+  | `0x40043692` | `0x40043fb2` | `OnScopeExit::ctor_dtor` | 1 |
+  | `0x40046008` | `0x4004694a` | `OnScopeExit::ctor_dtor` | 1 |
+  | `0x400fa6d8` | `0x40106c9c` | trampoline outside functions | 0 |
+  | `0x400faa98` | `0x4010705c` | `FUN_400faa86` / `FUN_4010704a` | 1 |
+
+  **[V]**
+- Two things differ. The 1.16 installer also writes the frame's first word,
+  `moveq #1,d0` then `move.w d0,$80005348`; the 1.15C installer does not.
+  And the handler reads both MIDI flag arrays itself, `lea $80004684,a1` and
+  `lea $800046c4,a0`, at `0x4002d70c` and `0x4002d720` in 1.15C and at
+  `0x4002ddc6` and `0x4002ddda` in 1.16. **[V]**
+- `tools/framelink.py` holds these addresses per image, looked up by the
+  SHA-256 of the MAIN OS image. `tools/sharcframe.py` takes its addresses
+  from it and stops on an image without a profile; `--open-gate` writes 0 to
+  the profile's gate. On `snapshots/boot400M.snap` (1.15C) with three passes,
+  the tool before the change with `--poke 0x4094e4f4=0`, and the new tool
+  with `--open-gate` or with the same poke, capture the same frames: pass 0
+  `382e008e…`, passes 1 and 2 `5cc9772c…`. **[V]**
+- `tools/dspmap.py` lists the instructions that reference the frame tables,
+  the gate variables and the pacing counter, with their functions and callers
+  two levels up (`out/maps/`). It finds 186 sites in 19 functions on 1.15C
+  and 187 in 20 on 1.16; the only new site is the installer's write. Its 115
+  sites from the raw sweep on 1.16 match an independent sweep. Two sites are
+  not table accesses: the DSPI2 driver's `move.w a0,(a1,d0.l*4)`, which
+  Ghidra attributes to `0x80003340` while `a1` holds `0x80001bc0`, and
+  `cmpa.l #$800047fc,a2` in `FUN_400dbaac` / `FUN_400d93a4`, the end of a
+  loop over the 16 words at `0x800047dc`. Of the other 10 functions that use
+  `0x80003340`, 8 load the base and index it by track; `FUN_4002cd38` and
+  `FUN_4002d166` use fixed rows 14 and 15. **[V]**
+- None of the eight Digitakt `*::updateMirror` methods reaches these
+  functions within three callee levels of Ghidra's call graph, including its
+  resolved indirect calls, and none of those callees references the tables.
+  A method can still hand the handler data through shared state, which a
+  call graph does not show. **[V][O]**
+
 ### The frame capture runs; the frame build is switched off **[V][D][O][C]**
 
 - `tools/sharcframe.py snapshots/boot400M.snap --passes 3` takes 0.5 s.
