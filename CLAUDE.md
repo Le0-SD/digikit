@@ -1,7 +1,8 @@
 # digitakt2
 
-Reverse engineering of the Elektron Digitakt II firmware, OS 1.15C: a
-ColdFire MCF5441x main CPU and a SHARC+ DSP. Setup is in README.md, results
+Reverse engineering of the Elektron Digitakt II firmware: a ColdFire MCF5441x
+main CPU and a SHARC+ DSP. The work is moving from OS 1.15C to 1.16; the
+device stays on 1.15C (installing 1.16 upgrades the bootstrap irreversibly). Setup is in README.md, results
 in docs/FINDINGS.md, and current state and next steps in the newest
 `HANDOVER-*.md` in the repo root.
 
@@ -15,7 +16,8 @@ in docs/FINDINGS.md, and current state and next steps in the newest
 - Firmware and anything derived from it (`*.syx`, `sections/`, `out/`,
   `snapshots/`) is Elektron's copyright: never commit it.
 - Never name, copy or quote the vendor DSP toolchain or its files in
-  commits, docs or code. Cite only public manuals.
+  commits, docs or code. Cite only public manuals; SHARC+ sources are listed
+  in `docs/sharc/SOURCES.md`.
 - Commit only when Em asks.
 - Run the emulator only when a static answer is not enough, and bound runs
   with `--limit`. Em runs emulator commands in the same tree:
@@ -49,6 +51,9 @@ in docs/FINDINGS.md, and current state and next steps in the newest
   `tools/ghidra/` shadows the `ghidra` package, and the import fails with
   `RecursionError`.
 - After a Ghidra upgrade, re-run `tools/ghidra/install-coldfire-emac.sh`.
+- SHARC+ encodings: `tools/sharcspec/decode_table.json` and
+  `compute_table.json`, built from the public ADI manuals
+  (`tools/sharcspec/README.md`).
 
 ## Shell and tests
 
@@ -56,3 +61,5 @@ in docs/FINDINGS.md, and current state and next steps in the newest
 - The shell is zsh: an unquoted `$VAR` is one word, not split. There is no
   `timeout` binary.
 - The rtk hook shortens some output: use `rtk proxy git log` for the full log.
+- Extract any firmware, 1.16 included: `uv run python -m emu.extract SYX -o DIR`
+  (`dt2/elz.py`; `--oracle` uses the device routine, 1.15C/1.10E only).

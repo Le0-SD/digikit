@@ -1,0 +1,2337 @@
+{
+ "forms": [
+  {
+   "name": "Type1a",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xe00000000000",
+   "value": "0x200000000000",
+   "fixed_bits": 3,
+   "fields": [
+    {
+     "label": "dmd",
+     "hi": 44,
+     "lo": 44
+    },
+    {
+     "label": "dmi[2:0]",
+     "hi": 43,
+     "lo": 41
+    },
+    {
+     "label": "dmm[2:0]",
+     "hi": 40,
+     "lo": 38
+    },
+    {
+     "label": "pmd",
+     "hi": 37,
+     "lo": 37
+    },
+    {
+     "label": "dmdreg[3:0]",
+     "hi": 36,
+     "lo": 33
+    },
+    {
+     "label": "pmi[2:2]",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "pmi[1:0]",
+     "hi": 31,
+     "lo": 30
+    },
+    {
+     "label": "pmm[2:0]",
+     "hi": 29,
+     "lo": 27
+    },
+    {
+     "label": "pmdreg[3:0]",
+     "hi": 26,
+     "lo": 23
+    },
+    {
+     "label": "compute[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "compute[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type1b",
+   "width": 32,
+   "visa": true,
+   "isa": false,
+   "mask": "0xe000007f0000",
+   "value": "0x2000003f0000",
+   "fixed_bits": 10,
+   "fields": [
+    {
+     "label": "dmd",
+     "hi": 44,
+     "lo": 44
+    },
+    {
+     "label": "dmi[2:0]",
+     "hi": 43,
+     "lo": 41
+    },
+    {
+     "label": "dmm[2:0]",
+     "hi": 40,
+     "lo": 38
+    },
+    {
+     "label": "pmd",
+     "hi": 37,
+     "lo": 37
+    },
+    {
+     "label": "dmdreg[3:0]",
+     "hi": 36,
+     "lo": 33
+    },
+    {
+     "label": "pmi[2:2]",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "pmi[1:0]",
+     "hi": 31,
+     "lo": 30
+    },
+    {
+     "label": "pmm[2:0]",
+     "hi": 29,
+     "lo": 27
+    },
+    {
+     "label": "pmdreg[3:0]",
+     "hi": 26,
+     "lo": 23
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type2a",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff0000000000",
+   "value": "0x010000000000",
+   "fixed_bits": 8,
+   "fields": [
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "compute[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "compute[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type2b",
+   "width": 32,
+   "visa": true,
+   "isa": false,
+   "mask": "0xff8000000000",
+   "value": "0xc00000000000",
+   "fixed_bits": 9,
+   "fields": [
+    {
+     "label": "compute[22:16]",
+     "hi": 38,
+     "lo": 32
+    },
+    {
+     "label": "compute[15:0]",
+     "hi": 31,
+     "lo": 16
+    }
+   ],
+   "source": "prm figure (overrides PGR; firmware-confirmed)",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type2c",
+   "width": 16,
+   "visa": true,
+   "isa": false,
+   "mask": "0xf00000000000",
+   "value": "0xc00000000000",
+   "fixed_bits": 4,
+   "fields": [
+    {
+     "label": "compute[11:0]",
+     "hi": 43,
+     "lo": 32
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type3a",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xe00000000000",
+   "value": "0x400000000000",
+   "fixed_bits": 3,
+   "fields": [
+    {
+     "label": "u",
+     "hi": 44,
+     "lo": 44
+    },
+    {
+     "label": "i",
+     "hi": 43,
+     "lo": 41
+    },
+    {
+     "label": "m",
+     "hi": 40,
+     "lo": 38
+    },
+    {
+     "label": "cond",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "g",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "d",
+     "hi": 31,
+     "lo": 31
+    },
+    {
+     "label": "l",
+     "hi": 30,
+     "lo": 30
+    },
+    {
+     "label": "ureg",
+     "hi": 29,
+     "lo": 23
+    },
+    {
+     "label": "compute",
+     "hi": 22,
+     "lo": 0
+    }
+   ],
+   "source": "pgr (PRM figure is a copy of Type 1a)",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type3b",
+   "width": 32,
+   "visa": true,
+   "isa": false,
+   "mask": "0xe000007c0000",
+   "value": "0x4000003c0000",
+   "fixed_bits": 8,
+   "fields": [
+    {
+     "label": "u",
+     "hi": 44,
+     "lo": 44
+    },
+    {
+     "label": "i[2:0]",
+     "hi": 43,
+     "lo": 41
+    },
+    {
+     "label": "m[2:0]",
+     "hi": 40,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "g",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "d",
+     "hi": 31,
+     "lo": 31
+    },
+    {
+     "label": "l",
+     "hi": 30,
+     "lo": 30
+    },
+    {
+     "label": "ureg[6:0]",
+     "hi": 29,
+     "lo": 23
+    },
+    {
+     "label": "w",
+     "hi": 17,
+     "lo": 17
+    },
+    {
+     "label": "x",
+     "hi": 16,
+     "lo": 16
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type3c",
+   "width": 16,
+   "visa": true,
+   "isa": false,
+   "mask": "0xf01000000000",
+   "value": "0x901000000000",
+   "fixed_bits": 5,
+   "fields": [
+    {
+     "label": "dmi[2:0]",
+     "hi": 43,
+     "lo": 41
+    },
+    {
+     "label": "dmm[2:0]",
+     "hi": 40,
+     "lo": 38
+    },
+    {
+     "label": "d",
+     "hi": 37,
+     "lo": 37
+    },
+    {
+     "label": "dreg[3:0]",
+     "hi": 35,
+     "lo": 32
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type3d",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xe00000780000",
+   "value": "0x400000300000",
+   "fixed_bits": 7,
+   "fields": [
+    {
+     "label": "u",
+     "hi": 44,
+     "lo": 44
+    },
+    {
+     "label": "i[2:0]",
+     "hi": 43,
+     "lo": 41
+    },
+    {
+     "label": "m[2:0]",
+     "hi": 40,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "g",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "d",
+     "hi": 31,
+     "lo": 31
+    },
+    {
+     "label": "l",
+     "hi": 30,
+     "lo": 30
+    },
+    {
+     "label": "ureg[6:0]",
+     "hi": 29,
+     "lo": 23
+    },
+    {
+     "label": "ex",
+     "hi": 18,
+     "lo": 18
+    },
+    {
+     "label": "w",
+     "hi": 17,
+     "lo": 17
+    },
+    {
+     "label": "x",
+     "hi": 16,
+     "lo": 16
+    }
+   ],
+   "source": "prm",
+   "unconfirmed_bits": 7
+  },
+  {
+   "name": "Type4a",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xf00000000000",
+   "value": "0x600000000000",
+   "fixed_bits": 4,
+   "fields": [
+    {
+     "label": "i[2:0]",
+     "hi": 43,
+     "lo": 41
+    },
+    {
+     "label": "g",
+     "hi": 40,
+     "lo": 40
+    },
+    {
+     "label": "d",
+     "hi": 39,
+     "lo": 39
+    },
+    {
+     "label": "u",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "data[5:5]",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "data[4:0]",
+     "hi": 31,
+     "lo": 27
+    },
+    {
+     "label": "dreg[3:0]",
+     "hi": 26,
+     "lo": 23
+    },
+    {
+     "label": "compute[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "compute[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type4b",
+   "width": 32,
+   "visa": true,
+   "isa": false,
+   "mask": "0xf00000780000",
+   "value": "0x600000380000",
+   "fixed_bits": 8,
+   "fields": [
+    {
+     "label": "i[2:0]",
+     "hi": 43,
+     "lo": 41
+    },
+    {
+     "label": "g",
+     "hi": 40,
+     "lo": 40
+    },
+    {
+     "label": "d",
+     "hi": 39,
+     "lo": 39
+    },
+    {
+     "label": "u",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "data[5:5]",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "data[4:0]",
+     "hi": 31,
+     "lo": 27
+    },
+    {
+     "label": "dreg[3:0]",
+     "hi": 26,
+     "lo": 23
+    },
+    {
+     "label": "l",
+     "hi": 18,
+     "lo": 18
+    },
+    {
+     "label": "w",
+     "hi": 17,
+     "lo": 17
+    },
+    {
+     "label": "x",
+     "hi": 16,
+     "lo": 16
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type4d",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xf00000780000",
+   "value": "0x600000300000",
+   "fixed_bits": 8,
+   "fields": [
+    {
+     "label": "i[2:0]",
+     "hi": 43,
+     "lo": 41
+    },
+    {
+     "label": "g",
+     "hi": 40,
+     "lo": 40
+    },
+    {
+     "label": "d",
+     "hi": 39,
+     "lo": 39
+    },
+    {
+     "label": "u",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "data[5:5]",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "data[4:0]",
+     "hi": 31,
+     "lo": 27
+    },
+    {
+     "label": "dreg[3:0]",
+     "hi": 26,
+     "lo": 23
+    },
+    {
+     "label": "l",
+     "hi": 18,
+     "lo": 18
+    },
+    {
+     "label": "w",
+     "hi": 17,
+     "lo": 17
+    },
+    {
+     "label": "x",
+     "hi": 16,
+     "lo": 16
+    }
+   ],
+   "source": "prm",
+   "unconfirmed_bits": 8
+  },
+  {
+   "name": "Type5a_move",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xf80000000000",
+   "value": "0x700000000000",
+   "fixed_bits": 5,
+   "fields": [
+    {
+     "label": "srcureghigh[4:0]",
+     "hi": 42,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "srcureglow[1:1]",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "srcureglow[0:0]",
+     "hi": 31,
+     "lo": 31
+    },
+    {
+     "label": "dstureg[6:0]",
+     "hi": 29,
+     "lo": 23
+    },
+    {
+     "label": "compute[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "compute[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type5a (swap)",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xf80000000000",
+   "value": "0x780000000000",
+   "fixed_bits": 5,
+   "fields": [
+    {
+     "label": "cdreg[3:0]",
+     "hi": 41,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "dreg[3:0]",
+     "hi": 26,
+     "lo": 23
+    },
+    {
+     "label": "compute[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "compute[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type5b (move)",
+   "width": 32,
+   "visa": true,
+   "isa": false,
+   "mask": "0xf800007f0000",
+   "value": "0x7000003f0000",
+   "fixed_bits": 12,
+   "fields": [
+    {
+     "label": "srcureghigh[4:0]",
+     "hi": 42,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "srcureglow[1:1]",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "srcureglow[0:0]",
+     "hi": 31,
+     "lo": 31
+    },
+    {
+     "label": "dstureg[6:0]",
+     "hi": 29,
+     "lo": 23
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type5b (swap)",
+   "width": 32,
+   "visa": true,
+   "isa": false,
+   "mask": "0xf800007f0000",
+   "value": "0x7800003f0000",
+   "fixed_bits": 12,
+   "fields": [
+    {
+     "label": "cdreg[3:0]",
+     "hi": 41,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "dreg[3:0]",
+     "hi": 26,
+     "lo": 23
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type6a (mem)",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xf00000000000",
+   "value": "0x800000000000",
+   "fixed_bits": 4,
+   "fields": [
+    {
+     "label": "i[2:0]",
+     "hi": 43,
+     "lo": 41
+    },
+    {
+     "label": "m[2:0]",
+     "hi": 40,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "g",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "d",
+     "hi": 31,
+     "lo": 31
+    },
+    {
+     "label": "dataex[3:0]",
+     "hi": 30,
+     "lo": 27
+    },
+    {
+     "label": "dreg[3:0]",
+     "hi": 26,
+     "lo": 23
+    },
+    {
+     "label": "shiftimm[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "shiftimm[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type6a (nomem)",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xffc187800000",
+   "value": "0x800000000000",
+   "fixed_bits": 16,
+   "fields": [
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "dataex[3:0]",
+     "hi": 30,
+     "lo": 27
+    },
+    {
+     "label": "shiftimm[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "shiftimm[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "prm",
+   "unconfirmed_bits": 16
+  },
+  {
+   "name": "Type7a",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff0000000000",
+   "value": "0x040000000000",
+   "fixed_bits": 8,
+   "fields": [
+    {
+     "label": "g",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "is[2:2]",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "is[1:0]",
+     "hi": 31,
+     "lo": 30
+    },
+    {
+     "label": "breg",
+     "hi": 28,
+     "lo": 28
+    },
+    {
+     "label": "toby",
+     "hi": 27,
+     "lo": 27
+    },
+    {
+     "label": "idis[2:0]",
+     "hi": 26,
+     "lo": 24
+    },
+    {
+     "label": "compute[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "compute[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type7b",
+   "width": 32,
+   "visa": true,
+   "isa": false,
+   "mask": "0xff00007f0000",
+   "value": "0x0400003f0000",
+   "fixed_bits": 15,
+   "fields": [
+    {
+     "label": "g",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "is[2:2]",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "is[1:0]",
+     "hi": 31,
+     "lo": 30
+    },
+    {
+     "label": "m[2:0]",
+     "hi": 29,
+     "lo": 27
+    },
+    {
+     "label": "idis[2:0]",
+     "hi": 26,
+     "lo": 24
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type7d",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff8020800000",
+   "value": "0x048000800000",
+   "fixed_bits": 11,
+   "fields": [
+    {
+     "label": "g",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "is[2:2]",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "is[1:0]",
+     "hi": 31,
+     "lo": 30
+    },
+    {
+     "label": "breg",
+     "hi": 28,
+     "lo": 28
+    },
+    {
+     "label": "toby",
+     "hi": 27,
+     "lo": 27
+    },
+    {
+     "label": "idis[2:0]",
+     "hi": 26,
+     "lo": 24
+    },
+    {
+     "label": "compute[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "compute[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "prm",
+   "unconfirmed_bits": 11
+  },
+  {
+   "name": "Type8a_abs",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff0000000000",
+   "value": "0x060000000000",
+   "fixed_bits": 8,
+   "fields": [
+    {
+     "label": "b",
+     "hi": 39,
+     "lo": 39
+    },
+    {
+     "label": "a",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "j",
+     "hi": 26,
+     "lo": 26
+    },
+    {
+     "label": "ci",
+     "hi": 24,
+     "lo": 24
+    },
+    {
+     "label": "addr[23:16]",
+     "hi": 23,
+     "lo": 16
+    },
+    {
+     "label": "addr[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr (split from merged PRM figure; see build_table.py SPLIT_FORMS)",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type8a_rel",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff0000000000",
+   "value": "0x070000000000",
+   "fixed_bits": 8,
+   "fields": [
+    {
+     "label": "b",
+     "hi": 39,
+     "lo": 39
+    },
+    {
+     "label": "a",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "j",
+     "hi": 26,
+     "lo": 26
+    },
+    {
+     "label": "ci",
+     "hi": 24,
+     "lo": 24
+    },
+    {
+     "label": "reladdr[23:16]",
+     "hi": 23,
+     "lo": 16
+    },
+    {
+     "label": "reladdr[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr (split from merged PRM figure; see build_table.py SPLIT_FORMS)",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type9a_abs",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff0000000000",
+   "value": "0x080000000000",
+   "fixed_bits": 8,
+   "fields": [
+    {
+     "label": "b",
+     "hi": 39,
+     "lo": 39
+    },
+    {
+     "label": "a",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "pmi[2:2]",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "pmi[1:0]",
+     "hi": 31,
+     "lo": 30
+    },
+    {
+     "label": "pmm[2:0]",
+     "hi": 29,
+     "lo": 27
+    },
+    {
+     "label": "j",
+     "hi": 26,
+     "lo": 26
+    },
+    {
+     "label": "e",
+     "hi": 25,
+     "lo": 25
+    },
+    {
+     "label": "ci",
+     "hi": 24,
+     "lo": 24
+    },
+    {
+     "label": "compute[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "compute[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr (split from merged PRM figure; see build_table.py SPLIT_FORMS)",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type9a_rel",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff0000000000",
+   "value": "0x090000000000",
+   "fixed_bits": 8,
+   "fields": [
+    {
+     "label": "b",
+     "hi": 39,
+     "lo": 39
+    },
+    {
+     "label": "a",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "j",
+     "hi": 26,
+     "lo": 26
+    },
+    {
+     "label": "e",
+     "hi": 25,
+     "lo": 25
+    },
+    {
+     "label": "ci",
+     "hi": 24,
+     "lo": 24
+    },
+    {
+     "label": "compute[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "compute[15:0]",
+     "hi": 15,
+     "lo": 0
+    },
+    {
+     "label": "reladdr[5:5]",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "reladdr[4:0]",
+     "hi": 31,
+     "lo": 27
+    }
+   ],
+   "source": "pgr (split from merged PRM figure; see build_table.py SPLIT_FORMS)",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type9b_abs",
+   "width": 32,
+   "visa": true,
+   "isa": false,
+   "mask": "0xff00007f0000",
+   "value": "0x0800003f0000",
+   "fixed_bits": 15,
+   "fields": [
+    {
+     "label": "b",
+     "hi": 39,
+     "lo": 39
+    },
+    {
+     "label": "a",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "pmi[2:2]",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "pmi[1:0]",
+     "hi": 31,
+     "lo": 30
+    },
+    {
+     "label": "pmm[2:0]",
+     "hi": 29,
+     "lo": 27
+    },
+    {
+     "label": "j",
+     "hi": 26,
+     "lo": 26
+    },
+    {
+     "label": "ci",
+     "hi": 24,
+     "lo": 24
+    }
+   ],
+   "source": "pgr (split from merged PRM figure; see build_table.py SPLIT_FORMS)",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type9b_rel",
+   "width": 32,
+   "visa": true,
+   "isa": false,
+   "mask": "0xff00007f0000",
+   "value": "0x0900003f0000",
+   "fixed_bits": 15,
+   "fields": [
+    {
+     "label": "b",
+     "hi": 39,
+     "lo": 39
+    },
+    {
+     "label": "a",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "j",
+     "hi": 26,
+     "lo": 26
+    },
+    {
+     "label": "ci",
+     "hi": 24,
+     "lo": 24
+    },
+    {
+     "label": "reladdr[5:5]",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "reladdr[4:0]",
+     "hi": 31,
+     "lo": 27
+    }
+   ],
+   "source": "pgr (split from merged PRM figure; see build_table.py SPLIT_FORMS)",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type10a_abs",
+   "width": 48,
+   "visa": false,
+   "isa": true,
+   "mask": "0xe00000000000",
+   "value": "0xc00000000000",
+   "fixed_bits": 3,
+   "fields": [
+    {
+     "label": "d",
+     "hi": 44,
+     "lo": 44
+    },
+    {
+     "label": "dmi[2:0]",
+     "hi": 43,
+     "lo": 41
+    },
+    {
+     "label": "dmm[2:0]",
+     "hi": 40,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "pmi[2:2]",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "pmi[1:0]",
+     "hi": 31,
+     "lo": 30
+    },
+    {
+     "label": "pmm[2:0]",
+     "hi": 29,
+     "lo": 27
+    },
+    {
+     "label": "dreg[3:0]",
+     "hi": 26,
+     "lo": 23
+    },
+    {
+     "label": "compute[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "compute[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr (split from merged PRM figure; see build_table.py SPLIT_FORMS)",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type10a_rel",
+   "width": 48,
+   "visa": false,
+   "isa": true,
+   "mask": "0xe00000000000",
+   "value": "0xe00000000000",
+   "fixed_bits": 3,
+   "fields": [
+    {
+     "label": "d",
+     "hi": 44,
+     "lo": 44
+    },
+    {
+     "label": "dmi[2:0]",
+     "hi": 43,
+     "lo": 41
+    },
+    {
+     "label": "dmm[2:0]",
+     "hi": 40,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "dreg[3:0]",
+     "hi": 26,
+     "lo": 23
+    },
+    {
+     "label": "compute[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "compute[15:0]",
+     "hi": 15,
+     "lo": 0
+    },
+    {
+     "label": "reladdr[5:5]",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "reladdr[4:0]",
+     "hi": 31,
+     "lo": 27
+    }
+   ],
+   "source": "pgr (split from merged PRM figure; see build_table.py SPLIT_FORMS)",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type11a",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xfe0000000000",
+   "value": "0x0a0000000000",
+   "fixed_bits": 7,
+   "fields": [
+    {
+     "label": "x",
+     "hi": 40,
+     "lo": 40
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "j",
+     "hi": 26,
+     "lo": 26
+    },
+    {
+     "label": "e",
+     "hi": 25,
+     "lo": 25
+    },
+    {
+     "label": "lr",
+     "hi": 24,
+     "lo": 24
+    },
+    {
+     "label": "compute[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "compute[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type11c",
+   "width": 16,
+   "visa": true,
+   "isa": false,
+   "mask": "0xfe8000000000",
+   "value": "0x0a8000000000",
+   "fixed_bits": 8,
+   "fields": [
+    {
+     "label": "x",
+     "hi": 40,
+     "lo": 40
+    },
+    {
+     "label": "j",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "lr",
+     "hi": 32,
+     "lo": 32
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type12a_imm",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff0000000000",
+   "value": "0x0c0000000000",
+   "fixed_bits": 8,
+   "fields": [
+    {
+     "label": "data[15:8]",
+     "hi": 39,
+     "lo": 32
+    },
+    {
+     "label": "data[7:0]",
+     "hi": 31,
+     "lo": 24
+    },
+    {
+     "label": "mode",
+     "hi": 23,
+     "lo": 23
+    },
+    {
+     "label": "reladdr[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "reladdr[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type12a_ureg",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff80ff000000",
+   "value": "0x0d0000000000",
+   "fixed_bits": 17,
+   "fields": [
+    {
+     "label": "ureg[6:0]",
+     "hi": 38,
+     "lo": 32
+    },
+    {
+     "label": "mode",
+     "hi": 23,
+     "lo": 23
+    },
+    {
+     "label": "reladdr[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "reladdr[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "prm",
+   "unconfirmed_bits": 17
+  },
+  {
+   "name": "Type13a",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff0000000000",
+   "value": "0x0e0000000000",
+   "fixed_bits": 8,
+   "fields": [
+    {
+     "label": "term[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "mode",
+     "hi": 23,
+     "lo": 23
+    },
+    {
+     "label": "reladdr[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "reladdr[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type14a",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xfc0000000000",
+   "value": "0x100000000000",
+   "fixed_bits": 6,
+   "fields": [
+    {
+     "label": "g",
+     "hi": 41,
+     "lo": 41
+    },
+    {
+     "label": "d",
+     "hi": 40,
+     "lo": 40
+    },
+    {
+     "label": "l",
+     "hi": 39,
+     "lo": 39
+    },
+    {
+     "label": "ureg[6:0]",
+     "hi": 38,
+     "lo": 32
+    },
+    {
+     "label": "addr[31:16]",
+     "hi": 31,
+     "lo": 16
+    },
+    {
+     "label": "addr[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type14d",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xfe0000000000",
+   "value": "0x1a0000000000",
+   "fixed_bits": 7,
+   "fields": [
+    {
+     "label": "d",
+     "hi": 40,
+     "lo": 40
+    },
+    {
+     "label": "ex",
+     "hi": 39,
+     "lo": 39
+    },
+    {
+     "label": "l",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "w",
+     "hi": 37,
+     "lo": 37
+    },
+    {
+     "label": "x",
+     "hi": 36,
+     "lo": 36
+    },
+    {
+     "label": "dreg[3:0]",
+     "hi": 35,
+     "lo": 32
+    },
+    {
+     "label": "addr[31:16]",
+     "hi": 31,
+     "lo": 16
+    },
+    {
+     "label": "addr[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "prm",
+   "unconfirmed_bits": 7
+  },
+  {
+   "name": "Type15a",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xe00000000000",
+   "value": "0xa00000000000",
+   "fixed_bits": 3,
+   "fields": [
+    {
+     "label": "g",
+     "hi": 44,
+     "lo": 44
+    },
+    {
+     "label": "i[2:0]",
+     "hi": 43,
+     "lo": 41
+    },
+    {
+     "label": "d",
+     "hi": 40,
+     "lo": 40
+    },
+    {
+     "label": "l",
+     "hi": 39,
+     "lo": 39
+    },
+    {
+     "label": "ureg[6:0]",
+     "hi": 38,
+     "lo": 32
+    },
+    {
+     "label": "addr[31:16]",
+     "hi": 31,
+     "lo": 16
+    },
+    {
+     "label": "addr[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type15b",
+   "width": 32,
+   "visa": true,
+   "isa": false,
+   "mask": "0xf01c00000000",
+   "value": "0x900800000000",
+   "fixed_bits": 7,
+   "fields": [
+    {
+     "label": "i[2:0]",
+     "hi": 43,
+     "lo": 41
+    },
+    {
+     "label": "d",
+     "hi": 40,
+     "lo": 40
+    },
+    {
+     "label": "l",
+     "hi": 39,
+     "lo": 39
+    },
+    {
+     "label": "g",
+     "hi": 37,
+     "lo": 37
+    },
+    {
+     "label": "ureg[6:0]",
+     "hi": 29,
+     "lo": 23
+    },
+    {
+     "label": "data[6:0]",
+     "hi": 22,
+     "lo": 16
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type16a",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xf00000000000",
+   "value": "0x900000000000",
+   "fixed_bits": 4,
+   "fields": [
+    {
+     "label": "i[2:0]",
+     "hi": 43,
+     "lo": 41
+    },
+    {
+     "label": "m[2:0]",
+     "hi": 40,
+     "lo": 38
+    },
+    {
+     "label": "g",
+     "hi": 37,
+     "lo": 37
+    },
+    {
+     "label": "sl",
+     "hi": 33,
+     "lo": 33
+    },
+    {
+     "label": "by",
+     "hi": 32,
+     "lo": 32
+    },
+    {
+     "label": "data[31:16]",
+     "hi": 31,
+     "lo": 16
+    },
+    {
+     "label": "data[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type16b",
+   "width": 32,
+   "visa": true,
+   "isa": false,
+   "mask": "0xf01c00000000",
+   "value": "0x900400000000",
+   "fixed_bits": 7,
+   "fields": [
+    {
+     "label": "i[2:0]",
+     "hi": 43,
+     "lo": 41
+    },
+    {
+     "label": "m[2:0]",
+     "hi": 40,
+     "lo": 38
+    },
+    {
+     "label": "g",
+     "hi": 37,
+     "lo": 37
+    },
+    {
+     "label": "data[15:0]",
+     "hi": 31,
+     "lo": 16
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type17a",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff8000000000",
+   "value": "0x0f0000000000",
+   "fixed_bits": 9,
+   "fields": [
+    {
+     "label": "ureg[6:0]",
+     "hi": 38,
+     "lo": 32
+    },
+    {
+     "label": "data[31:16]",
+     "hi": 31,
+     "lo": 16
+    },
+    {
+     "label": "data[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type17b",
+   "width": 32,
+   "visa": true,
+   "isa": false,
+   "mask": "0xff8000000000",
+   "value": "0x0f8000000000",
+   "fixed_bits": 9,
+   "fields": [
+    {
+     "label": "ureg[6:0]",
+     "hi": 38,
+     "lo": 32
+    },
+    {
+     "label": "data[15:0]",
+     "hi": 31,
+     "lo": 16
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type18a",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff0000000000",
+   "value": "0x140000000000",
+   "fixed_bits": 8,
+   "fields": [
+    {
+     "label": "bop[2:0]",
+     "hi": 39,
+     "lo": 37
+    },
+    {
+     "label": "sreg[3:0]",
+     "hi": 35,
+     "lo": 32
+    },
+    {
+     "label": "data[31:16]",
+     "hi": 31,
+     "lo": 16
+    },
+    {
+     "label": "data[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type19a",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xfc0000000000",
+   "value": "0x140000000000",
+   "fixed_bits": 6,
+   "fields": [
+    {
+     "label": "sc[1:0]",
+     "hi": 41,
+     "lo": 40
+    },
+    {
+     "label": "w",
+     "hi": 39,
+     "lo": 39
+    },
+    {
+     "label": "g",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "idis[2:0]",
+     "hi": 37,
+     "lo": 35
+    },
+    {
+     "label": "is[2:0]",
+     "hi": 34,
+     "lo": 32
+    },
+    {
+     "label": "data[31:16]",
+     "hi": 31,
+     "lo": 16
+    },
+    {
+     "label": "data[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type19a_bitrev",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff8000000000",
+   "value": "0x168000000000",
+   "fixed_bits": 9,
+   "fields": [
+    {
+     "label": "g",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "idis[2:0]",
+     "hi": 37,
+     "lo": 35
+    },
+    {
+     "label": "is[2:0]",
+     "hi": 34,
+     "lo": 32
+    },
+    {
+     "label": "data[31:16]",
+     "hi": 31,
+     "lo": 16
+    },
+    {
+     "label": "data[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type20a",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff0000000000",
+   "value": "0x170000000000",
+   "fixed_bits": 8,
+   "fields": [
+    {
+     "label": "lpu",
+     "hi": 39,
+     "lo": 39
+    },
+    {
+     "label": "lpo",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "spu",
+     "hi": 37,
+     "lo": 37
+    },
+    {
+     "label": "spo",
+     "hi": 36,
+     "lo": 36
+    },
+    {
+     "label": "ppu",
+     "hi": 35,
+     "lo": 35
+    },
+    {
+     "label": "ppo",
+     "hi": 34,
+     "lo": 34
+    },
+    {
+     "label": "fc",
+     "hi": 33,
+     "lo": 33
+    },
+    {
+     "label": "llii",
+     "hi": 31,
+     "lo": 31
+    },
+    {
+     "label": "lldwb",
+     "hi": 30,
+     "lo": 30
+    },
+    {
+     "label": "lldi",
+     "hi": 29,
+     "lo": 29
+    },
+    {
+     "label": "llpwb",
+     "hi": 28,
+     "lo": 28
+    },
+    {
+     "label": "llpi",
+     "hi": 27,
+     "lo": 27
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type21a",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff8000000000",
+   "value": "0x000000000000",
+   "fixed_bits": 9,
+   "fields": [],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type21c",
+   "width": 16,
+   "visa": true,
+   "isa": false,
+   "mask": "0xffc100000000",
+   "value": "0x000100000000",
+   "fixed_bits": 11,
+   "fields": [],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type22a",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff8000000000",
+   "value": "0x008000000000",
+   "fixed_bits": 9,
+   "fields": [
+    {
+     "label": "emu",
+     "hi": 38,
+     "lo": 38
+    }
+   ],
+   "source": "prm",
+   "unconfirmed_bits": 9
+  },
+  {
+   "name": "Type22c",
+   "width": 16,
+   "visa": true,
+   "isa": false,
+   "mask": "0xff0100000000",
+   "value": "0x000100000000",
+   "fixed_bits": 9,
+   "fields": [
+    {
+     "label": "emu",
+     "hi": 38,
+     "lo": 38
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type25a_direct",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xffffff000000",
+   "value": "0x180400000000",
+   "fixed_bits": 24,
+   "fields": [
+    {
+     "label": "addr[23:16]",
+     "hi": 23,
+     "lo": 16
+    },
+    {
+     "label": "addr[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type25a_pcrel",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xffffff000000",
+   "value": "0x184400000000",
+   "fixed_bits": 24,
+   "fields": [
+    {
+     "label": "reladdr[23:16]",
+     "hi": 23,
+     "lo": 16
+    },
+    {
+     "label": "reladdr[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "pgr values + prm layout",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type25a_rframe",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xffffff000000",
+   "value": "0x1a0400000000",
+   "fixed_bits": 24,
+   "fields": [],
+   "source": "prm",
+   "unconfirmed_bits": 24
+  },
+  {
+   "name": "Type25c_rframe",
+   "width": 16,
+   "visa": true,
+   "isa": false,
+   "mask": "0xffff00000000",
+   "value": "0x190100000000",
+   "fixed_bits": 16,
+   "fields": [],
+   "source": "pgr (PRM figure is a copy of Type 25a rframe)",
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type26a",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xffff00000000",
+   "value": "0x004000000000",
+   "fixed_bits": 16,
+   "fields": [],
+   "source": "prm",
+   "unconfirmed_bits": 16
+  },
+  {
+   "name": "Type23p_undoc16",
+   "width": 16,
+   "visa": true,
+   "isa": false,
+   "mask": "0xfe0000000000",
+   "value": "0x020000000000",
+   "fixed_bits": 7,
+   "fields": [
+    {
+     "label": "operand[8:0]",
+     "hi": 40,
+     "lo": 32
+    }
+   ],
+   "source": "firmware (undocumented; likely Type23/24; unconfirmed)",
+   "unconfirmed_bits": 7
+  }
+ ],
+ "notes": [
+  "Type2b: fixed-bit values from PRM figure (overrides PGR; firmware-confirmed)",
+  "Type3a: layout and values from PGR",
+  "Type8a: split into Type8a_abs/Type8a_rel -- classic.json keeps these as separate absolute-or-indirect/PC-relative tables; see SPLIT_FORMS",
+  "Type9a: split into Type9a_abs/Type9a_rel -- classic.json keeps these as separate absolute-or-indirect/PC-relative tables; see SPLIT_FORMS",
+  "Type9b: split into Type9b_abs/Type9b_rel -- classic.json keeps these as separate absolute-or-indirect/PC-relative tables; see SPLIT_FORMS",
+  "Type10a: split into Type10a_abs/Type10a_rel -- classic.json keeps these as separate absolute-or-indirect/PC-relative tables; see SPLIT_FORMS",
+  "Type25c_rframe: 16-bit form from PGR",
+  "Type23p_undoc16: provisional, from firmware only (0x023e x329, top-7 0000001 family = 62% of unknowns)"
+ ]
+}

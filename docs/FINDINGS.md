@@ -22,23 +22,26 @@ generation, and three things separate them from 1.15C/1.10E:
 - **A sixth section, id 8**, packed, **103,416 bytes compressed on both
   devices** — byte-for-byte the same compressed length on Digitakt and
   Digitone, which suggests a shared component rather than per-device content.
-  Nothing else is known about it. **[O]**
+  Decompressed, both are the same 159,948 bytes. Nothing else is known about
+  it. **[V][O]**
 - **The bootstrap version bumps, `0x0200` -> `0x0201`.** Section 2's `dest` is
   the version word, and it reads `0x02000000` in 1.15C and 1.10E, `0x02010000`
   in 1.16 and 1.11. So installing either of the newer firmwares performs the
   bootstrap upgrade — the one irreversible operation on the device, and the
   reason `tools/patchimg.py` refuses section 2 outright.
-- **This repo cannot read them.** Every packed section of 1.16 fails to
-  depack. The cause is the oracle, not the new section: the depacker is taken
-  from the UPDATER, and 1.16's UPDATER differs from 1.15C's by **43.4%**
-  (14,231 of 32,776 bytes, first difference at offset `0x9b`), so the entry
-  point at `0x80000432` has moved. The two 2.01 updaters also differ from each
-  other, so the oracle would need re-deriving per device.
+- **The Unicorn depacker cannot read them.** Every packed section of 1.16
+  fails under `emu.extract --oracle`. The cause is the oracle, not the new
+  section: the depacker is taken from the UPDATER, and 1.16's UPDATER differs
+  from 1.15C's by **43.4%** (14,231 of 32,776 bytes, first difference at
+  offset `0x9b`), so the entry point at `0x80000432` has moved. **[V]**
+  `dt2/elz.py`, a byte-level decoder that `emu.extract` now uses by default,
+  reads them. On 1.15C and 1.10E it matches the device routine byte for byte
+  on every packed section; on 1.16 and 1.11 every stream ends exactly at its
+  declared length. **[V]**
 
 Retargeting the machine work to 1.16 is therefore not an address rebase. It
-needs the 2.01 depacker oracle re-derived, a re-extraction, a fresh snapshot
-ladder built by cold boot, a re-import to Ghidra, and every address in "The
-ColdFire machine dispatch" re-derived. **[O]**
+needs a fresh snapshot ladder built by cold boot, a re-import to Ghidra, and
+every address in "The ColdFire machine dispatch" re-derived. **[O]**
 
 ## Container
 
@@ -1286,6 +1289,25 @@ Ghidra or disassembly output and it was not re-checked.
   each starts `02 00 00 00`; row 0 and the tables at `0x800047fc` and
   `0x80003340` stay zero. **[V]** Why pass 0 sends zeros, and what the slot
   words mean, is not known. **[O]**
+
+### SHARC+ instruction tables from the public ADI manuals **[D][O]**
+
+- `tools/sharcspec/` builds the SHARC+ instruction decode table from two
+  public Analog Devices manuals: the bit-layout figures in the SHARC+ Core
+  Programming Reference Rev 1.5, read from the PDF's vector drawings, checked
+  bit by bit against the classic SHARC Processor Programming Reference Rev
+  2.4. The method and the manual errata it found are in
+  `tools/sharcspec/README.md`; the documents are listed in
+  `docs/sharc/SOURCES.md`; the results are in `docs/sharc/SPEC-FINDINGS.md`.
+  It came from Em's separate sharc-spec work. **[D]**
+- On the 1.15C DSP main program (104,848 bytes at `0x28382670`) its decoder
+  leaves 1.1% of words unknown. `tools/sharc_disasm.py` stops at its first
+  unknown word, 4.4% in; forced to continue, it cannot name 9.6%. One cause is
+  traced: our `15b` entry fixes 3 bits where the manual fixes 7, so 1,928
+  words decode as `17b`. **[D]**
+- `docs/sharc/structure-1.16.md` maps the 1.16 DSP program: FreeRTOS tasks, a
+  task proposed as the command dispatcher for the ColdFire, and a command block
+  at `0x82a00000`. These were found on 1.16 and are hypotheses. **[D][O]**
 
 ## Emulation
 
