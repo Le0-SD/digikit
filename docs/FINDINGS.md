@@ -1595,6 +1595,34 @@ Ghidra or disassembly output and it was not re-checked.
   bits, and reproduced the sharc-spec decoder's counts, first unknown and
   last instruction with its own sweep. **[V]** The old decoder's numbers
   come from `tools/sharccompare.py` alone. **[D]**
+- `tools/ghidra/install-sharc.sh` now generates the language from
+  `decode_table.json` with `tools/sharcspec/ghidra/gen_sleigh.py` and
+  installs `SHARC_VISA:LE:32:default`; the generated module equals the copy
+  already installed from the sharc-spec work, except the stack pointer, now
+  I7 as the call convention in `docs/sharc/structure-1.16.md` uses. The old
+  generator and `tools/ghidra/SHARC/` are removed; the installed
+  `Processors/SHARC` stays for the `dt2_SHARC` program in `~/ghidra-projects/dt2`.
+  The code space has wordsize 2, so byte offset `0x382670` shows as
+  short-word address `0x1c1338`. **[D]**
+- `tools/sharc_import.py --seed-calls --analyze` imports section 7 into
+  `~/ghidra-projects/elektron-sharc`:
+
+  | | 1.16 | 1.15C |
+  |---|---|---|
+  | memory blocks (from 104 loader blocks) | 8 | 8 |
+  | call targets seeded (of 546 recovered) | 282 | 285 |
+  | functions after analysis | 347 | 352 |
+  | instructions, all / in the main program | 5,490 / 4,684 | 5,541 / 4,735 |
+  | Error bookmarks | 60 | 63 |
+  | main-program instructions where our decoder starts one of the same length | 4,663 | 4,707 |
+  | ... of a different length | 0 | 0 |
+  | ... where our linear sweep starts none | 21 | 28 |
+
+  The first 12 instructions at the entry match our decoder in form and
+  length. Ghidra reaches about a fifth of the main program's 22,147
+  instructions, so the rest needs more seeds. The Error bookmarks are
+  branches into addresses outside the loaded blocks and undecodable words
+  in the first application at `0x120xxx`. **[D][O]**
 - `docs/sharc/structure-1.16.md` maps the 1.16 DSP program: FreeRTOS tasks, a
   task proposed as the command dispatcher for the ColdFire, and a command block
   at `0x82a00000`. These were found on 1.16 and are hypotheses. **[D][O]**
