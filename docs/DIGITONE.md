@@ -1,7 +1,8 @@
 # Digitone II 1.10E — handover
 
-Status: **Main OS executing and rendering.** The validated SR-only Unicorn
-2.1.4 patch is required; stock Unicorn's destructive SR read prevents this
+Status: **Main OS executing and rendering.** The patched Unicorn 2.1.4 is
+required (two patches: CCR sync and EMAC MAC/MSAC with load; see
+`docs/UNICORN.md`); stock Unicorn's destructive SR read prevents this
 path. This is deliberately conservative, not a claim of full
 hardware-equivalent boot. See [UNICORN.md](UNICORN.md). Timer-stepped execution
 permits deadline boundaries only; arbitrary cap boundaries are unsupported.

@@ -1,0 +1,4 @@
+# Motorola's Coldfire processor, with complete EMAC decoding (68000_emac.sinc)
+@define COLDFIRE ""
+@define MC68040 ""
+@include "68000_emac.sinc"

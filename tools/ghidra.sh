@@ -12,6 +12,11 @@
 #   tools/ghidra.sh import                 # one-time, ~3 min for the 3.1MB image
 #   tools/ghidra.sh run MyScript.java [args...]
 #
+# GHIDRA_FOLDER=dt2-1.16 puts the program in that project folder, so several
+# images named section_3_MAIN_OS.bin fit in one project; `run` then processes
+# the program in that folder. tools/ghidracopy.py copies a program between
+# projects.
+#
 # Scripts go in tools/ghidra/ and must be Java: this Ghidra is built without
 # PyGhidra, so .py scripts fail with "Python is not available".
 set -e
@@ -22,10 +27,14 @@ GHIDRA=${GHIDRA:-/opt/homebrew/Cellar/ghidra/12.1.3/libexec/support/analyzeHeadl
 # and `run` died on it, `run` quietly enough that it looked like the scripts
 # were returning no results.
 PROJ=${GHIDRA_PROJ:-$HOME/ghidra-projects/dt2}
-NAME=dt2
-IMG=sections/section_3_MAIN_OS.bin
+NAME=${GHIDRA_NAME:-dt2}
+IMG=${GHIDRA_IMG:-sections/section_3_MAIN_OS.bin}
 BASE=0x40000400            # dspboot.MAIN_LOAD
-LANG=68000:BE:32:Coldfire  # NOT plain 68000: MVS/MVZ and FF1 decode wrong
+# NOT plain 68000: MVS/MVZ and FF1 decode wrong. GHIDRA_LANG=68000:BE:32:ColdfireEMAC
+# (tools/ghidra/install-coldfire-emac.sh) also decodes the EMAC instructions.
+LANG=${GHIDRA_LANG:-68000:BE:32:Coldfire}
+# analyzeHeadless takes the project folder after the project name.
+TARGET=$NAME${GHIDRA_FOLDER:+/$GHIDRA_FOLDER}
 
 [ -x "$GHIDRA" ] || { echo "no analyzeHeadless at $GHIDRA (set GHIDRA=)" >&2; exit 1; }
 
@@ -33,15 +42,15 @@ case "$1" in
 import)
     [ -f "$IMG" ] || { echo "missing $IMG -- extract sections first" >&2; exit 1; }
     mkdir -p "$PROJ"
-    exec "$GHIDRA" "$PROJ" "$NAME" -import "$IMG" \
+    exec "$GHIDRA" "$PROJ" "$TARGET" -import "$IMG" \
          -processor "$LANG" -loader BinaryLoader -loader-baseAddr "$BASE"
     ;;
 run)
     shift
     script=$1; shift
-    exec "$GHIDRA" "$PROJ" "$NAME" -process "$(basename $IMG)" -noanalysis \
+    exec "$GHIDRA" "$PROJ" "$TARGET" -process "$(basename $IMG)" -noanalysis \
          -scriptPath "$(cd "$(dirname "$0")/ghidra" && pwd)" -postScript "$script" "$@"
     ;;
 *)
-    sed -n '2,20p' "$0"; exit 1;;
+    sed -n '2,21p' "$0"; exit 1;;
 esac

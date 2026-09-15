@@ -1,0 +1,3690 @@
+{
+ "Type 1a": {
+  "page": 447,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "001xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "001"
+   },
+   {
+    "bits": [
+     44,
+     44
+    ],
+    "kind": "field",
+    "text": "DMD"
+   },
+   {
+    "bits": [
+     43,
+     41
+    ],
+    "kind": "field",
+    "text": "DMI"
+   },
+   {
+    "bits": [
+     40,
+     38
+    ],
+    "kind": "field",
+    "text": "DMM"
+   },
+   {
+    "bits": [
+     37,
+     37
+    ],
+    "kind": "field",
+    "text": "PMD"
+   },
+   {
+    "bits": [
+     36,
+     33
+    ],
+    "kind": "field",
+    "text": "DM DREG"
+   },
+   {
+    "bits": [
+     32,
+     30
+    ],
+    "kind": "field",
+    "text": "PMI"
+   },
+   {
+    "bits": [
+     29,
+     27
+    ],
+    "kind": "field",
+    "text": "PMM"
+   },
+   {
+    "bits": [
+     26,
+     23
+    ],
+    "kind": "field",
+    "text": "PM DREG"
+   },
+   {
+    "bits": [
+     22,
+     0
+    ],
+    "kind": "field",
+    "text": "COMPUTE"
+   }
+  ]
+ },
+ "Type 1b": {
+  "page": 447,
+  "msb": 47,
+  "lsb": 16,
+  "pattern": "001xxxxxxxxxxxxxxxxxxxxxx0111111",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "001"
+   },
+   {
+    "bits": [
+     44,
+     44
+    ],
+    "kind": "field",
+    "text": "DMD"
+   },
+   {
+    "bits": [
+     43,
+     41
+    ],
+    "kind": "field",
+    "text": "DMI"
+   },
+   {
+    "bits": [
+     40,
+     38
+    ],
+    "kind": "field",
+    "text": "DMM"
+   },
+   {
+    "bits": [
+     37,
+     37
+    ],
+    "kind": "field",
+    "text": "PMD"
+   },
+   {
+    "bits": [
+     36,
+     33
+    ],
+    "kind": "field",
+    "text": "DM DREG"
+   },
+   {
+    "bits": [
+     32,
+     30
+    ],
+    "kind": "field",
+    "text": "PMI"
+   },
+   {
+    "bits": [
+     29,
+     27
+    ],
+    "kind": "field",
+    "text": "PMM"
+   },
+   {
+    "bits": [
+     26,
+     23
+    ],
+    "kind": "field",
+    "text": "PM DREG"
+   },
+   {
+    "bits": [
+     22,
+     16
+    ],
+    "kind": "fixed",
+    "text": "0111111"
+   }
+  ]
+ },
+ "Type 2a": {
+  "page": 448,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "00000001..xxxxx..........xxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "00001"
+   },
+   {
+    "bits": [
+     39,
+     38
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     23
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     22,
+     0
+    ],
+    "kind": "field",
+    "text": "COMPUTE"
+   }
+  ]
+ },
+ "Type 2b": {
+  "page": 448,
+  "msb": 47,
+  "lsb": 16,
+  "pattern": "000000011xxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "00001"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "fixed",
+    "text": "1"
+   },
+   {
+    "bits": [
+     38,
+     16
+    ],
+    "kind": "field",
+    "text": "COMPUTE"
+   }
+  ]
+ },
+ "Type 2c": {
+  "page": 448,
+  "msb": 47,
+  "lsb": 32,
+  "pattern": "1100xxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     44
+    ],
+    "kind": "fixed",
+    "text": "1100"
+   },
+   {
+    "bits": [
+     43,
+     32
+    ],
+    "kind": "field",
+    "text": "SHORT COMPUTE"
+   }
+  ]
+ },
+ "Type 3a": {
+  "page": 449,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "010xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "010"
+   },
+   {
+    "bits": [
+     44,
+     44
+    ],
+    "kind": "field",
+    "text": "U"
+   },
+   {
+    "bits": [
+     43,
+     41
+    ],
+    "kind": "field",
+    "text": "I"
+   },
+   {
+    "bits": [
+     40,
+     38
+    ],
+    "kind": "field",
+    "text": "M"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     32
+    ],
+    "kind": "field",
+    "text": "G"
+   },
+   {
+    "bits": [
+     31,
+     31
+    ],
+    "kind": "field",
+    "text": "D"
+   },
+   {
+    "bits": [
+     30,
+     30
+    ],
+    "kind": "field",
+    "text": "L"
+   },
+   {
+    "bits": [
+     29,
+     23
+    ],
+    "kind": "field",
+    "text": "UREG"
+   },
+   {
+    "bits": [
+     22,
+     0
+    ],
+    "kind": "field",
+    "text": "COMPUTE"
+   }
+  ]
+ },
+ "Type 3b": {
+  "page": 449,
+  "msb": 47,
+  "lsb": 16,
+  "pattern": "010xxxxxxxxxxxxxxxxxxxxxx0111111",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "010"
+   },
+   {
+    "bits": [
+     44,
+     44
+    ],
+    "kind": "field",
+    "text": "U"
+   },
+   {
+    "bits": [
+     43,
+     41
+    ],
+    "kind": "field",
+    "text": "I"
+   },
+   {
+    "bits": [
+     40,
+     38
+    ],
+    "kind": "field",
+    "text": "M"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     32
+    ],
+    "kind": "field",
+    "text": "G"
+   },
+   {
+    "bits": [
+     31,
+     31
+    ],
+    "kind": "field",
+    "text": "D"
+   },
+   {
+    "bits": [
+     30,
+     30
+    ],
+    "kind": "field",
+    "text": "L"
+   },
+   {
+    "bits": [
+     29,
+     23
+    ],
+    "kind": "field",
+    "text": "UREG"
+   },
+   {
+    "bits": [
+     22,
+     16
+    ],
+    "kind": "fixed",
+    "text": "0111111"
+   }
+  ]
+ },
+ "Type 3c": {
+  "page": 449,
+  "msb": 47,
+  "lsb": 32,
+  "pattern": "1001xxxxxxx1xxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     44
+    ],
+    "kind": "fixed",
+    "text": "1001"
+   },
+   {
+    "bits": [
+     43,
+     41
+    ],
+    "kind": "field",
+    "text": "DMI"
+   },
+   {
+    "bits": [
+     40,
+     38
+    ],
+    "kind": "field",
+    "text": "DMM"
+   },
+   {
+    "bits": [
+     37,
+     37
+    ],
+    "kind": "field",
+    "text": "D"
+   },
+   {
+    "bits": [
+     36,
+     36
+    ],
+    "kind": "fixed",
+    "text": "1"
+   },
+   {
+    "bits": [
+     35,
+     32
+    ],
+    "kind": "field",
+    "text": "DREG"
+   }
+  ]
+ },
+ "Type 4a": {
+  "page": 450,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "0110xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "011"
+   },
+   {
+    "bits": [
+     44,
+     44
+    ],
+    "kind": "fixed",
+    "text": "0"
+   },
+   {
+    "bits": [
+     43,
+     41
+    ],
+    "kind": "field",
+    "text": "I"
+   },
+   {
+    "bits": [
+     40,
+     40
+    ],
+    "kind": "field",
+    "text": "G"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "field",
+    "text": "D"
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "field",
+    "text": "U"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     27
+    ],
+    "kind": "field",
+    "text": "DATA"
+   },
+   {
+    "bits": [
+     26,
+     23
+    ],
+    "kind": "field",
+    "text": "DREG"
+   },
+   {
+    "bits": [
+     22,
+     0
+    ],
+    "kind": "field",
+    "text": "COMPUTE"
+   }
+  ]
+ },
+ "Type 4b": {
+  "page": 450,
+  "msb": 47,
+  "lsb": 16,
+  "pattern": "0110xxxxxxxxxxxxxxxxxxxxx0111111",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "011"
+   },
+   {
+    "bits": [
+     44,
+     44
+    ],
+    "kind": "fixed",
+    "text": "0"
+   },
+   {
+    "bits": [
+     43,
+     41
+    ],
+    "kind": "field",
+    "text": "I"
+   },
+   {
+    "bits": [
+     40,
+     40
+    ],
+    "kind": "field",
+    "text": "G"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "field",
+    "text": "D"
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "field",
+    "text": "U"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     27
+    ],
+    "kind": "field",
+    "text": "DATA"
+   },
+   {
+    "bits": [
+     26,
+     23
+    ],
+    "kind": "field",
+    "text": "DREG"
+   },
+   {
+    "bits": [
+     22,
+     16
+    ],
+    "kind": "fixed",
+    "text": "0111111"
+   }
+  ]
+ },
+ "Type 5a": {
+  "page": 451,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "01110xxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "011"
+   },
+   {
+    "bits": [
+     44,
+     44
+    ],
+    "kind": "fixed",
+    "text": "1"
+   },
+   {
+    "bits": [
+     43,
+     43
+    ],
+    "kind": "fixed",
+    "text": "0"
+   },
+   {
+    "bits": [
+     42,
+     38
+    ],
+    "kind": "field",
+    "text": "SRC UREG HIGH"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     31
+    ],
+    "kind": "field",
+    "text": "SRC UREG LOW"
+   },
+   {
+    "bits": [
+     30,
+     30
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     29,
+     23
+    ],
+    "kind": "field",
+    "text": "DEST UREG"
+   },
+   {
+    "bits": [
+     22,
+     0
+    ],
+    "kind": "field",
+    "text": "COMPUTE"
+   }
+  ]
+ },
+ "Type 5a #2": {
+  "page": 451,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "01111.xxxxxxxxx......xxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "011"
+   },
+   {
+    "bits": [
+     44,
+     44
+    ],
+    "kind": "fixed",
+    "text": "1"
+   },
+   {
+    "bits": [
+     43,
+     43
+    ],
+    "kind": "fixed",
+    "text": "1"
+   },
+   {
+    "bits": [
+     42,
+     42
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     41,
+     38
+    ],
+    "kind": "field",
+    "text": "CDREG"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     27
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     26,
+     23
+    ],
+    "kind": "field",
+    "text": "DREG"
+   },
+   {
+    "bits": [
+     22,
+     0
+    ],
+    "kind": "field",
+    "text": "COMPUTE"
+   }
+  ]
+ },
+ "Type 5b": {
+  "page": 452,
+  "msb": 47,
+  "lsb": 16,
+  "pattern": "01110xxxxxxxxxxxx.xxxxxxx0111111",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "011"
+   },
+   {
+    "bits": [
+     44,
+     44
+    ],
+    "kind": "fixed",
+    "text": "1"
+   },
+   {
+    "bits": [
+     43,
+     43
+    ],
+    "kind": "fixed",
+    "text": "0"
+   },
+   {
+    "bits": [
+     42,
+     38
+    ],
+    "kind": "field",
+    "text": "SRC UREG HIGH"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     31
+    ],
+    "kind": "field",
+    "text": "SRC UREG LOW"
+   },
+   {
+    "bits": [
+     30,
+     30
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     29,
+     23
+    ],
+    "kind": "field",
+    "text": "DEST UREG"
+   },
+   {
+    "bits": [
+     22,
+     16
+    ],
+    "kind": "fixed",
+    "text": "0111111"
+   }
+  ]
+ },
+ "Type 5b #2": {
+  "page": 452,
+  "msb": 47,
+  "lsb": 16,
+  "pattern": "01111.xxxxxxxxx......xxxx0111111",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "011"
+   },
+   {
+    "bits": [
+     44,
+     44
+    ],
+    "kind": "fixed",
+    "text": "1"
+   },
+   {
+    "bits": [
+     43,
+     43
+    ],
+    "kind": "fixed",
+    "text": "1"
+   },
+   {
+    "bits": [
+     42,
+     42
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     41,
+     38
+    ],
+    "kind": "field",
+    "text": "CDREG"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     27
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     26,
+     23
+    ],
+    "kind": "field",
+    "text": "DREG"
+   },
+   {
+    "bits": [
+     22,
+     16
+    ],
+    "kind": "fixed",
+    "text": "0111111"
+   }
+  ]
+ },
+ "Type 6a": {
+  "page": 453,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "1000xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "100"
+   },
+   {
+    "bits": [
+     44,
+     44
+    ],
+    "kind": "fixed",
+    "text": "0"
+   },
+   {
+    "bits": [
+     43,
+     41
+    ],
+    "kind": "field",
+    "text": "I"
+   },
+   {
+    "bits": [
+     40,
+     38
+    ],
+    "kind": "field",
+    "text": "M"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     32
+    ],
+    "kind": "field",
+    "text": "G"
+   },
+   {
+    "bits": [
+     31,
+     31
+    ],
+    "kind": "field",
+    "text": "D"
+   },
+   {
+    "bits": [
+     30,
+     27
+    ],
+    "kind": "field",
+    "text": "DATAEX"
+   },
+   {
+    "bits": [
+     26,
+     23
+    ],
+    "kind": "field",
+    "text": "DREG"
+   },
+   {
+    "bits": [
+     22,
+     0
+    ],
+    "kind": "field",
+    "text": "SHIFTIM"
+   }
+  ]
+ },
+ "Type 6a #2": {
+  "page": 453,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "1000xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "100"
+   },
+   {
+    "bits": [
+     44,
+     44
+    ],
+    "kind": "fixed",
+    "text": "0"
+   },
+   {
+    "bits": [
+     43,
+     41
+    ],
+    "kind": "field",
+    "text": "I"
+   },
+   {
+    "bits": [
+     40,
+     38
+    ],
+    "kind": "field",
+    "text": "M"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     32
+    ],
+    "kind": "field",
+    "text": "G"
+   },
+   {
+    "bits": [
+     31,
+     31
+    ],
+    "kind": "field",
+    "text": "D"
+   },
+   {
+    "bits": [
+     30,
+     27
+    ],
+    "kind": "field",
+    "text": "DATAEX"
+   },
+   {
+    "bits": [
+     26,
+     23
+    ],
+    "kind": "field",
+    "text": "DREG"
+   },
+   {
+    "bits": [
+     22,
+     0
+    ],
+    "kind": "field",
+    "text": "SHIFTIM"
+   }
+  ]
+ },
+ "Type 7a": {
+  "page": 454,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "00000100.xxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "00100"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "field",
+    "text": "G"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     30
+    ],
+    "kind": "field",
+    "text": "Is"
+   },
+   {
+    "bits": [
+     29,
+     27
+    ],
+    "kind": "field",
+    "text": "M"
+   },
+   {
+    "bits": [
+     26,
+     24
+    ],
+    "kind": "field",
+    "text": "Id\uf0c5Is"
+   },
+   {
+    "bits": [
+     23,
+     23
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     22,
+     0
+    ],
+    "kind": "field",
+    "text": "COMPUTE"
+   }
+  ]
+ },
+ "Type 7b": {
+  "page": 454,
+  "msb": 47,
+  "lsb": 16,
+  "pattern": "00000100.xxxxxxxxxxxxxxx.0111111",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "00100"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "field",
+    "text": "G"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     30
+    ],
+    "kind": "field",
+    "text": "Is"
+   },
+   {
+    "bits": [
+     29,
+     27
+    ],
+    "kind": "field",
+    "text": "M"
+   },
+   {
+    "bits": [
+     26,
+     24
+    ],
+    "kind": "field",
+    "text": "Id\uf0c5Is"
+   },
+   {
+    "bits": [
+     23,
+     23
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     22,
+     16
+    ],
+    "kind": "fixed",
+    "text": "0111111"
+   }
+  ]
+ },
+ "Type 8a": {
+  "page": 455,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "00000110xxxxxxx......x.xxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "00110"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "field",
+    "text": "B"
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "field",
+    "text": "A"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     27
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     26,
+     26
+    ],
+    "kind": "field",
+    "text": "J"
+   },
+   {
+    "bits": [
+     25,
+     25
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     24,
+     24
+    ],
+    "kind": "field",
+    "text": "CI"
+   },
+   {
+    "bits": [
+     23,
+     0
+    ],
+    "kind": "field",
+    "text": "ADDR"
+   }
+  ]
+ },
+ "Type 8a #2": {
+  "page": 455,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "00000111xxxxxxx......x.xxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "00111"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "field",
+    "text": "B"
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "field",
+    "text": "A"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     27
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     26,
+     26
+    ],
+    "kind": "field",
+    "text": "J"
+   },
+   {
+    "bits": [
+     25,
+     25
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     24,
+     24
+    ],
+    "kind": "field",
+    "text": "CI"
+   },
+   {
+    "bits": [
+     23,
+     0
+    ],
+    "kind": "field",
+    "text": "RELADDR"
+   }
+  ]
+ },
+ "Type 9a": {
+  "page": 456,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "00001000xxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "01000"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "field",
+    "text": "B"
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "field",
+    "text": "A"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     30
+    ],
+    "kind": "field",
+    "text": "PMI"
+   },
+   {
+    "bits": [
+     29,
+     27
+    ],
+    "kind": "field",
+    "text": "PMM"
+   },
+   {
+    "bits": [
+     26,
+     26
+    ],
+    "kind": "field",
+    "text": "J"
+   },
+   {
+    "bits": [
+     25,
+     25
+    ],
+    "kind": "field",
+    "text": "E"
+   },
+   {
+    "bits": [
+     24,
+     24
+    ],
+    "kind": "field",
+    "text": "CI"
+   },
+   {
+    "bits": [
+     23,
+     23
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     22,
+     0
+    ],
+    "kind": "field",
+    "text": "COMPUTE"
+   }
+  ]
+ },
+ "Type 9a #2": {
+  "page": 456,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "00001001xxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "01001"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "field",
+    "text": "B"
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "field",
+    "text": "A"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     27
+    ],
+    "kind": "field",
+    "text": "RELADDR"
+   },
+   {
+    "bits": [
+     26,
+     26
+    ],
+    "kind": "field",
+    "text": "J"
+   },
+   {
+    "bits": [
+     25,
+     25
+    ],
+    "kind": "field",
+    "text": "E"
+   },
+   {
+    "bits": [
+     24,
+     24
+    ],
+    "kind": "field",
+    "text": "CI"
+   },
+   {
+    "bits": [
+     23,
+     23
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     22,
+     0
+    ],
+    "kind": "field",
+    "text": "COMPUTE"
+   }
+  ]
+ },
+ "Type 9b": {
+  "page": 457,
+  "msb": 47,
+  "lsb": 16,
+  "pattern": "00001000xxxxxxxxxxxxxx.x.0111111",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "01000"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "field",
+    "text": "B"
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "field",
+    "text": "A"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     30
+    ],
+    "kind": "field",
+    "text": "PMI"
+   },
+   {
+    "bits": [
+     29,
+     27
+    ],
+    "kind": "field",
+    "text": "PMM"
+   },
+   {
+    "bits": [
+     26,
+     26
+    ],
+    "kind": "field",
+    "text": "J"
+   },
+   {
+    "bits": [
+     25,
+     25
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     24,
+     24
+    ],
+    "kind": "field",
+    "text": "CI"
+   },
+   {
+    "bits": [
+     23,
+     23
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     22,
+     16
+    ],
+    "kind": "fixed",
+    "text": "0111111"
+   }
+  ]
+ },
+ "Type 9b #2": {
+  "page": 457,
+  "msb": 47,
+  "lsb": 16,
+  "pattern": "00001001xxxxxxxxxxxxxx.x.0111111",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "01001"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "field",
+    "text": "B"
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "field",
+    "text": "A"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     27
+    ],
+    "kind": "field",
+    "text": "RELADDR"
+   },
+   {
+    "bits": [
+     26,
+     26
+    ],
+    "kind": "field",
+    "text": "J"
+   },
+   {
+    "bits": [
+     25,
+     25
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     24,
+     24
+    ],
+    "kind": "field",
+    "text": "CI"
+   },
+   {
+    "bits": [
+     23,
+     23
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     22,
+     16
+    ],
+    "kind": "fixed",
+    "text": "0111111"
+   }
+  ]
+ },
+ "Type 10a": {
+  "page": 458,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "110xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "110"
+   },
+   {
+    "bits": [
+     44,
+     44
+    ],
+    "kind": "field",
+    "text": "D"
+   },
+   {
+    "bits": [
+     43,
+     41
+    ],
+    "kind": "field",
+    "text": "DMI"
+   },
+   {
+    "bits": [
+     40,
+     38
+    ],
+    "kind": "field",
+    "text": "DMM"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     30
+    ],
+    "kind": "field",
+    "text": "PMI"
+   },
+   {
+    "bits": [
+     29,
+     27
+    ],
+    "kind": "field",
+    "text": "PMM"
+   },
+   {
+    "bits": [
+     26,
+     23
+    ],
+    "kind": "field",
+    "text": "DREG"
+   },
+   {
+    "bits": [
+     22,
+     0
+    ],
+    "kind": "field",
+    "text": "COMPUTE"
+   }
+  ]
+ },
+ "Type 10a #2": {
+  "page": 458,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "111xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "111"
+   },
+   {
+    "bits": [
+     44,
+     44
+    ],
+    "kind": "field",
+    "text": "D"
+   },
+   {
+    "bits": [
+     43,
+     41
+    ],
+    "kind": "field",
+    "text": "DMI"
+   },
+   {
+    "bits": [
+     40,
+     38
+    ],
+    "kind": "field",
+    "text": "DMM"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     27
+    ],
+    "kind": "field",
+    "text": "RELADDR"
+   },
+   {
+    "bits": [
+     26,
+     23
+    ],
+    "kind": "field",
+    "text": "DREG"
+   },
+   {
+    "bits": [
+     22,
+     0
+    ],
+    "kind": "field",
+    "text": "COMPUTE"
+   }
+  ]
+ },
+ "Type 11a": {
+  "page": 459,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "00001010..xxxxx......xxx.xxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "01010"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     27
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     26,
+     26
+    ],
+    "kind": "field",
+    "text": "J"
+   },
+   {
+    "bits": [
+     25,
+     25
+    ],
+    "kind": "field",
+    "text": "E"
+   },
+   {
+    "bits": [
+     24,
+     24
+    ],
+    "kind": "field",
+    "text": "LR"
+   },
+   {
+    "bits": [
+     23,
+     23
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     22,
+     0
+    ],
+    "kind": "field",
+    "text": "COMPUTE"
+   }
+  ]
+ },
+ "Type 11a #2": {
+  "page": 459,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "00001011..xxxxx......xx..xxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "01011"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     27
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     26,
+     26
+    ],
+    "kind": "field",
+    "text": "J"
+   },
+   {
+    "bits": [
+     25,
+     25
+    ],
+    "kind": "field",
+    "text": "E"
+   },
+   {
+    "bits": [
+     24,
+     24
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     23,
+     23
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     22,
+     0
+    ],
+    "kind": "field",
+    "text": "COMPUTE"
+   }
+  ]
+ },
+ "Type 11c": {
+  "page": 460,
+  "msb": 47,
+  "lsb": 32,
+  "pattern": "000010101xxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "01010"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "fixed",
+    "text": "1"
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "field",
+    "text": "J"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     32
+    ],
+    "kind": "field",
+    "text": "LR"
+   }
+  ]
+ },
+ "Type 11c #2": {
+  "page": 460,
+  "msb": 47,
+  "lsb": 32,
+  "pattern": "000010111xxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "01011"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "fixed",
+    "text": "1"
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "field",
+    "text": "J"
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "COND"
+   },
+   {
+    "bits": [
+     32,
+     32
+    ],
+    "kind": "field",
+    "text": "LR"
+   }
+  ]
+ },
+ "Type 12a": {
+  "page": 460,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "00001100xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "01100"
+   },
+   {
+    "bits": [
+     39,
+     24
+    ],
+    "kind": "field",
+    "text": "DATA"
+   },
+   {
+    "bits": [
+     23,
+     0
+    ],
+    "kind": "field",
+    "text": "RELADDR"
+   }
+  ]
+ },
+ "Type 13a": {
+  "page": 461,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "00001110..xxxxx.........xxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "01110"
+   },
+   {
+    "bits": [
+     39,
+     38
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     37,
+     33
+    ],
+    "kind": "field",
+    "text": "TERM"
+   },
+   {
+    "bits": [
+     32,
+     24
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     23,
+     0
+    ],
+    "kind": "field",
+    "text": "RELADDR"
+   }
+  ]
+ },
+ "Type 14a": {
+  "page": 462,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "000100xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     42
+    ],
+    "kind": "fixed",
+    "text": "100"
+   },
+   {
+    "bits": [
+     41,
+     41
+    ],
+    "kind": "field",
+    "text": "G"
+   },
+   {
+    "bits": [
+     40,
+     40
+    ],
+    "kind": "field",
+    "text": "D"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "field",
+    "text": "L"
+   },
+   {
+    "bits": [
+     38,
+     32
+    ],
+    "kind": "field",
+    "text": "UREG"
+   },
+   {
+    "bits": [
+     31,
+     24
+    ],
+    "kind": "field",
+    "text": "ADDR (upper 8 bits)"
+   },
+   {
+    "bits": [
+     23,
+     0
+    ],
+    "kind": "field",
+    "text": "ADDR (lower 24 bits)"
+   }
+  ]
+ },
+ "Type 15a": {
+  "page": 463,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "101xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "101"
+   },
+   {
+    "bits": [
+     44,
+     44
+    ],
+    "kind": "field",
+    "text": "G"
+   },
+   {
+    "bits": [
+     43,
+     41
+    ],
+    "kind": "field",
+    "text": "I"
+   },
+   {
+    "bits": [
+     40,
+     40
+    ],
+    "kind": "field",
+    "text": "D"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "field",
+    "text": "L"
+   },
+   {
+    "bits": [
+     38,
+     32
+    ],
+    "kind": "field",
+    "text": "UREG"
+   },
+   {
+    "bits": [
+     31,
+     24
+    ],
+    "kind": "field",
+    "text": "DATA (upper 8 bits)"
+   },
+   {
+    "bits": [
+     23,
+     0
+    ],
+    "kind": "field",
+    "text": "DATA (lower 24 bits)"
+   }
+  ]
+ },
+ "Type 15b": {
+  "page": 463,
+  "msb": 47,
+  "lsb": 16,
+  "pattern": "1001xxxxx.x010....xxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     44
+    ],
+    "kind": "fixed",
+    "text": "1001"
+   },
+   {
+    "bits": [
+     43,
+     41
+    ],
+    "kind": "field",
+    "text": "I"
+   },
+   {
+    "bits": [
+     40,
+     40
+    ],
+    "kind": "field",
+    "text": "D"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "field",
+    "text": "L"
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     37,
+     37
+    ],
+    "kind": "field",
+    "text": "G"
+   },
+   {
+    "bits": [
+     36,
+     34
+    ],
+    "kind": "fixed",
+    "text": "010"
+   },
+   {
+    "bits": [
+     33,
+     30
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     29,
+     23
+    ],
+    "kind": "field",
+    "text": "UREG"
+   },
+   {
+    "bits": [
+     22,
+     16
+    ],
+    "kind": "field",
+    "text": "DATA"
+   }
+  ]
+ },
+ "Type 16a": {
+  "page": 464,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "1001xxxxxxx.....xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "100"
+   },
+   {
+    "bits": [
+     44,
+     44
+    ],
+    "kind": "fixed",
+    "text": "1"
+   },
+   {
+    "bits": [
+     43,
+     41
+    ],
+    "kind": "field",
+    "text": "I"
+   },
+   {
+    "bits": [
+     40,
+     38
+    ],
+    "kind": "field",
+    "text": "M"
+   },
+   {
+    "bits": [
+     37,
+     37
+    ],
+    "kind": "field",
+    "text": "G"
+   },
+   {
+    "bits": [
+     36,
+     32
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     31,
+     24
+    ],
+    "kind": "field",
+    "text": "DATA (upper 8 bits)"
+   },
+   {
+    "bits": [
+     23,
+     0
+    ],
+    "kind": "field",
+    "text": "DATA (lower 24 bits)"
+   }
+  ]
+ },
+ "Type 16b": {
+  "page": 464,
+  "msb": 47,
+  "lsb": 16,
+  "pattern": "1001xxxxxxx001..xxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     44
+    ],
+    "kind": "fixed",
+    "text": "1001"
+   },
+   {
+    "bits": [
+     43,
+     41
+    ],
+    "kind": "field",
+    "text": "I"
+   },
+   {
+    "bits": [
+     40,
+     38
+    ],
+    "kind": "field",
+    "text": "M"
+   },
+   {
+    "bits": [
+     37,
+     37
+    ],
+    "kind": "field",
+    "text": "G"
+   },
+   {
+    "bits": [
+     36,
+     34
+    ],
+    "kind": "fixed",
+    "text": "001"
+   },
+   {
+    "bits": [
+     33,
+     33
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     32,
+     32
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     31,
+     16
+    ],
+    "kind": "field",
+    "text": "DATA"
+   }
+  ]
+ },
+ "Type 17a": {
+  "page": 465,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "000011110xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "01111"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "fixed",
+    "text": "0"
+   },
+   {
+    "bits": [
+     38,
+     32
+    ],
+    "kind": "field",
+    "text": "UREG"
+   },
+   {
+    "bits": [
+     31,
+     24
+    ],
+    "kind": "field",
+    "text": "DATA (upper 8 bits)"
+   },
+   {
+    "bits": [
+     23,
+     0
+    ],
+    "kind": "field",
+    "text": "DATA (lower 24 bits)"
+   }
+  ]
+ },
+ "Type 17b": {
+  "page": 465,
+  "msb": 47,
+  "lsb": 16,
+  "pattern": "000011111xxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "01111"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "fixed",
+    "text": "1"
+   },
+   {
+    "bits": [
+     38,
+     32
+    ],
+    "kind": "field",
+    "text": "UREG"
+   },
+   {
+    "bits": [
+     31,
+     16
+    ],
+    "kind": "field",
+    "text": "DATA"
+   }
+  ]
+ },
+ "Type 18a": {
+  "page": 466,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "00010100xxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "10100"
+   },
+   {
+    "bits": [
+     39,
+     37
+    ],
+    "kind": "field",
+    "text": "BOP"
+   },
+   {
+    "bits": [
+     36,
+     36
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     35,
+     32
+    ],
+    "kind": "field",
+    "text": "SREG"
+   },
+   {
+    "bits": [
+     31,
+     24
+    ],
+    "kind": "field",
+    "text": "DATA (upper 8 bits)"
+   },
+   {
+    "bits": [
+     23,
+     0
+    ],
+    "kind": "field",
+    "text": "DATA (lower 24 bits)"
+   }
+  ]
+ },
+ "Type 19a": {
+  "page": 467,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "000101100xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "10110"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "fixed",
+    "text": "0"
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "field",
+    "text": "G"
+   },
+   {
+    "bits": [
+     37,
+     35
+    ],
+    "kind": "field",
+    "text": "Id\uf0c5Is"
+   },
+   {
+    "bits": [
+     34,
+     32
+    ],
+    "kind": "field",
+    "text": "Is"
+   },
+   {
+    "bits": [
+     31,
+     24
+    ],
+    "kind": "field",
+    "text": "DATA (upper 8 bits)"
+   },
+   {
+    "bits": [
+     23,
+     0
+    ],
+    "kind": "field",
+    "text": "DATA (lower 24 bits)"
+   }
+  ]
+ },
+ "Type 19a #2": {
+  "page": 467,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "000101101xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "10110"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "fixed",
+    "text": "1"
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "field",
+    "text": "G"
+   },
+   {
+    "bits": [
+     37,
+     35
+    ],
+    "kind": "field",
+    "text": "Id\uf0c5Is"
+   },
+   {
+    "bits": [
+     34,
+     32
+    ],
+    "kind": "field",
+    "text": "Is"
+   },
+   {
+    "bits": [
+     31,
+     24
+    ],
+    "kind": "field",
+    "text": "DATA (upper 8 bits)"
+   },
+   {
+    "bits": [
+     23,
+     0
+    ],
+    "kind": "field",
+    "text": "DATA (lower 24 bits)"
+   }
+  ]
+ },
+ "Type 20a": {
+  "page": 468,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "00010111xxxxxxx.................................",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "10111"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "field",
+    "text": "LPU"
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "field",
+    "text": "LPO"
+   },
+   {
+    "bits": [
+     37,
+     37
+    ],
+    "kind": "field",
+    "text": "SPU"
+   },
+   {
+    "bits": [
+     36,
+     36
+    ],
+    "kind": "field",
+    "text": "SPO"
+   },
+   {
+    "bits": [
+     35,
+     35
+    ],
+    "kind": "field",
+    "text": "PPU"
+   },
+   {
+    "bits": [
+     34,
+     34
+    ],
+    "kind": "field",
+    "text": "PPO"
+   },
+   {
+    "bits": [
+     33,
+     33
+    ],
+    "kind": "field",
+    "text": "FC"
+   },
+   {
+    "bits": [
+     32,
+     32
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     31,
+     24
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     23,
+     0
+    ],
+    "kind": "blank",
+    "text": ""
+   }
+  ]
+ },
+ "Type 21a": {
+  "page": 468,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "000000000.......................................",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "00000"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "fixed",
+    "text": "0"
+   },
+   {
+    "bits": [
+     38,
+     24
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     23,
+     0
+    ],
+    "kind": "blank",
+    "text": ""
+   }
+  ]
+ },
+ "Type 21c": {
+  "page": 468,
+  "msb": 47,
+  "lsb": 32,
+  "pattern": "0000000000.....1",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "00000"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "fixed",
+    "text": "0"
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "fixed",
+    "text": "0"
+   },
+   {
+    "bits": [
+     37,
+     37
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     36,
+     36
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     35,
+     35
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     34,
+     34
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     33,
+     33
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     32,
+     32
+    ],
+    "kind": "fixed",
+    "text": "1"
+   }
+  ]
+ },
+ "Type 22c": {
+  "page": 469,
+  "msb": 47,
+  "lsb": 32,
+  "pattern": "00000000xx.....1",
+  "cells": [
+   {
+    "bits": [
+     47,
+     45
+    ],
+    "kind": "fixed",
+    "text": "000"
+   },
+   {
+    "bits": [
+     44,
+     40
+    ],
+    "kind": "fixed",
+    "text": "00000"
+   },
+   {
+    "bits": [
+     39,
+     39
+    ],
+    "kind": "field",
+    "text": "IDL"
+   },
+   {
+    "bits": [
+     38,
+     38
+    ],
+    "kind": "field",
+    "text": "EMU"
+   },
+   {
+    "bits": [
+     37,
+     37
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     36,
+     36
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     35,
+     35
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     34,
+     34
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     33,
+     33
+    ],
+    "kind": "blank",
+    "text": ""
+   },
+   {
+    "bits": [
+     32,
+     32
+    ],
+    "kind": "fixed",
+    "text": "1"
+   }
+  ]
+ },
+ "Type 25a": {
+  "page": 470,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "000110000000010000000000xxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     44
+    ],
+    "kind": "fixed",
+    "text": "0001"
+   },
+   {
+    "bits": [
+     43,
+     40
+    ],
+    "kind": "fixed",
+    "text": "1000"
+   },
+   {
+    "bits": [
+     39,
+     36
+    ],
+    "kind": "fixed",
+    "text": "0000"
+   },
+   {
+    "bits": [
+     35,
+     32
+    ],
+    "kind": "fixed",
+    "text": "0100"
+   },
+   {
+    "bits": [
+     31,
+     28
+    ],
+    "kind": "fixed",
+    "text": "0000"
+   },
+   {
+    "bits": [
+     27,
+     24
+    ],
+    "kind": "fixed",
+    "text": "0000"
+   },
+   {
+    "bits": [
+     23,
+     0
+    ],
+    "kind": "field",
+    "text": "ADDR"
+   }
+  ]
+ },
+ "Type 25a #2": {
+  "page": 470,
+  "msb": 47,
+  "lsb": 0,
+  "pattern": "000110000100010000000000xxxxxxxxxxxxxxxxxxxxxxxx",
+  "cells": [
+   {
+    "bits": [
+     47,
+     44
+    ],
+    "kind": "fixed",
+    "text": "0001"
+   },
+   {
+    "bits": [
+     43,
+     40
+    ],
+    "kind": "fixed",
+    "text": "1000"
+   },
+   {
+    "bits": [
+     39,
+     36
+    ],
+    "kind": "fixed",
+    "text": "0100"
+   },
+   {
+    "bits": [
+     35,
+     32
+    ],
+    "kind": "fixed",
+    "text": "0100"
+   },
+   {
+    "bits": [
+     31,
+     28
+    ],
+    "kind": "fixed",
+    "text": "0000"
+   },
+   {
+    "bits": [
+     27,
+     24
+    ],
+    "kind": "fixed",
+    "text": "0000"
+   },
+   {
+    "bits": [
+     23,
+     0
+    ],
+    "kind": "field",
+    "text": "RELADDR"
+   }
+  ]
+ },
+ "Type 25c": {
+  "page": 471,
+  "msb": 47,
+  "lsb": 32,
+  "pattern": "0001100100000001",
+  "cells": [
+   {
+    "bits": [
+     47,
+     44
+    ],
+    "kind": "fixed",
+    "text": "0001"
+   },
+   {
+    "bits": [
+     43,
+     40
+    ],
+    "kind": "fixed",
+    "text": "1001"
+   },
+   {
+    "bits": [
+     39,
+     36
+    ],
+    "kind": "fixed",
+    "text": "0000"
+   },
+   {
+    "bits": [
+     35,
+     32
+    ],
+    "kind": "fixed",
+    "text": "0001"
+   }
+  ]
+ }
+}

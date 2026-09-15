@@ -22,23 +22,27 @@ generation, and three things separate them from 1.15C/1.10E:
 - **A sixth section, id 8**, packed, **103,416 bytes compressed on both
   devices** — byte-for-byte the same compressed length on Digitakt and
   Digitone, which suggests a shared component rather than per-device content.
-  Nothing else is known about it. **[O]**
+  Decompressed, both are the same 159,948 bytes. Nothing else is known about
+  it. **[V][O]**
 - **The bootstrap version bumps, `0x0200` -> `0x0201`.** Section 2's `dest` is
   the version word, and it reads `0x02000000` in 1.15C and 1.10E, `0x02010000`
   in 1.16 and 1.11. So installing either of the newer firmwares performs the
   bootstrap upgrade — the one irreversible operation on the device, and the
   reason `tools/patchimg.py` refuses section 2 outright.
-- **This repo cannot read them.** Every packed section of 1.16 fails to
-  depack. The cause is the oracle, not the new section: the depacker is taken
-  from the UPDATER, and 1.16's UPDATER differs from 1.15C's by **43.4%**
-  (14,231 of 32,776 bytes, first difference at offset `0x9b`), so the entry
-  point at `0x80000432` has moved. The two 2.01 updaters also differ from each
-  other, so the oracle would need re-deriving per device.
+- **The Unicorn depacker cannot read them.** Every packed section of 1.16
+  fails under `emu.extract --oracle`. The cause is the oracle, not the new
+  section: the depacker is taken from the UPDATER, and 1.16's UPDATER differs
+  from 1.15C's by **43.4%** (14,231 of 32,776 bytes, first difference at
+  offset `0x9b`), so the entry point at `0x80000432` has moved. **[V]**
+  `dt2/elz.py`, a byte-level decoder that `emu.extract` now uses by default,
+  reads them. On 1.15C and 1.10E it matches the device routine byte for byte
+  on every packed section; on 1.16 and 1.11 every stream ends exactly at its
+  declared length. **[V]**
 
 Retargeting the machine work to 1.16 is therefore not an address rebase. It
-needs the 2.01 depacker oracle re-derived, a re-extraction, a fresh snapshot
-ladder built by cold boot, a re-import to Ghidra, and every address in "The
-ColdFire machine dispatch" re-derived. **[O]**
+needs a fresh snapshot ladder built by cold boot, a re-import to Ghidra, and
+every address in "The ColdFire machine dispatch" re-derived. **[O]** The
+re-import is done; see "Digitakt II 1.16 in Ghidra" below. **[V]**
 
 ## Container
 
@@ -1021,6 +1025,764 @@ by `MachineSpec.clone_of`, cover the differences found so far. Bare
   `+0xa2`. **[O]**
 - What the SHARC is told about a type-7 track, and whether saving a
   project with type 7 works, are not checked. **[O]**
+
+### The ColdFire tells the SHARC through a periodic DSPI2 frame **[V][O]**
+
+Static reading only: Ghidra, the repo disassembler and `tools/refscan.py`.
+No emulator run. In this section **[V]** means a second agent re-checked the
+claim against the image bytes, and **[D]** means one agent read it from
+Ghidra or disassembly output and it was not re-checked.
+
+- `FUN_4002ce4a` writes the handler `0x4002d652` to the RAM vector slot
+  `0x400002fc` (vector 191, INTC1 source 63) and 5 to `ICR1_63`
+  (`0xFC04C07F`). The handler reads eDMA channel 50's SADDR (`0xFC045640`).
+  When the counter at `0x4028ac90` is zero, it calls
+  `FUN_400cf9c4(0x802, 0x80005348, 0xabc, 0x8000488c)` at `0x4002d6ba`.
+  **[V]**
+- Channel 50 is SSI0 transmit, and the RM lists INTC1 source 63 as not
+  used. No instruction reloads `0x4028ac90` by a literal address. What
+  raises source 63, and how many exchanges run per second, is not known.
+  **[D][O]**
+- `FUN_400cf9c4` is a DSPI2 (`0xEC038000`) send and receive driver using
+  eDMA channels 28 and 29. `FUN_400cf67c` sets CTAR0 to `0xFA010000`
+  (16-bit frames). Each PUSHR entry is `0x8001xxxx` (CONT, PCS0). The last
+  entry gets EOQ, TCD 29 DADDR is PUSHR (`0xEC038034`), and SERQ is written
+  with `0x1c`. The counts are bytes: TX `0x802` (2050 bytes, 1025 frames)
+  and RX `0xabc` (2748 bytes). Both buffers are in the 64 KB on-chip SRAM
+  at `0x80000000`. **[V]**
+- Ghidra lists no callers for `FUN_400cf9c4` or for the SHARC boot routine
+  `FUN_400cef6c`. The two `jsr` calls to `FUN_400cf9c4` (`0x4002d6ba`,
+  `0x400d13d4`) are in code that Ghidra did not assign to a function,
+  because the stock ColdFire language cannot decode `movclr` (next
+  section). An empty Ghidra caller list is not evidence of dead code in
+  this image. **[V]**
+- Frame content: a header written at `+0x00` (the constant 2) and at
+  `+0x22` to `+0x32`, then a 16-pass loop at `0x4002e470`-`0x4002e63a`. The
+  loop reads three per-track SRAM tables: `0x800047fc + 4*i` (longwords,
+  shifted by `asr.l #8`), `0x80003340 + i*0x9a` and `0x80005b50 + i*0x8e`.
+  The last base is the constant that `FUN_400db9aa` returns. **[V]** What
+  the fields mean is not known. **[O]**
+- A second handler, `0x400d1378`, installed by `FUN_400d15bc`, sends
+  `0x802` bytes from `0x429307f4` with only the first word set (1) and
+  receives nothing. **[V]** `FUN_400d15bc` is called by the console command
+  parser `FUN_400cd594` on `ENTER TEST MODE` and by `FUN_400cef6c`.
+  `EXIT TEST MODE` calls `FUN_4002d5c4`, which reinstalls `0x4002d652`.
+  **[D]**
+- Machine type: no call to `FUN_4004fc02` or `FUN_400caf48`, and no read
+  of `+0xa2`, was found in the handler or its frame loop. The one link
+  found is in the commit `FUN_40035e90`: when the new type is 5 (MIDI) it
+  calls `FUN_4002ed16(track, 0x7fff)`, which writes 1 to
+  `0x80004684 + 4*track` and `0x800046c4 + 4*track` (addressed as
+  `0x80003340 + (track + 0x4d1)*4` and `+ (track + 0x4e1)*4`). **[V]**
+- Not known: whether the handler reads those two arrays, and whether a
+  SLICE or PLACEHOLDER track produces a different frame. The writers of the
+  per-track tables are linked with the handler, among functions that use
+  file-browser strings (`ENTER DIR NAME`, `WRITE PROTECTED`), in about
+  `0x4002c0fa`-`0x4002f000`. About 45 of them are called from elsewhere and
+  they were not traced one by one. So "stock engine and own parameters" for
+  a new sample machine is still open. No engine id has been found in the
+  frame. **[D][O]**
+- The handler cannot run in the emulator today. Vector 191 is never
+  raised. DSPI2, SSI0 and eDMA channels 28, 29 and 50 are not modelled:
+  `emu/edma.py` handles channel 35 only, and `0xEC03802C` is a constant.
+  **[V]**
+- Ruled out as the control link **[D]**:
+  - FlexBus `0x8C000000` (`FUN_400cfd40`, callers `FUN_40146148`,
+    `FUN_4014653c`, `FUN_401465a4`) carries sample pages and slot headers
+    (address, length, loop point). Only `FUN_400cf4a8`, `FUN_400cf534` and
+    the boot routine `FUN_400cf67c` access `0x8C000000`-`0x8C00000F`. This
+    agrees with `docs/REMAINING.md` B.6.
+  - `FUN_4012720e` builds 28-byte-header packets (sequence number,
+    fragment offset, checksum) for the SysEx dump and receive code.
+  - The `Digisharc::rpcMsgOpReq_t` and `rpcMsgPingRequest_t` constructors
+    (`FUN_401bf37c`, `FUN_401bf3be`) are called from `FUN_40115372`, which
+    references `"MY ANALOG FOUR"`. `rpcMsgHeader_t`'s constructor is
+    `FUN_401b6316`.
+  - DSPI1 (`0xFC03C000`, eDMA 14/15, `FUN_400cfb92` via `FUN_40011df8`)
+    carries short opcode request and reply transactions, probably to a
+    codec.
+  - eDMA channel 59 is eSDHC block I/O (`FUN_400f0f7a` write,
+    `FUN_401208fe` read).
+
+### Stock Ghidra cannot decode `movclr`; a separate language fixes it **[V][C]**
+
+- The MCF5441x is a V4m with EMAC, and EMAC instructions use line A
+  (`0xAxxx`). The line-A words in the image are EMAC instructions, not
+  traps. The software float routines are ordinary `jsr` calls (see "Why
+  the emulator was slow").
+- The handler at `0x4002d652` saves the EMAC state at `0x4002d67c`:
+  `a988 a93c 0000 0000 ab84 af85 a1c0 a3c1 a5c2 a7c3 ad86` =
+  `move.l MACSR,A0`, `move.l #0,MACSR`, `move.l ACCext01,D4`,
+  `move.l ACCext23,D5`, `movclr.l ACC0..ACC3,D0..D3`, `move.l MASK,D6`.
+  A `movem` of D0-D6/A0 follows. Digitone II 1.11 has the same bytes at
+  `0x40025e60`.
+- Register moves are one word. A `#imm` source adds a 32-bit extension,
+  so `move.l #imm,MACSR` is 6 bytes (CFPRM).
+- Stock Ghidra 12.1.3 (`68000:BE:32:Coldfire`) decodes most EMAC
+  instructions but has no `movclr` constructor, so `a1c0 a3c1 a5c2 a7c3`
+  decode as bad instructions and flow analysis stops there. It also copies
+  `move.l ACCy,ACCx` in the wrong direction, picks the wrong accumulator
+  for MAC and MSAC with load (CFPRM p.6-4), and prints `move.l Ry,ACCx`
+  and the two ACCext moves with their operands swapped. An earlier reading
+  in this file, that Ghidra stops at every EMAC word, was wrong. **[V][C]**
+- The image has 96 `movclr` words (Digitakt II 1.15C) and 112 (Digitone II
+  1.11), mostly in accumulator saves at handler entry. **[D]**
+- `tools/ghidra/ColdfireEMAC/` is a separate language,
+  `68000:BE:32:ColdfireEMAC`, with those instructions fixed; see its
+  README and `tools/ghidra/install-coldfire-emac.sh`. Imported with it
+  (`~/ghidra-projects/dt2-emac`, 98 s), `FUN_4002d652` is a 5796-byte
+  function whose decompile shows
+  `FUN_400cf9c4(0x802,&DAT_80005348,0xabc,0x8000488c)`. `FUN_400cf9c4`
+  gets its two callers, error bookmarks drop from 64 to 41, functions rise
+  from 10520 to 10526, and five checked functions keep their entry and
+  size. **[V]**
+- Unicorn 2.1.4 with `UC_CPU_M68K_CFV4E` runs `movclr`, `mac.l` without
+  load, the MASK and ACCext moves and the handler prologue as the manual
+  says (`tests/test_unicorn_emac.py`). Two gaps are pinned in that test:
+  `move.l MACSR,Rx` keeps bits 31..12, and `move.l ACCy,ACCx` takes an
+  exception. **[V]** A linear sweep finds no `move ACC,ACC` and no MAC with
+  load in either handler (the 31 and 24 uses are elsewhere), so the
+  handlers can run in Unicorn. **[D]** The frame build, though, reaches a
+  MAC with load in `FUN_400db9aa` at `0x400db9e0`, which stock Unicorn
+  2.1.4 cannot run; `patches/unicorn-2.1.4-m68k-emac-mac-load.patch` fixes
+  it (see "The frame capture runs; the frame build is switched off"). **[C]**
+
+### Digitone II 1.11: the same link and the same machine table shape **[V][D][O]**
+
+- The sections come from `uv run python -m emu.extract
+  Digitone_II_OS1.11.syx -o DIR`. 1.11 also has a section 8 (159,948
+  bytes, mostly `0xFF`) that 1.10E does not have. **[D]**
+- Dispatcher `FUN_400c248e`: `moveq #4,d1`, a bound check, `muls` by
+  `0x2c`, `addi.l #0x42432b24`. Out of range it returns `0x42432bd4`
+  (entry 4). **[V]** The five descriptors are 0 FM TONE, 1 WAVETONE,
+  2 FM DRUM, 3 SWARMER and 4 MIDI. **[D]**
+- `FUN_4004b7f2` calls vtable `+0x28` twice and returns the byte at `+0xde`
+  of the result: the machine type. **[V]** `FUN_4004b860` reads `+0xdf`,
+  probably the filter type. RTTI names `Digisharc::machineType_t`,
+  `Digisharc::synthParams_t` and `VoiceConfig::updateMirror`. **[D]**
+- Handler `FUN_40025e36` reads `0xFC045640`. When the counter
+  `0x402876f8` is zero, it calls
+  `FUN_400cf7be(0xa80, 0x80005e60, 0xabc, 0x800053a4)` at `0x40025e9e`:
+  TX 2688 bytes, RX 2748 bytes. The installer at `0x400d11d4` puts the
+  test handler `0x400d0f90` into `0x400002fc` and 5 into `0xFC04C07F`.
+  **[V]**
+- The frame has 16 per-track slots of `0x92` bytes, copied from
+  `0x800068e4 + i*0xca` with four `FUN_40134490` copies per slot.
+  `FUN_400db12a` rebuilds that table from `0x80003af0` and returns its base
+  as a constant. **[D]** No read of the machine type was found on this
+  path, and the code that fills `0x80003af0` was not found. **[O]**
+- On Digitone II the engine must reach the DSP, yet static reading did not
+  find it there either. Not finding the machine type on either image is a
+  limit of static reading, not evidence that the frame lacks it. **[O]**
+
+### Names from RTTI and code seeds in the EMAC Ghidra project **[V][D]**
+
+- `tools/codeseeds.py` finds 31016 `jsr`/`bsr` calls to 5685 targets in
+  the code ranges and 22 vector-table writes. `tools/rttiscan.py` finds
+  1052 typeinfo objects (class 122, si_class 728, vmi_class 125, pointer
+  50, fundamental 23, function 4), 1883 vtables with 12349 slots, 4802
+  instructions that load a vtable, and 47 `Class::method` strings, 41 of
+  them loaded by code. Each takes under 2 s; the output is in
+  `out/symbols/`. **[V]**
+- Ghidra's own `RecoverClassesFromRTTIScript` refuses the program until its
+  compiler is set to gcc, and then recovers no classes. **[D]**
+- `tools/ghidraapply.py seeds --analyze` on `~/ghidra-projects/dt2-emac`
+  created 32 functions, rolled back 34 (an Error bookmark or no function),
+  skipped 466 targets inside data, and named 19 interrupt handlers
+  `vector_<n>_handler`. `tools/ghidraapply.py rtti` created 3677 functions
+  from vtable slots and renamed 6811: 5774 `Class::vfunc_N`, 1016
+  `Class::ctor_dtor`, and 21 from `Class::method` strings, such as
+  `Project::updateMirror` and the other seven `updateMirror` methods. 152
+  slot functions shared by several classes stay unnamed. Functions went
+  from 10526 to 14257, and Error bookmarks stayed at 41. The project before
+  these writes is in `~/ghidra-projects/backup-2026-09-14/`. **[V]**
+- `vfunc_N` is the slot index, not the method's name. `ctor_dtor` marks a
+  function that loads a vtable address; it can be a constructor or a
+  destructor.
+- Spot checks: `0x4002d652` and `0x400d1378` are both
+  `vector_191_handler`, and `FUN_400cf9c4` still has exactly those two
+  callers. The vtable at `0x402015ec` (5 slots) belongs to
+  `std::_Sp_counted_ptr_inplace<Digisharc::rpcMsgHeader_t, ...>`, and
+  `0x401b6316` is that class's `ctor_dtor`. The earlier raw search above
+  read the vtable one word late, as `0x402015f0` with 4 slots. **[V]**
+
+### Digitakt II 1.16 in Ghidra: the same layout, 14743 functions **[V]**
+
+- `uv run python -m emu.extract Digitakt_II_OS1.16.syx -o out/sections/dt2-1.16`
+  writes a MAIN OS of 3,275,616 bytes for `0x40000400`, sha-256 `57bb4dfa…`
+  (1.15C: 3,177,312 bytes). Digitone II 1.11 and 1.10E are extracted to
+  `out/sections/dn2-1.11/` and `out/sections/dn2-1.10E/`. **[V]**
+- `~/ghidra-projects/elektron-emac` holds two programs.
+  `/dt2-1.15C/section_3_MAIN_OS.bin` is a copy of the `dt2-emac` program made
+  by `tools/ghidracopy.py`; a dump of the copy matches
+  `out/ghidra/dt2-1.15C-emac/` in every count and in each function's entry,
+  name, size, body, signature, callers and callees.
+  `/dt2-1.16/section_3_MAIN_OS.bin` is a ColdfireEMAC import
+  (`GHIDRA_FOLDER=dt2-1.16 tools/ghidra.sh import`, 115 s), and
+  `McfLabels.java` added 87 labels and 19 blocks to it. `dt2-emac` stays the
+  1.15C project. **[V]**
+- A headless `-postScript` cannot pack the program it processes:
+  `saveToPackedFile` fails with "Unable to lock due to active transaction",
+  and the analyzer then saves the program anyway. That happened once to
+  `dt2-emac`; a dump made afterwards matched the 2026-09-14 dump exactly.
+  `tools/ghidracopy.py` packs the stored file and never opens the program. **[V]**
+- The image has the 1.15C layout, moved. Main code ends with an `rts` at
+  `0x401e97a8` (1.15C `0x401d6108`), and the next `0x400` bytes are a
+  numeric table with no `rts` or `link` word. The typeinfos and vtables start
+  at `0x401ec324` (1.15C `0x401d8c84`). Near the end, the `0x4305` bytes from
+  `0x4030ccfc` equal those from `0x402f4c4c` in 1.15C, a shift of `+0x180b0`;
+  they hold the 60 functions at `0x4030cd04-0x4030f89e`. The last byte that
+  is neither `0x00` nor `0xff` is at `0x403117c3` (1.15C `0x402f9c13`). **[V]**
+- `tools/entryhist.py` over a dump made before the seeds gives the code
+  ranges `0x40000400-0x401f0400` and `0x40300400-0x40310400`: 10915
+  functions, none in between. On the 1.15C dump it gives
+  `0x40000400-0x401e0400` and `0x402f0400-0x40300400`. The 1.15C defaults in
+  `tools/codeseeds.py` are wider, and their `0x402c0400-0x402f4400` holds no
+  `rts` or `link` word. **[V]**
+- Before the seeds, the 1.16 program has 10915 functions and 40 Error
+  bookmarks. With the ranges above, `tools/codeseeds.py` finds 31726 calls to
+  5345 targets and 22 vector-table writes, and `tools/rttiscan.py` finds 1066
+  typeinfo objects (class 122, si_class 738, vmi_class 129, pointer 50,
+  fundamental 23, function 4), 1933 vtables, 4852 vtable loads, and 47
+  `Class::method` strings, 41 of them loaded by code. **[V]**
+- `tools/ghidraapply.py seeds --analyze` created 32 functions, rolled back 7,
+  skipped 56 targets inside data, and named 19 interrupt handlers (1.15C,
+  with its wider ranges: 32, 34, 466, 19). `tools/ghidraapply.py rtti` created
+  3773 functions and renamed 6970: 5918 `Class::vfunc_N`, 1032
+  `Class::ctor_dtor`, and 20 from `Class::method` strings, among them all
+  eight `updateMirror` methods. 153 slot functions shared by several classes
+  stay unnamed. Functions went from 10915 to 14743, and Error bookmarks
+  stayed at 40. **[V]**
+- The two vector-191 handlers are `0x4002dd0c` and `0x400cec70` (1.15C
+  `0x4002d652` and `0x400d1378`). Each is installed by `move.l #handler,dN`
+  then `move.l dN,$400002fc`. **[V]**
+- The dump is `out/ghidra/dt2-1.16-emac/`; `ghidradump.py --image` names the
+  image under `out/sections/`, so `image_matches_sections` is true. It is
+  complete, with 16 decompile failures: the same 15 `MidiRpc*Response`
+  `ctor_dtor` functions as in 1.15C, and one large function in each version
+  (`FUN_401bdee2`; 1.15C `FUN_401ac1be`) that overflows the decompiler's
+  response buffer. **[V]**
+
+### Version Tracking carries 1.15C addresses to 1.16 **[V][D][O]**
+
+- `tools/ghidravt.py run` runs Ghidra's AutoVersionTrackingTask from
+  pyghidra with the options of `AutoVersionTrackingScript.java` and a 32 GB
+  heap, and exports the matches. The headless script, with its 2 GB heap, ran
+  out of memory after 30 minutes in the duplicate function correlator on
+  1.15C -> 1.16 and left the destination unchanged. The sessions are in
+  `/vt/` of `~/ghidra-projects/elektron-emac`, the exports in `out/vt/`.
+  **[V]**
+- Digitone II 1.10E and 1.11 were imported the same way, with 13448 and
+  14017 functions after seeds and RTTI; the dumps are
+  `out/ghidra/dn2-1.10E-emac/` and `out/ghidra/dn2-1.11-emac/`. The
+  Digitakt-to-Digitone run writes to a copy of 1.11,
+  `/dn2-1.11-from-dt2/section_3_MAIN_OS.bin`. **[D]**
+- Each accepted function association is one-to-one:
+
+  | pair | seconds | accepted matches | function associations | source functions matched |
+  |---|---|---|---|---|
+  | Digitakt II 1.15C -> 1.16 | 1092 | 50,741 | 9778 | 68.6% of 14257 |
+  | Digitone II 1.10E -> 1.11 | 897 | 47,267 | 9090 | 67.6% of 13448 |
+  | Digitakt II 1.15C -> Digitone II 1.11 | 1046 | 43,414 | 8126 | 57.0% of 14257 |
+
+  **[V]** All three runs end "with some apply markup errors", and the task
+  logs nothing more about them in headless mode. **[D]**
+- `tools/vtcheck.py` checks the associations against the images and against
+  dumps made before Version Tracking. For 1.15C -> 1.16, 2365 function bodies
+  are byte-identical, 7332 differ at the same size, and 81 changed size. Ten
+  sampled same-size pairs differ only in addresses and in branch targets that
+  are themselves matched; five resized pairs are the same functions with real
+  code changes. **[V]** Where both dumps give a name, 7 of 5097 names differ,
+  and the callees agree for 5913 of 5925 functions. **[D]**
+- Some matches are wrong. `TransposeConfigMenuView::vfunc_2` ->
+  `BreakOutBoxRoutingMenuView::vfunc_2` (in both Digitone runs) and
+  `SamplerLedView::vfunc_17` -> `ArpSetupMenuView::vfunc_18` (1.15C ->
+  Digitone II 1.11) differ in size by 43-50% and share only boilerplate.
+  Check a match before relying on it. **[V]**
+- `Velocity::vfunc_18` in 1.15C is `Velocity::vfunc_19` in 1.16: the
+  function is unchanged, and Velocity's vtable grew from 23 to 24 slots. A
+  `vfunc_N` number can shift between versions. **[V]**
+- Other name differences are storage structures with new version numbers:
+  `projectStorage_v4_t` -> `projectStorage_v5_t` and `projectStorage_v15_t`
+  -> `projectStorage_v16_t` in Digitakt II 1.16, `kitStorage_v3_t` ->
+  `kitStorage_v4_t` and `patternStorage_v3_t` -> `patternStorage_v4_t` in
+  Digitone II 1.11. **[D]**
+- The frame link on 1.16, carried by the 1.15C -> 1.16 run and checked
+  against both images:
+
+  | 1.15C | 1.16 | evidence |
+  |---|---|---|
+  | `0x4002d652` vector-191 handler | `0x4002dd0c` | calls the driver at `0x4002dd74` (1.15C `0x4002d6ba`) |
+  | `0x400d1378` vector-191 handler | `0x400cec70` | calls the driver at `0x400ceccc` (1.15C `0x400d13d4`) |
+  | `FUN_400cf9c4` DSPI2 driver | `FUN_400cd2bc` | its callers are the two handlers, in both |
+  | `FUN_400cef6c` SHARC boot routine | `FUN_400cc864` | 1162 bytes in both |
+  | `FUN_4002d602` | `FUN_4002dcb2` | 48 bytes in both |
+  | call at `0x400330f6` in `FUN_40032f5a` | `0x4003395c` in `FUN_400337ba` | `jsr` to the function above; the task changed size |
+  | `FUN_400db9aa` | `FUN_400d92a2` | both return `0x80005b50` |
+
+  `FUN_4002d63e` -> `FUN_4002dcee`, called by the vector-191 handler, gains
+  a bound check (`cmp #0xf`) in 1.16. **[V]**
+- Not carried: the stop-flag writer `0x4002d632` lies outside any function,
+  and `FUN_400caf48` has no match. The gate variables and the frame tables are
+  RAM addresses, outside the image; they are to be re-found from the
+  functions above. **[O]**
+- The 1.15C -> Digitone II 1.11 run agrees with "Digitone II 1.11: the same
+  link and the same machine table shape": 1.15C's `0x400d1378` maps to the
+  1.11 test handler `0x400d0f90`, and `FUN_400db9aa` maps to `FUN_400db12a`,
+  which returns `0x800068e4`. 1.15C's handler `0x4002d652` and driver
+  `FUN_400cf9c4` have no match there, although 1.11's `FUN_40025e36` and
+  `FUN_400cf7be` have the same roles, and the driver's callers are the two
+  handlers in both. The 1.11 handler is 7582 bytes against 5796, and its
+  driver compares the TX length with `0xaf0` where 1.15C uses `0xbc0`.
+  **[V]**
+
+### The frame link on Digitakt II 1.16 **[V][O]**
+
+- Every 1.15C address of the frame link has a 1.16 counterpart, found from
+  the Version Tracking map and checked instruction by instruction in both
+  images:
+
+  | 1.15C | 1.16 | evidence |
+  |---|---|---|
+  | installer `FUN_4002ce4a` | `FUN_4002d4f2` | `move.l #handler,dN; move.l dN,$400002fc` and `move.b #5,$fc04c07f` in both |
+  | vector-191 handler `0x4002d652` | `0x4002dd0c` | |
+  | driver call at `0x4002d6ba` | `0x4002dd74` | after `pea $8000488c`, `pea $abc`, `pea $80005348`, `pea $802` in both |
+  | DSPI2 driver `FUN_400cf9c4` | `FUN_400cd2bc` | |
+  | pacing counter `0x4028ac90` | `0x402a1488` | one read and one write each, in the handler |
+  | gate `0x4094e4f4` | `0x409664f4` | 7 references each |
+  | countdown `0x4094e4f0` | `0x409664f0` | 4 each |
+  | mode `0x4094e4f8` | `0x409664f8` | 7 each |
+  | stop flag `0x4094e4ec` | `0x409664ec` | 2 each: the writer, and `tst.l` at `0x4002d6ce` / `0x4002dd88` |
+  | stop-flag writer `0x4002d632` | `0x4002dce2` | `moveq #1,d0; move.l d0,stop; rts`, outside any function |
+  | `FUN_4002d602` | `FUN_4002dcb2` | nine sites each, below |
+  | MIDI flag writer `FUN_4002ed16` | `FUN_4002f3da` | `lea $80003340,a0`, indices `0x4d1` and `0x4e1` |
+  | `FUN_400db9aa` | `FUN_400d92a2` | `lea $80005b50,a2`, row step `0x8e` |
+
+  The gate variables moved by `+0x18000`, and their references are the
+  same instructions in the same order. The frame tables did not move: TX
+  `0x80005348` (`0x802`), RX `0x8000488c` (`0xabc`), `0x800047fc + 4*i`,
+  `0x80003340 + i*0x9a`, `0x80005b50 + i*0x8e`, and the MIDI flags
+  `0x80004684 + 4*i` and `0x800046c4 + 4*i`, each with 16 rows. The
+  instruction pattern of the stop-flag writer occurs 9 times in each image;
+  the one above is the one that writes the stop flag. **[V]**
+- The nine sites of `FUN_4002d602`, with the argument pushed before each:
+
+  | 1.15C | 1.16 | in | argument |
+  |---|---|---|---|
+  | `0x400323dc` | `0x40032c3c` | trampoline outside functions | 1 |
+  | `0x400323f2` | `0x40032c52` | `FUN_400323e2` / `FUN_40032c42` | 0 |
+  | `0x400330f6` | `0x4003395c` | task `FUN_40032f5a` / `FUN_400337ba` | 0 |
+  | `0x400407d8` | `0x400410f8` | trampoline outside functions | 0 |
+  | `0x400407ee` | `0x4004110e` | trampoline outside functions | 0 |
+  | `0x40043692` | `0x40043fb2` | `OnScopeExit::ctor_dtor` | 1 |
+  | `0x40046008` | `0x4004694a` | `OnScopeExit::ctor_dtor` | 1 |
+  | `0x400fa6d8` | `0x40106c9c` | trampoline outside functions | 0 |
+  | `0x400faa98` | `0x4010705c` | `FUN_400faa86` / `FUN_4010704a` | 1 |
+
+  **[V]**
+- Two things differ. The 1.16 installer also writes the frame's first word,
+  `moveq #1,d0` then `move.w d0,$80005348`; the 1.15C installer does not.
+  And the handler reads both MIDI flag arrays itself, `lea $80004684,a1` and
+  `lea $800046c4,a0`, at `0x4002d70c` and `0x4002d720` in 1.15C and at
+  `0x4002ddc6` and `0x4002ddda` in 1.16. **[V]**
+- `tools/framelink.py` holds these addresses per image, looked up by the
+  SHA-256 of the MAIN OS image. `tools/sharcframe.py` takes its addresses
+  from it and stops on an image without a profile; `--open-gate` writes 0 to
+  the profile's gate. On `snapshots/boot400M.snap` (1.15C) with three passes,
+  the tool before the change with `--poke 0x4094e4f4=0`, and the new tool
+  with `--open-gate` or with the same poke, capture the same frames: pass 0
+  `382e008e…`, passes 1 and 2 `5cc9772c…`. **[V]**
+- `tools/dspmap.py` lists the instructions that reference the frame tables,
+  the gate variables and the pacing counter, with their functions and callers
+  two levels up (`out/maps/`). It finds 186 sites in 19 functions on 1.15C
+  and 187 in 20 on 1.16; the only new site is the installer's write. Its 115
+  sites from the raw sweep on 1.16 match an independent sweep. Two sites are
+  not table accesses: the DSPI2 driver's `move.w a0,(a1,d0.l*4)`, which
+  Ghidra attributes to `0x80003340` while `a1` holds `0x80001bc0`, and
+  `cmpa.l #$800047fc,a2` in `FUN_400dbaac` / `FUN_400d93a4`, the end of a
+  loop over the 16 words at `0x800047dc`. Of the other 10 functions that use
+  `0x80003340`, 8 load the base and index it by track; `FUN_4002cd38` and
+  `FUN_4002d166` use fixed rows 14 and 15. **[V]**
+- None of the eight Digitakt `*::updateMirror` methods reaches these
+  functions within three callee levels of Ghidra's call graph, including its
+  resolved indirect calls, and none of those callees references the tables.
+  A method can still hand the handler data through shared state, which a
+  call graph does not show. **[V][O]**
+
+### The emulator boots Digitakt II 1.16 **[V][D][O]**
+
+- `emu/symbols.py` resolves all seven required symbols on 1.16, and 57 of
+  72 in all. Its `transport` signature matches the wrong function there,
+  `0x40134200`; Version Tracking maps 1.15C's `0x40128c7c` to `0x40136268`.
+  `call_sites` therefore lists 25 sites instead of 4; the cold boot only
+  logs them. **[D]**
+- `DT2_SECTIONS=out/sections/dt2-1.16 DT2_SNAPSHOTS=out/snapshots/dt2-1.16
+  uv run python -m emu.checkpoint make
+  60000000,120000000,200000000,280000000,400000000
+  out/snapshots/dt2-1.16/boot Digitakt_II_OS1.16.syx` builds a 1.16 ladder
+  in about 6 minutes:
+
+  | rung | 1.15C tasks | 1.16 tasks | 1.16 PC |
+  |---|---|---|---|
+  | 60M | 5 | 5 | `0x401382aa` |
+  | 120M | 5 | 5 | `0x4011e8bc` |
+  | 200M | 5 | 5 | `0x400dc4f6` |
+  | 280M | 9 | 5 | `0x401e55e0` |
+  | 400M | 9 | 9 | `0x40182e0e` |
+
+  The four late tasks, among them the Main OS task `FUN_400337ba` (1.15C
+  `FUN_40032f5a`), start at about instruction 291.4M in 1.16 and 257.6M in
+  1.15C. **[D]**
+- `tools/bootwatch.py --frame-gate` boots from reset with write watches on
+  the stop flag, countdown, gate and mode of the image's profile. In both
+  versions there are six writes. The startup code clears all four at
+  instruction 1,752,605-1,752,609 (`0x400004d2`, a loop in
+  `FUN_400004b2`). Then the SHARC boot routine calls the helper
+  `moveq #1,d0; move.l d0,gate; move.l d0,mode; bra.w <vector-191
+  installer>` once: in 1.15C `FUN_4002d5b2`, called from `0x400cf320` in
+  `FUN_400cef6c` at instruction 257,643,827; in 1.16 `FUN_4002dc62`,
+  called from `0x400ccc18` in `FUN_400cc864` at instruction 291,415,290.
+  That call site is the helper's only caller in each image. The stop flag
+  and the countdown stay 0. So a normal boot leaves the gate at 1, which
+  keeps the frame build off, and installs the handler right after. **[V]**
+- `tools/sharcframe.py out/snapshots/dt2-1.16/boot400M.snap` (with
+  `DT2_SECTIONS=out/sections/dt2-1.16`) enters the 1.16 handler
+  `0x4002dd0c`, which returns after one driver call with TX `0x802` bytes at
+  `0x80005348` and RX `0xabc` bytes at `0x8000488c`. With the gate closed,
+  both passes send `eabdd389…`, the same as pass 0 with `--open-gate`;
+  passes 1 and 2 with `--open-gate` send `d674f76c…`. Against 1.15C, pass 0
+  and pass 1 each differ in one byte, offset 1: `0x01` and `0x03` in 1.16,
+  `0x00` and `0x02` in 1.15C. The 1.16 installer's `move.w` of 1 to
+  `0x80005348` sets that byte. **[V]** The bytes that change from pass 0 to
+  pass 1 are at the same 41 places in both versions. **[D]**
+- The frame capture does not use the 1.15C addresses still written as
+  literals in the emulator: `PRINT` and `SWITCH_TO` in `emu/longrun.py`,
+  `TX_STATE` `0x4094cd74` and `WAIT_LOOP` in `emu/edma.py`, the weak-pointer
+  patch, and the addresses in `emu/panel.py`, `emu/screen.py`,
+  `emu/hle.py`, `emu/serial.py` and the terminal hook in `emu/gui.py`. A GUI
+  run on 1.16 would. Why pass 0 sends no track data, and what the slot words
+  mean, are still open. **[O]**
+
+### The frame capture runs; the frame build is switched off **[V][D][O][C]**
+
+- `tools/sharcframe.py snapshots/boot400M.snap --passes 3` takes 0.5 s.
+  Vector 191 holds `0x4002d652`. Each pass returns through the handler's
+  `rte` and calls `FUN_400cf9c4(0x802, 0x80005348, 0xabc, 0x8000488c)` once,
+  from `0x4002d6c0`. All 2050 TX bytes are zero in every pass. **[V]**
+- The handler builds the frame only when the long at `0x4094e4f4` is 0
+  (test at `0x4002d91a`). In `boot400M.snap` it is 1, `0x4094e4f8` is 1,
+  and the per-track tables are zero. `FUN_4002d5b2` writes exactly those
+  two values and is called from the SHARC boot routine `FUN_400cef6c`.
+  **[V]**
+- `FUN_4002d5c4` clears `0x4094e4f4`; its only caller is the console
+  command parser `FUN_400cd594` on `#EXIT_TEST_MODE` (`0x400cda98`). **[V]**
+- `FUN_4002d602(n)` has two branches. With n != 0 it writes 2 to
+  `0x4094e4f8` and 5 to `0x4094e4f0`; the handler counts `0x4094e4f0` down
+  once per pass (`0x4002ecaa`-`0x4002ecbe`) and writes 1 to `0x4094e4f4`
+  when it reaches 0. With n == 0 it clears `0x4094e4f4` and `0x4094e4f0`
+  with interrupts masked (`0x4002d61c`-`0x4002d630`). **[V]** An earlier
+  reading here, that only `FUN_4002d5c4` clears the gate, was wrong. **[C]**
+- `tools/refscan.py` finds nine call and jump sites to `FUN_4002d602`
+  (96.75% of the image decoded); the argument is the last value pushed.
+  Argument 1, stop after five passes: `0x40043692` and `0x40046008` in the
+  two `OnScopeExit::ctor_dtor` functions (`0x40043654`, `0x40045fc4`), and
+  `0x400faa98` in `FUN_400faa86` (`Waiting for SysEx`) **[V]**; and the
+  trampoline `0x400323d6` **[D]**. Argument 0, open now: `0x400330f6` in
+  `FUN_40032f5a` and `0x400323f2` in `FUN_400323e2` **[V]**; and the
+  trampolines `0x400407c8`, `0x400407de` and `0x400fa6c2` **[D]**. Ghidra's
+  call graph lists five of the nine: the trampolines are not in functions.
+- The two `OnScopeExit` functions load `0x400407c8` and `0x400407de` as
+  pointers (`0x400436b8`, `0x4004602e`) next to their argument-1 call, and
+  `OsUpgradeMenuView::ctor_dtor` loads `0x400faa86` and `0x400fa6c2`
+  (`0x400fb07c`, `0x400fb0b2`). This suggests the frame build stops while a
+  kit or project change, a sample reload or an OS upgrade runs, and a
+  callback reopens it afterwards. Where the callbacks are invoked was not
+  traced. **[D][O]**
+- `FUN_40032f5a` is a task body: `FUN_400329ee` pushes `$40032f5a(pc)` at
+  `0x40032a16` and calls `0x400012c8` with a `0x28000` size and 6. **[V]**
+  It references `Factory reset`, `Migrate presets`, `Update MMC Caches`,
+  `MAINTENANCE MODE` and `MMC NOT IN SLC MODE`. Its `FUN_4002d602(0)` at
+  `0x400330f6` follows the `Update MMC Caches` step with no branch in
+  between. **[D]** It is the only argument-0 call that is not a callback, so
+  it is the best candidate for opening the gate in normal use. Whether a
+  normal boot runs it is not known. **[O]**
+- `0x4094e4ec` is a stop flag: when it is non-zero, the handler writes 1 to
+  `0x4094e4f4` and `0x4094e4f8` (`0x4002d6ce`-`0x4002d6de`). Its only
+  writer, `0x4002d632` (`moveq #1,d0; move.l d0,$4094e4ec.l; rts`), has no
+  static caller and no copy of its address in the image, and is not in a
+  Ghidra function. **[V]**
+- In `boot60M`, `boot120M` and `boot200M.snap`, `0x4094e4ec`, `0x4094e4f0`,
+  `0x4094e4f4` and `0x4094e4f8` are all 0. In `boot280M` and
+  `boot400M.snap`, `0x4094e4f4` and `0x4094e4f8` are 1 and the other two
+  are 0. **[V]** `FUN_4002d5b2` or the end of a countdown could each
+  produce that. A write watch during a cold boot answers it: the SHARC boot
+  routine calls `FUN_4002d5b2` at instruction 257,643,827, and nothing else
+  writes 1 to either variable (see "The emulator boots Digitakt II 1.16").
+  **[V]**
+- Forcing `0x4094e4f4` to 0 before a pass enters the build path and ends in
+  the firmware's exception dump `FUN_4010fcae` (vector 64 at PC
+  `0x400db9e0`), which executes `halt`; Unicorn reports that as exception
+  257. **[D]** The instruction at `0x400db9e0`, in `FUN_400db9aa`, is
+  `a891 00c6`, `mac.w D6u,D0u,(A1),D4,ACC0`: a MAC with load. **[V]** On
+  those two words alone Unicorn 2.1.4 (CFV4E) stops with `UC_ERR_EXCEPTION`
+  and leaves PC, A1 and D4 unchanged, where the CPU adds D6u*D0u to ACC0
+  and loads `(A1)` into D4. **[V]** So the exception dump came from the
+  emulator, not the firmware. **[C]**
+- QEMU's MAC translation, which Unicorn 2.1.4 uses, has four faults in the
+  load forms: it faults when the Ry number has bit 0 or 1 set, reads a
+  data-register Rx from D2, adds for MSAC, and applies MASK to every load
+  address. `patches/unicorn-2.1.4-m68k-emac-mac-load.patch` fixes them, and
+  `tests/test_unicorn_emac.py` checks four load forms against the CFPRM.
+  **[V]** A sweep of the two code ranges finds about 160 MAC and MSAC with
+  load, about 60 of them with such an Ry; the sweep may count some data.
+  **[D]**
+- With that patch, `tools/sharcframe.py snapshots/boot400M.snap --passes 3
+  --poke 0x4094e4f4=0` runs all three passes to the handler's `rte` with one
+  driver call each and no exception; `0x400db9e0` runs 1836 times. **[V]**
+  Pass 0 sends 2050 zero bytes. Passes 1 and 2 send the same bytes, 46 of
+  them non-zero: `0002` at `+0x00`, `3840` at `+0xd8`, 16 slots of `0x60`
+  bytes starting at `+0x11c`, `+0x17c`, ... `+0x6bc`, each `0200 0000 0200`
+  then zeros, and near
+  the end `4000 1130` at `+0x736`, `0008` at `+0x7dc`, `0012` at `+0x7e0`,
+  `0002` at `+0x7e8`, `7fff ffff` at `+0x7f0` and `0001` at `+0x800`. **[V]**
+- After those passes, rows 1 to 15 of `0x80005b50 + i*0x8e` are non-zero and
+  each starts `02 00 00 00`; row 0 and the tables at `0x800047fc` and
+  `0x80003340` stay zero. **[V]** Why pass 0 sends zeros, and what the slot
+  words mean, is not known. **[O]**
+
+### SHARC+ instruction tables from the public ADI manuals **[D][O]**
+
+- `tools/sharcspec/` builds the SHARC+ instruction decode table from two
+  public Analog Devices manuals: the bit-layout figures in the SHARC+ Core
+  Programming Reference Rev 1.5, read from the PDF's vector drawings, checked
+  bit by bit against the classic SHARC Processor Programming Reference Rev
+  2.4. The method and the manual errata it found are in
+  `tools/sharcspec/README.md`; the documents are listed in
+  `docs/sharc/SOURCES.md`; the results are in `docs/sharc/SPEC-FINDINGS.md`.
+  It came from Em's separate sharc-spec work. **[D]**
+- On the 1.15C DSP main program (104,848 bytes at `0x28382670`) its decoder
+  leaves 1.1% of words unknown. `tools/sharc_disasm.py` stops at its first
+  unknown word, 4.4% in; forced to continue, it cannot name 9.6%. One cause is
+  traced: our `15b` entry fixes 3 bits where the manual fixes 7, so 1,928
+  words decode as `17b`. **[D]**
+- `tools/sharc_visa_tables.py` now loads `tools/sharcspec/decode_table.json`
+  and picks a form by the same rule as the sharc-spec decoder, and
+  `tools/sharc_disasm.py` still stops at the first word it cannot classify.
+  `tools/sharcldr.py --main` writes the final application's code, and
+  `tools/sharccompare.py` sweeps a region with both decoders. The main
+  programs of 1.15C and 1.16 are both 104,848 bytes at `0x28382670`, from
+  the same five blocks, with the entry at offset 0. The two decoders agree
+  on the length and form of all 22,147 instructions that both decode:
+
+  | | 1.15C | 1.16 |
+  |---|---|---|
+  | sharc-spec decoder: instructions, unknown words | 22,148, 249 (1.11%) | 22,147, 252 (1.12%) |
+  | rebuilt decoder: instructions, unknown words | 22,147, 250 | 22,147, 252 |
+  | first unknown word, both decoders | `0xbb0` (2.9% in) | `0xbb0` |
+  | old decoder: walk stops at | `0x122c` (4.4% in) | `0x122c` |
+  | old decoder: instructions at the spec decoder's offsets | 57.2% | 57.2% |
+  | old decoder: instructions it cannot name | 1,962 (9.4%) | 1,950 (9.3%) |
+  | old decoder: `17b` where the spec decoder has `15b` | 1,928 | 1,926 |
+
+  The one difference on 1.15C is the last instruction, a `21a` at `0x1998e`
+  whose 6 bytes run past the region: the rebuilt decoder refuses it, the
+  sharc-spec decoder pads with zeros. After `15b`, the old decoder's largest
+  confusions are `5a_move` for `5b_move` (797) and `18a` for `19a` (442).
+  `tools/ghidra/gen-sharc-slaspec.py` still expects the old form names
+  (`8a`, `9a`, `9b`) and fails on the rebuilt table; the SHARC language is to
+  be regenerated from `tools/sharcspec/ghidra/gen_sleigh.py`. A second
+  check rebuilt both regions from the boot-stream blocks, counted the mask
+  bits, and reproduced the sharc-spec decoder's counts, first unknown and
+  last instruction with its own sweep. **[V]** The old decoder's numbers
+  come from `tools/sharccompare.py` alone. **[D]**
+- `tools/ghidra/install-sharc.sh` now generates the language from
+  `decode_table.json` with `tools/sharcspec/ghidra/gen_sleigh.py` and
+  installs `SHARC_VISA:LE:32:default`; the generated module equals the copy
+  already installed from the sharc-spec work, except the stack pointer, now
+  I7 as the call convention in `docs/sharc/structure-1.16.md` uses. The old
+  generator and `tools/ghidra/SHARC/` are removed; the installed
+  `Processors/SHARC` stays for the `dt2_SHARC` program in `~/ghidra-projects/dt2`.
+  The code space has wordsize 2, so byte offset `0x382670` shows as
+  short-word address `0x1c1338`. **[D]**
+- `tools/sharc_import.py --seed-calls --analyze` imports section 7 into
+  `~/ghidra-projects/elektron-sharc`:
+
+  | | 1.16 | 1.15C |
+  |---|---|---|
+  | memory blocks (from 104 loader blocks) | 8 | 8 |
+  | call targets seeded (of 546 recovered) | 282 | 285 |
+  | functions after analysis | 347 | 352 |
+  | instructions, all / in the main program | 5,490 / 4,684 | 5,541 / 4,735 |
+  | Error bookmarks | 60 | 63 |
+  | main-program instructions where our decoder starts one of the same length | 4,663 | 4,707 |
+  | ... of a different length | 0 | 0 |
+  | ... where our linear sweep starts none | 21 | 28 |
+
+  The first 12 instructions at the entry match our decoder in form and
+  length. Ghidra reaches about a fifth of the main program's 22,147
+  instructions, so the rest needs more seeds. The Error bookmarks are
+  branches into addresses outside the loaded blocks and undecodable words
+  in the first application at `0x120xxx`. **[D][O]**
+- `docs/sharc/structure-1.16.md` maps the 1.16 DSP program: FreeRTOS tasks, a
+  task proposed as the command dispatcher for the ColdFire, and a command block
+  at `0x82a00000`. These were found on 1.16 and are hypotheses. **[D][O]**
+- Checked against the main programs of 1.16 and 1.15C (short-word address
+  SW = `0x1c1338` + file offset / 2), with a second check:
+  - A software call is the triple `3c` (raw `0x9ff2`, push R2 through
+    I7/M7), `16a` (stores the goto's short-word address minus 1) and
+    `25a_direct` (the goto): 45 in each version. A return is `9b_abs` (raw
+    `0x083f343f`, indirect jump through I4/M6) then `25c_rframe` (`0x1901`):
+    45 in 1.16, 47 in 1.15C. **[V]**
+  - The RPC dispatcher task is created at SW `0x1c3f5a`-`0x1c3f6a`,
+    byte-identical in both: `17a` ureg2=`0x257800`, `17b` ureg12=1000, `17a`
+    ureg8=`0x2577f0`, `17a` ureg4=`0x1c3bf0`, then `25a_direct` to
+    `0xb8615d` (1.16) / `0xb86159` (1.15C). ureg8 is the name "RPC
+    dispatcher" at loader byte address `0x282577f0`, so data pointers add
+    `0x28000000` without doubling, while ureg4, the entry, is a short-word
+    address. The call target lies outside every loaded section-7 block. The
+    same target creates "Audio Task" at SW `0x1c7775` in 1.16 (entry value
+    `0x1c7749`) and at SW `0x1c7708` in 1.15C (`0x1c76dc`). **[V]**
+  - Exactly 30 instructions in each main program carry a value in
+    `0x82a00000`-`0x82a001ff` (forms `14a`, `14d`, `16a`, `17a`), at the
+    same 30 short-word addresses, all in `0x1c361a`-`0x1c48c3`. **[V]**
+  - Ghidra has no function at `0x1c3bf0`-`0x1c3c3e` in either program: the
+    body calls through the software-call idiom, which the language models as
+    plain gotos. The SPORT/DAI setup writes 34 registers at SW
+    `0x1cb28e`-`0x1cb31a` in 1.16 and `0x1cb222`-`0x1cb2ae` in 1.15C. **[D]**
+  - The two main programs differ in four parts: up to SW `0x1c7501` only
+    single words differ; SW `0x1c74fb`-`0x1c7781` (1.16) against
+    `0x1c74fb`-`0x1c7715` (1.15C), around the Audio Task creation, has
+    several edits that add 108 words; the next 26,733 words are the same
+    code, `0x6c` words later in 1.16; the last 18 words of 1.16 and 126 of
+    1.15C are different code, so both stay 104,848 bytes. **[V]**
+  - Still open: how the dispatcher selects a command (the indirect `9a_abs`
+    through I6/M3 at SW `0x1c46c4` is a candidate; the `9a_rel` at
+    `0x1c551a` has a fixed target), the Audio Task entry (`0x1c7749` is not
+    an instruction boundary in our decode), and how the ColdFire reaches
+    `0x82a00000`; the only confirmed link is the DSPI2 frame. **[O]**
+
+### The SHARC side of the SPI frame link **[V][O]**
+
+- `tools/sharcimm.py` lists the immediates in DSP code. It decodes one
+  instruction at every even offset and marks each hit with the longest run
+  of decoded instructions that ends there (depth) and with whether the
+  linear sweep that steps past undecodable words reaches it. `--words` scans
+  the 32-bit words of every block of a boot stream instead. Peripheral names
+  are from the ADSP-2156x SHARC+ Processor Hardware Reference Rev 1.0
+  (Appendix A; Table 27-2 for the DMA channels). **[D]**
+- No instruction in either main program carries an SPI
+  (`0x3102e000`-`0x31030fff`), SPI DMA (`0x3102d000`-`0x3102d2ff`) or SEC0
+  (`0x31089000`) address. The values in `0x30000000`-`0x31ffffff` on the
+  sweep in 1.16 are: 17 in the DAI0 page at SW `0x1cb28e`-`0x1cb2da` and 17
+  in the DAI1 page at `0x1cb2dd`-`0x1cb31a` (the 34 SPORT/DAI setup writes;
+  these pages also hold the ASRC, SPDIF and PCG registers); `14a` writes to
+  PORTA+`0x30`, PORTB+`0x30`, PORTA and PORTB at SW `0x1cb25d`-`0x1cb26c`
+  and to PADS0+`0x60` and +`0x64` at `0x1cb320` and `0x1cb323`; a `14a`
+  write to RCU0+`0x2c` (reset control unit) at `0x1c1414`; and `17a`
+  R12=`0x30c6d751` at `0x1c673e`, which is not a register. 1.15C has the
+  same, `0x6c` words lower after `0x1c7781`. `14a` with d=1 writes the
+  register to memory (Core Programming Reference, Type 14a). **[V]**
+- `docs/sharc/structure-1.16.md` section 3b gives `0x31004000` and
+  `0x3108c000` as DMA or interrupt controller candidates. They are PORTA and
+  RCU0. **[C]**
+- A decode at every offset finds 32 instructions with a value in
+  `0x82a00000`-`0x82a001ff`. The two at SW `0x1c3806` and `0x1c4562` lie
+  inside real instructions that start at `0x1c3805` and `0x1c4560`, so the
+  count of 30 above stands. **[V]**
+- The SPI base addresses are data. Loader block 35 (1.16: target
+  `0x28269250`, 1,576 bytes; 1.15C: `0x28269240`) is not part of the main
+  program. At data pointer `0x2694a0` (1.15C: `0x269490`) it holds one
+  40-byte entry per SPI instance: the SPI base, the DMA TX and DMA RX channel
+  bases, the SEC ids of TX DMA, RX DMA, status, error, TX DMA error and RX
+  DMA error, and a zero word. The ids match the SEC table of the Hardware
+  Reference (Table 6-5). Each base occurs once as a 4-aligned word in the
+  stream. **[V]**
+
+  | entry | SPI base | DMA TX | DMA RX | SEC ids |
+  |---|---|---|---|---|
+  | SPI0, `0x2694a0` | `0x3102e000` | `0x3102d000` | `0x3102d080` | 85, 86, 87, 88, 158, 159 |
+  | SPI1, `0x2694c8` | `0x3102f000` | `0x3102d100` | `0x3102d180` | 89, 90, 91, 92, 160, 161 |
+  | SPI2, `0x2694f0` | `0x31030000` | `0x3102d200` | `0x3102d280` | 69, 70, 71, 72, 156, 157 |
+
+- The same block holds SPORT0A-SPORT7B entries from `0x26955c` (stride
+  `0x28`, each with the SPORT and DMA channel base) and LP0/LP1 entries at
+  `0x269468`. Block 48 holds PORTA-PORTC, PINT0-PINT2 and PADS0 register
+  addresses from `0x2d6ea0`, and block 2 holds the CGU0 and CGU1 bases at
+  `0x242c88` and `0x242c98`. **[D]**
+- The code that receives 2748 selects the SPI2 entry. In 1.16, SW `0x1c80a0`
+  is `17b` R4=`0xabc` (2748, the bytes the ColdFire receives per frame),
+  then `25a_direct` to `0x1c7bd4`. That function sets R12=`0x261a10`
+  (`17a`, `0x1c7c0f`) and R4=2 (`17b`, `0x1c7c12`) and jumps to `0x1c9fd5`
+  (`0x1c7c14`). There: `2c` R13=R4 (`0x1c9fe7`), `17b` R2=`0x28`
+  (`0x1c9fe8`), `4a` R2=R13*R2 (`0x1c9fea`), `5a` I4=R2 (`0x1c9ff0`) and
+  `19a` I1=I4+`0x2694a0` (`0x1c9ffb`), so I1=`0x2694f0`. 1.15C does the same
+  from SW `0x1c8034` with R12=`0x261a00`, `0x1c9f69` and the table at
+  `0x269490`. `0x1c9fd5` is also reached from `0x1c7dae` with the index in
+  M6 and R12=`0x261b18`, so it serves any instance. **[V]**
+- What happens to 2748 after the call is not known. One reading has
+  `0x1c7bd4` copy R4 to R13 before it loads 2, and `0x1c9fd5` save and
+  restore R13 without using it. No write to an SPI or DMA register has been
+  found yet. **[D][O]**
+- 1.16 SW `0x1c1496`-`0x1c149a` is `9b_abs` (a delayed jump), `17b`
+  R0=`0xabc` and `25c_rframe`. The two instructions after a delayed jump
+  execute before the jump (Core Programming Reference, Table 4-7), so this
+  function returns 2748. The bytes are the same in 1.15C. **[V]** Ghidra
+  starts the function at `0x1c136a` and finds one caller, SW `0x1c0027`,
+  outside the main program. **[D]**
+- 1.16 SW `0x1c7e4f`-`0x1c7e51`, and again `0x1c7ee3`-`0x1c7ee5`, write
+  `0x401` (1025) to DM(`0x26822c`), offset `0xc` of a structure at
+  `0x268220`. **[V]** The structure is then passed in R8 to `0x1c834a` and
+  to `0x1c83ff`. **[D]** Whether 1025 is half of the 2050-byte frame is
+  not known. **[O]**
+- No 4-aligned word in either loader stream equals `0x802`, `0xabc`,
+  `0x401` or `0x55e`. The `0x802` in the `4a` at SW `0x1cb423` is part of
+  its compute field, not a value. **[V]**
+
+### The DSP programs of Digitakt II 1.16 and Digitone II 1.11 in Ghidra **[D][O]**
+
+- Digitone II 1.11's section 7 is a boot stream of 95 blocks. Its main
+  program starts at SW `0x1c12e2` and is 105,016 bytes (`tools/sharcldr.py
+  --main`). It also loads 54,792 bytes at `0x8045a6c8` and 283,032 bytes at
+  `0x80467cf4` in external memory; Digitakt II 1.16 loads 3,316 bytes at
+  `0x8045a6c8`. `tools/sharc_import.py --seed-calls --analyze` imports it as
+  `/dn2-1.11_SHARC` in `~/ghidra-projects/elektron-sharc`, with 257
+  functions. **[D]**
+- In a software call the `16a` pushes, through I7/M7, its own short-word
+  address + 2. Argument loads (`17a`, `17b`) can sit between the store and
+  the goto. `tools/sharcflow.py` counts an aligned `25a_direct` as a call
+  when such a store lies within the three instructions before it, with no
+  control transfer between: 145 calls in 1.16 (43 of them the strict triple
+  `3c`, `16a`, goto) and 113 in Digitone II 1.11 (23). Without the address
+  check, 4 more matches in 1.16 are `16a` instructions that store
+  constants, such as `0xbf800000`. **[D]**
+- `tools/sharcflow.py --cover --analyze --save` sets FlowOverride.CALL on
+  those gotos, disassembles every aligned instruction Ghidra has not
+  reached, starts a function after each return pair and at each run of code
+  that no function holds, and re-runs analysis. It was applied to
+  `/dt2-1.16_SHARC` and `/dn2-1.11_SHARC`; copies from before the pass are
+  in `~/ghidra-projects/backup-2026-09-15-sharc`. **[D]**
+
+  | | DT2 1.16 | DN2 1.11 |
+  |---|---|---|
+  | aligned instructions (our decoder) | 21,270 | 20,805 |
+  | main-program instructions in Ghidra, before / after | 4,684 / 20,844 | 4,594 / 20,839 |
+  | ... inside a function, after | 20,820 | 20,514 |
+  | aligned instructions that clash with Ghidra's instructions or data | 31 | 53 |
+  | main-program functions, before / after | 234 / 2,319 | 154 / 2,134 |
+  | call references, before / after | 114 / 732 | 78 / 686 |
+
+- After the pass Ghidra lists `0x1c7bd4` with caller `0x1c80a2`,
+  `0x1c9fd5` with callers `0x1c7c14` and `0x1c7dae`, `0x1c7e02` with six
+  callers, and the function at `0x1ca17a` (which loads the SPI2 entry) with
+  caller `0x1ca077`, which the scan for direct gotos did not find. **[D]**
+- Function boundaries are too fine. The run rule made 1,708 functions in
+  1.16 and 1,627 in 1.11 and stopped at its limit of 16 rounds; 24
+  instructions in 1.16 and 325 in 1.11 are in no function. The RPC
+  dispatcher body `0x1c3bf6` ends at `0x1c3c20`, while its calls continue to
+  `0x1c3f46`. A likely cause is gotos that the call rule misses, which
+  analysis then treats as tail calls: before the pass, `0x1c3c5f` had its
+  store four instructions back, `0x1c3cf9` had an `8a_abs` between, and
+  `0x1c3d9f` and `0x1c3f46` had no store in reach. Not checked. **[O]**
 
 ## Emulation
 

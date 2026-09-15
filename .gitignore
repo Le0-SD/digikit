@@ -22,4 +22,13 @@ docs/refs/*.pdf
 docs/refs/rm.txt
 .coldtrace/
 tools/ghidra/SHARC/data/languages/*.sla
+tools/ghidra/ColdfireEMAC/data/languages/*.sla
+tools/ghidra/ColdfireEMAC/extension.properties
 tools/nbdocs-scrape.py
+
+# tools/sharcspec: text extracts of the ADI manuals and generated renders and
+# Ghidra language files. The PDFs themselves are covered by docs/refs/*.pdf.
+docs/refs/pgr.txt
+docs/refs/prm.txt
+tools/sharcspec/renders/
+tools/sharcspec/ghidra/SHARC_VISA/

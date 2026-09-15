@@ -1,0 +1,3936 @@
+{
+ "source": "SHARC+ Core Programming Reference Rev 1.5 (sc58x-2158x-prm.pdf)",
+ "pattern_legend": {
+  "0/1": "fixed bit (gray cell)",
+  "x": "field bit (see fields)",
+  "-": "unused bit (yellow cell)",
+  "?": "white cell with no field label"
+ },
+ "figures": [
+  {
+   "page": 308,
+   "caption": "Figure 14-1:Type1a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "001xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "dmd",
+     "bits": [
+      44
+     ],
+     "name": "dmd"
+    },
+    {
+     "label": "dmi[2:0]",
+     "bits": [
+      43,
+      41
+     ],
+     "name": "dmi",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "dmm[2:0]",
+     "bits": [
+      40,
+      38
+     ],
+     "name": "dmm",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "pmd",
+     "bits": [
+      37
+     ],
+     "name": "pmd"
+    },
+    {
+     "label": "dmdreg[3:0]",
+     "bits": [
+      36,
+      33
+     ],
+     "name": "dmdreg",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "pmi[2:2]",
+     "bits": [
+      32
+     ],
+     "name": "pmi",
+     "value_bits": [
+      2,
+      2
+     ]
+    },
+    {
+     "label": "pmi[1:0]",
+     "bits": [
+      31,
+      30
+     ],
+     "name": "pmi",
+     "value_bits": [
+      1,
+      0
+     ]
+    },
+    {
+     "label": "pmm[2:0]",
+     "bits": [
+      29,
+      27
+     ],
+     "name": "pmm",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "pmdreg[3:0]",
+     "bits": [
+      26,
+      23
+     ],
+     "name": "pmdreg",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "compute[22:16]",
+     "bits": [
+      22,
+      16
+     ],
+     "name": "compute",
+     "value_bits": [
+      22,
+      16
+     ]
+    },
+    {
+     "label": "compute[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "compute",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type1a",
+   "problems": []
+  },
+  {
+   "page": 310,
+   "caption": "Figure 14-2:Type1b Instruction",
+   "msb": 47,
+   "lsb": 16,
+   "width": 32,
+   "pattern": "001xxxxxxxxxxxxxxxxxxxxxx0111111",
+   "fields": [
+    {
+     "label": "dmd",
+     "bits": [
+      44
+     ],
+     "name": "dmd"
+    },
+    {
+     "label": "dmi[2:0]",
+     "bits": [
+      43,
+      41
+     ],
+     "name": "dmi",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "dmm[2:0]",
+     "bits": [
+      40,
+      38
+     ],
+     "name": "dmm",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "pmd",
+     "bits": [
+      37
+     ],
+     "name": "pmd"
+    },
+    {
+     "label": "dmdreg[3:0]",
+     "bits": [
+      36,
+      33
+     ],
+     "name": "dmdreg",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "pmi[2:2]",
+     "bits": [
+      32
+     ],
+     "name": "pmi",
+     "value_bits": [
+      2,
+      2
+     ]
+    },
+    {
+     "label": "pmi[1:0]",
+     "bits": [
+      31,
+      30
+     ],
+     "name": "pmi",
+     "value_bits": [
+      1,
+      0
+     ]
+    },
+    {
+     "label": "pmm[2:0]",
+     "bits": [
+      29,
+      27
+     ],
+     "name": "pmm",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "pmdreg[3:0]",
+     "bits": [
+      26,
+      23
+     ],
+     "name": "pmdreg",
+     "value_bits": [
+      3,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type1b",
+   "problems": []
+  },
+  {
+   "page": 312,
+   "caption": "Figure 14-3:Type2a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "0010000000xxxxx0110000000xxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "compute[22:16]",
+     "bits": [
+      22,
+      16
+     ],
+     "name": "compute",
+     "value_bits": [
+      22,
+      16
+     ]
+    },
+    {
+     "label": "compute[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "compute",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type2a",
+   "problems": []
+  },
+  {
+   "page": 314,
+   "caption": "Figure 14-4:Type2b Instruction",
+   "msb": 47,
+   "lsb": 16,
+   "width": 32,
+   "pattern": "110000000xxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "compute[22:16]",
+     "bits": [
+      38,
+      32
+     ],
+     "name": "compute",
+     "value_bits": [
+      22,
+      16
+     ]
+    },
+    {
+     "label": "compute[15:0]",
+     "bits": [
+      31,
+      16
+     ],
+     "name": "compute",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type2b",
+   "problems": []
+  },
+  {
+   "page": 315,
+   "caption": "Figure 14-5:Type2c Instruction",
+   "msb": 47,
+   "lsb": 32,
+   "width": 16,
+   "pattern": "1100xxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "compute[11:0]",
+     "bits": [
+      43,
+      32
+     ],
+     "name": "compute",
+     "value_bits": [
+      11,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type2c",
+   "problems": []
+  },
+  {
+   "page": 318,
+   "caption": "Figure 14-6:Type3a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "001xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "dmd",
+     "bits": [
+      44
+     ],
+     "name": "dmd"
+    },
+    {
+     "label": "dmi[2:0]",
+     "bits": [
+      43,
+      41
+     ],
+     "name": "dmi",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "dmm[2:0]",
+     "bits": [
+      40,
+      38
+     ],
+     "name": "dmm",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "pmd",
+     "bits": [
+      37
+     ],
+     "name": "pmd"
+    },
+    {
+     "label": "dmdreg[3:0]",
+     "bits": [
+      36,
+      33
+     ],
+     "name": "dmdreg",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "pmi[2:2]",
+     "bits": [
+      32
+     ],
+     "name": "pmi",
+     "value_bits": [
+      2,
+      2
+     ]
+    },
+    {
+     "label": "pmi[1:0]",
+     "bits": [
+      31,
+      30
+     ],
+     "name": "pmi",
+     "value_bits": [
+      1,
+      0
+     ]
+    },
+    {
+     "label": "pmm[2:0]",
+     "bits": [
+      29,
+      27
+     ],
+     "name": "pmm",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "pmdreg[3:0]",
+     "bits": [
+      26,
+      23
+     ],
+     "name": "pmdreg",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "compute[22:16]",
+     "bits": [
+      22,
+      16
+     ],
+     "name": "compute",
+     "value_bits": [
+      22,
+      16
+     ]
+    },
+    {
+     "label": "compute[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "compute",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type1a",
+   "problems": [
+    "figure tag 'Type1a' does not match caption 'Type3a Instruction'"
+   ]
+  },
+  {
+   "page": 321,
+   "caption": "Figure 14-7:Type3b Instruction",
+   "msb": 47,
+   "lsb": 16,
+   "width": 32,
+   "pattern": "010xxxxxxxxxxxxxxxxxxxxxx01111xx",
+   "fields": [
+    {
+     "label": "u",
+     "bits": [
+      44
+     ],
+     "name": "u"
+    },
+    {
+     "label": "i[2:0]",
+     "bits": [
+      43,
+      41
+     ],
+     "name": "i",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "m[2:0]",
+     "bits": [
+      40,
+      38
+     ],
+     "name": "m",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "g",
+     "bits": [
+      32
+     ],
+     "name": "g"
+    },
+    {
+     "label": "d",
+     "bits": [
+      31
+     ],
+     "name": "d"
+    },
+    {
+     "label": "l",
+     "bits": [
+      30
+     ],
+     "name": "l"
+    },
+    {
+     "label": "ureg[6:0]",
+     "bits": [
+      29,
+      23
+     ],
+     "name": "ureg",
+     "value_bits": [
+      6,
+      0
+     ]
+    },
+    {
+     "label": "w",
+     "bits": [
+      17
+     ],
+     "name": "w"
+    },
+    {
+     "label": "x",
+     "bits": [
+      16
+     ],
+     "name": "x"
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type3b",
+   "problems": []
+  },
+  {
+   "page": 324,
+   "caption": "Figure 14-8:Type3c Instruction",
+   "msb": 47,
+   "lsb": 32,
+   "width": 16,
+   "pattern": "1001xxxxxxx1xxxx",
+   "fields": [
+    {
+     "label": "dmi[2:0]",
+     "bits": [
+      43,
+      41
+     ],
+     "name": "dmi",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "dmm[2:0]",
+     "bits": [
+      40,
+      38
+     ],
+     "name": "dmm",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "d",
+     "bits": [
+      37
+     ],
+     "name": "d"
+    },
+    {
+     "label": "dreg[3:0]",
+     "bits": [
+      35,
+      32
+     ],
+     "name": "dreg",
+     "value_bits": [
+      3,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type3c",
+   "problems": []
+  },
+  {
+   "page": 326,
+   "caption": "Figure 14-9:Type3d Syntax",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "010xxxxxxxxxxxxxxxxxxxxxx0110xxx----------------",
+   "fields": [
+    {
+     "label": "u",
+     "bits": [
+      44
+     ],
+     "name": "u"
+    },
+    {
+     "label": "i[2:0]",
+     "bits": [
+      43,
+      41
+     ],
+     "name": "i",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "m[2:0]",
+     "bits": [
+      40,
+      38
+     ],
+     "name": "m",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "g",
+     "bits": [
+      32
+     ],
+     "name": "g"
+    },
+    {
+     "label": "d",
+     "bits": [
+      31
+     ],
+     "name": "d"
+    },
+    {
+     "label": "l",
+     "bits": [
+      30
+     ],
+     "name": "l"
+    },
+    {
+     "label": "ureg[6:0]",
+     "bits": [
+      29,
+      23
+     ],
+     "name": "ureg",
+     "value_bits": [
+      6,
+      0
+     ]
+    },
+    {
+     "label": "ex",
+     "bits": [
+      18
+     ],
+     "name": "ex"
+    },
+    {
+     "label": "w",
+     "bits": [
+      17
+     ],
+     "name": "w"
+    },
+    {
+     "label": "x",
+     "bits": [
+      16
+     ],
+     "name": "x"
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "0000000000000000",
+   "tag": "Type3d",
+   "problems": []
+  },
+  {
+   "page": 331,
+   "caption": "Figure 14-10:Type4a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "0110xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "i[2:0]",
+     "bits": [
+      43,
+      41
+     ],
+     "name": "i",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "g",
+     "bits": [
+      40
+     ],
+     "name": "g"
+    },
+    {
+     "label": "d",
+     "bits": [
+      39
+     ],
+     "name": "d"
+    },
+    {
+     "label": "u",
+     "bits": [
+      38
+     ],
+     "name": "u"
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "data[5:5]",
+     "bits": [
+      32
+     ],
+     "name": "data",
+     "value_bits": [
+      5,
+      5
+     ]
+    },
+    {
+     "label": "data[4:0]",
+     "bits": [
+      31,
+      27
+     ],
+     "name": "data",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "dreg[3:0]",
+     "bits": [
+      26,
+      23
+     ],
+     "name": "dreg",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "compute[22:16]",
+     "bits": [
+      22,
+      16
+     ],
+     "name": "compute",
+     "value_bits": [
+      22,
+      16
+     ]
+    },
+    {
+     "label": "compute[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "compute",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type4a",
+   "problems": []
+  },
+  {
+   "page": 334,
+   "caption": "Figure 14-11:Type4b Instruction",
+   "msb": 47,
+   "lsb": 16,
+   "width": 32,
+   "pattern": "0110xxxxxxxxxxxxxxxxxxxxx0111xxx",
+   "fields": [
+    {
+     "label": "i[2:0]",
+     "bits": [
+      43,
+      41
+     ],
+     "name": "i",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "g",
+     "bits": [
+      40
+     ],
+     "name": "g"
+    },
+    {
+     "label": "d",
+     "bits": [
+      39
+     ],
+     "name": "d"
+    },
+    {
+     "label": "u",
+     "bits": [
+      38
+     ],
+     "name": "u"
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "data[5:5",
+     "bits": [
+      32
+     ],
+     "name": "data",
+     "value_bits": [
+      5,
+      5
+     ]
+    },
+    {
+     "label": "data[4:0]",
+     "bits": [
+      31,
+      27
+     ],
+     "name": "data",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "dreg[6:0]",
+     "bits": [
+      26,
+      23
+     ],
+     "name": "dreg",
+     "value_bits": [
+      6,
+      0
+     ]
+    },
+    {
+     "label": "l",
+     "bits": [
+      18
+     ],
+     "name": "l"
+    },
+    {
+     "label": "w",
+     "bits": [
+      17
+     ],
+     "name": "w"
+    },
+    {
+     "label": "x",
+     "bits": [
+      16
+     ],
+     "name": "x"
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type4b",
+   "problems": [
+    "field 'dreg[6:0]' labels 7 bits but spans 4"
+   ]
+  },
+  {
+   "page": 337,
+   "caption": "Figure 14-12:Type4d Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "0110xxxxxxxxxxxxxxxxxxxxx0110xxx----------------",
+   "fields": [
+    {
+     "label": "i[2:0]",
+     "bits": [
+      43,
+      41
+     ],
+     "name": "i",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "g",
+     "bits": [
+      40
+     ],
+     "name": "g"
+    },
+    {
+     "label": "d",
+     "bits": [
+      39
+     ],
+     "name": "d"
+    },
+    {
+     "label": "u",
+     "bits": [
+      38
+     ],
+     "name": "u"
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "data[5:5]",
+     "bits": [
+      32
+     ],
+     "name": "data",
+     "value_bits": [
+      5,
+      5
+     ]
+    },
+    {
+     "label": "data[4:0]",
+     "bits": [
+      31,
+      27
+     ],
+     "name": "data",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "dreg[3:0]",
+     "bits": [
+      26,
+      23
+     ],
+     "name": "dreg",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "l",
+     "bits": [
+      18
+     ],
+     "name": "l"
+    },
+    {
+     "label": "w",
+     "bits": [
+      17
+     ],
+     "name": "w"
+    },
+    {
+     "label": "x",
+     "bits": [
+      16
+     ],
+     "name": "x"
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "0000000000000000",
+   "tag": "Type4d",
+   "problems": []
+  },
+  {
+   "page": 340,
+   "caption": "Figure 14-13:Type5a_move Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "01110xxxxxxxxxxxx0xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "srcureghigh[4:0]",
+     "bits": [
+      42,
+      38
+     ],
+     "name": "srcureghigh",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "srcureglow[1:1]",
+     "bits": [
+      32
+     ],
+     "name": "srcureglow",
+     "value_bits": [
+      1,
+      1
+     ]
+    },
+    {
+     "label": "srcureglow[0:0]",
+     "bits": [
+      31
+     ],
+     "name": "srcureglow",
+     "value_bits": [
+      0,
+      0
+     ]
+    },
+    {
+     "label": "dstureg[6:0]",
+     "bits": [
+      29,
+      23
+     ],
+     "name": "dstureg",
+     "value_bits": [
+      6,
+      0
+     ]
+    },
+    {
+     "label": "compute[22:16]",
+     "bits": [
+      22,
+      16
+     ],
+     "name": "compute",
+     "value_bits": [
+      22,
+      16
+     ]
+    },
+    {
+     "label": "compute[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "compute",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type5a_move",
+   "problems": []
+  },
+  {
+   "page": 341,
+   "caption": "Figure 14-14:Type5a (swap) Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "011110xxxxxxxxx000000xxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "cdreg[3:0]",
+     "bits": [
+      41,
+      38
+     ],
+     "name": "cdreg",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "dreg[3:0]",
+     "bits": [
+      26,
+      23
+     ],
+     "name": "dreg",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "compute[22:16]",
+     "bits": [
+      22,
+      16
+     ],
+     "name": "compute",
+     "value_bits": [
+      22,
+      16
+     ]
+    },
+    {
+     "label": "compute[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "compute",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type5a_swap",
+   "problems": []
+  },
+  {
+   "page": 343,
+   "caption": "Figure 14-15:Type5b (move) Instruction",
+   "msb": 47,
+   "lsb": 16,
+   "width": 32,
+   "pattern": "01110xxxxxxxxxxxx0xxxxxxx0000000",
+   "fields": [
+    {
+     "label": "srcureghigh[4:0]",
+     "bits": [
+      42,
+      38
+     ],
+     "name": "srcureghigh",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "srcureglow[1:1]",
+     "bits": [
+      32
+     ],
+     "name": "srcureglow",
+     "value_bits": [
+      1,
+      1
+     ]
+    },
+    {
+     "label": "srcureglow[0:0]",
+     "bits": [
+      31
+     ],
+     "name": "srcureglow",
+     "value_bits": [
+      0,
+      0
+     ]
+    },
+    {
+     "label": "dstureg[6:0]",
+     "bits": [
+      29,
+      23
+     ],
+     "name": "dstureg",
+     "value_bits": [
+      6,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type5b_move",
+   "problems": []
+  },
+  {
+   "page": 345,
+   "caption": "Figure 14-16:Type5b (swap) Instruction",
+   "msb": 47,
+   "lsb": 16,
+   "width": 32,
+   "pattern": "011110xxxxxxxxx000000xxxx0111111",
+   "fields": [
+    {
+     "label": "cdreg[3:0]",
+     "bits": [
+      41,
+      38
+     ],
+     "name": "cdreg",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "dreg[3:0]",
+     "bits": [
+      26,
+      23
+     ],
+     "name": "dreg",
+     "value_bits": [
+      3,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type5b_swap",
+   "problems": []
+  },
+  {
+   "page": 347,
+   "caption": "Figure 14-17:Type6a (mem) Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "1000xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "i[2:0]",
+     "bits": [
+      43,
+      41
+     ],
+     "name": "i",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "m[2:0]",
+     "bits": [
+      40,
+      38
+     ],
+     "name": "m",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "g",
+     "bits": [
+      32
+     ],
+     "name": "g"
+    },
+    {
+     "label": "d",
+     "bits": [
+      31
+     ],
+     "name": "d"
+    },
+    {
+     "label": "dataex[3:0]",
+     "bits": [
+      30,
+      27
+     ],
+     "name": "dataex",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "dreg[3:0]",
+     "bits": [
+      26,
+      23
+     ],
+     "name": "dreg",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "shiftimm[22:16]",
+     "bits": [
+      22,
+      16
+     ],
+     "name": "shiftimm",
+     "value_bits": [
+      22,
+      16
+     ]
+    },
+    {
+     "label": "shiftimm[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "shiftimm",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type6a_mem",
+   "problems": []
+  },
+  {
+   "page": 349,
+   "caption": "Figure 14-18:Type6a (nomem) Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "1000000000xxxxx00xxxx0000xxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "dataex[3:0]",
+     "bits": [
+      30,
+      27
+     ],
+     "name": "dataex",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "shiftimm[22:16]",
+     "bits": [
+      22,
+      16
+     ],
+     "name": "shiftimm",
+     "value_bits": [
+      22,
+      16
+     ]
+    },
+    {
+     "label": "shiftimm[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "shiftimm",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type6a_nomem",
+   "problems": []
+  },
+  {
+   "page": 351,
+   "caption": "Figure 14-19:Type7a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "000001001xxxxxxxxx0xxxxx1xxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "g",
+     "bits": [
+      38
+     ],
+     "name": "g"
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "is[2:2]",
+     "bits": [
+      32
+     ],
+     "name": "is",
+     "value_bits": [
+      2,
+      2
+     ]
+    },
+    {
+     "label": "is[1:0]",
+     "bits": [
+      31,
+      30
+     ],
+     "name": "is",
+     "value_bits": [
+      1,
+      0
+     ]
+    },
+    {
+     "label": "breg",
+     "bits": [
+      28
+     ],
+     "name": "breg"
+    },
+    {
+     "label": "toby",
+     "bits": [
+      27
+     ],
+     "name": "toby"
+    },
+    {
+     "label": "idis[2:0]",
+     "bits": [
+      26,
+      24
+     ],
+     "name": "idis",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "compute[22:16]",
+     "bits": [
+      22,
+      16
+     ],
+     "name": "compute",
+     "value_bits": [
+      22,
+      16
+     ]
+    },
+    {
+     "label": "compute[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "compute",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type7a",
+   "problems": []
+  },
+  {
+   "page": 353,
+   "caption": "Figure 14-20:Type7b Instruction",
+   "msb": 47,
+   "lsb": 16,
+   "width": 32,
+   "pattern": "000001000xxxxxxxxxxxxxxx00111111",
+   "fields": [
+    {
+     "label": "g",
+     "bits": [
+      38
+     ],
+     "name": "g"
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "is[2:2]",
+     "bits": [
+      32
+     ],
+     "name": "is",
+     "value_bits": [
+      2,
+      2
+     ]
+    },
+    {
+     "label": "is[1:0]",
+     "bits": [
+      31,
+      30
+     ],
+     "name": "is",
+     "value_bits": [
+      1,
+      0
+     ]
+    },
+    {
+     "label": "m[2:0]",
+     "bits": [
+      29,
+      27
+     ],
+     "name": "m",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "idis[2:0]",
+     "bits": [
+      26,
+      24
+     ],
+     "name": "idis",
+     "value_bits": [
+      2,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type7b",
+   "problems": []
+  },
+  {
+   "page": 355,
+   "caption": "Figure 14-21:Type7d Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "000001001xxxxxxxxx0xxxxx1xxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "g",
+     "bits": [
+      38
+     ],
+     "name": "g"
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "is[2:2]",
+     "bits": [
+      32
+     ],
+     "name": "is",
+     "value_bits": [
+      2,
+      2
+     ]
+    },
+    {
+     "label": "is[1:0]",
+     "bits": [
+      31,
+      30
+     ],
+     "name": "is",
+     "value_bits": [
+      1,
+      0
+     ]
+    },
+    {
+     "label": "breg",
+     "bits": [
+      28
+     ],
+     "name": "breg"
+    },
+    {
+     "label": "toby",
+     "bits": [
+      27
+     ],
+     "name": "toby"
+    },
+    {
+     "label": "idis[2:0]",
+     "bits": [
+      26,
+      24
+     ],
+     "name": "idis",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "compute[22:16]",
+     "bits": [
+      22,
+      16
+     ],
+     "name": "compute",
+     "value_bits": [
+      22,
+      16
+     ]
+    },
+    {
+     "label": "compute[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "compute",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type7d",
+   "problems": []
+  },
+  {
+   "page": 359,
+   "caption": "Figure 15-1:Type8a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "0000011xxxxxxxx000000x0xxxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "r",
+     "bits": [
+      40
+     ],
+     "name": "r"
+    },
+    {
+     "label": "b",
+     "bits": [
+      39
+     ],
+     "name": "b"
+    },
+    {
+     "label": "a",
+     "bits": [
+      38
+     ],
+     "name": "a"
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "j",
+     "bits": [
+      26
+     ],
+     "name": "j"
+    },
+    {
+     "label": "ci",
+     "bits": [
+      24
+     ],
+     "name": "ci"
+    },
+    {
+     "label": "addr[23:16]",
+     "bits": [
+      23,
+      16
+     ],
+     "name": "addr",
+     "value_bits": [
+      23,
+      16
+     ]
+    },
+    {
+     "label": "addr[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "addr",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type8a",
+   "problems": []
+  },
+  {
+   "page": 363,
+   "caption": "Figure 15-2:Type9a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "0000100xxxxxxxxxxxxxxxxx0xxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "rel",
+     "bits": [
+      40
+     ],
+     "name": "rel"
+    },
+    {
+     "label": "b",
+     "bits": [
+      39
+     ],
+     "name": "b"
+    },
+    {
+     "label": "a",
+     "bits": [
+      38
+     ],
+     "name": "a"
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "pmi[2:2]",
+     "bits": [
+      32
+     ],
+     "name": "pmi",
+     "value_bits": [
+      2,
+      2
+     ]
+    },
+    {
+     "label": "pmi[1:0]",
+     "bits": [
+      31,
+      30
+     ],
+     "name": "pmi",
+     "value_bits": [
+      1,
+      0
+     ]
+    },
+    {
+     "label": "pmm[2:0]",
+     "bits": [
+      29,
+      27
+     ],
+     "name": "pmm",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "j",
+     "bits": [
+      26
+     ],
+     "name": "j"
+    },
+    {
+     "label": "e",
+     "bits": [
+      25
+     ],
+     "name": "e"
+    },
+    {
+     "label": "ci",
+     "bits": [
+      24
+     ],
+     "name": "ci"
+    },
+    {
+     "label": "compute[22:16]",
+     "bits": [
+      22,
+      16
+     ],
+     "name": "compute",
+     "value_bits": [
+      22,
+      16
+     ]
+    },
+    {
+     "label": "compute[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "compute",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type9a",
+   "problems": []
+  },
+  {
+   "page": 367,
+   "caption": "Figure 15-3:Type9b Instruction",
+   "msb": 31,
+   "lsb": 0,
+   "width": 32,
+   "pattern": "0000100xxxxxxxxxxxxxxx0x00000000",
+   "fields": [
+    {
+     "label": "rel",
+     "bits": [
+      24
+     ],
+     "name": "rel"
+    },
+    {
+     "label": "b",
+     "bits": [
+      23
+     ],
+     "name": "b"
+    },
+    {
+     "label": "a",
+     "bits": [
+      22
+     ],
+     "name": "a"
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      21,
+      17
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "pmi[2:2]",
+     "bits": [
+      16
+     ],
+     "name": "pmi",
+     "value_bits": [
+      2,
+      2
+     ]
+    },
+    {
+     "label": "pmi[1:0]",
+     "bits": [
+      15,
+      14
+     ],
+     "name": "pmi",
+     "value_bits": [
+      1,
+      0
+     ]
+    },
+    {
+     "label": "pmm[2:0]",
+     "bits": [
+      13,
+      11
+     ],
+     "name": "pmm",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "j",
+     "bits": [
+      10
+     ],
+     "name": "j"
+    },
+    {
+     "label": "ci",
+     "bits": [
+      8
+     ],
+     "name": "ci"
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type9b",
+   "problems": []
+  },
+  {
+   "page": 371,
+   "caption": "Figure 15-4:Type10a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "11xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "rel",
+     "bits": [
+      45
+     ],
+     "name": "rel"
+    },
+    {
+     "label": "d",
+     "bits": [
+      44
+     ],
+     "name": "d"
+    },
+    {
+     "label": "dmi[2:0]",
+     "bits": [
+      43,
+      41
+     ],
+     "name": "dmi",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "dmm[2:0]",
+     "bits": [
+      40,
+      38
+     ],
+     "name": "dmm",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "pmi[2:2]",
+     "bits": [
+      32
+     ],
+     "name": "pmi",
+     "value_bits": [
+      2,
+      2
+     ]
+    },
+    {
+     "label": "pmi[1:0]",
+     "bits": [
+      31,
+      30
+     ],
+     "name": "pmi",
+     "value_bits": [
+      1,
+      0
+     ]
+    },
+    {
+     "label": "pmm[2:0]",
+     "bits": [
+      29,
+      27
+     ],
+     "name": "pmm",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "dreg[3:0]",
+     "bits": [
+      26,
+      23
+     ],
+     "name": "dreg",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "compute[22:16]",
+     "bits": [
+      22,
+      16
+     ],
+     "name": "compute",
+     "value_bits": [
+      22,
+      16
+     ]
+    },
+    {
+     "label": "compute[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "compute",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type10a",
+   "problems": []
+  },
+  {
+   "page": 374,
+   "caption": "Figure 15-5:Type11a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "0000101x00xxxxx000000xxx0xxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "x",
+     "bits": [
+      40
+     ],
+     "name": "x"
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "j",
+     "bits": [
+      26
+     ],
+     "name": "j"
+    },
+    {
+     "label": "e",
+     "bits": [
+      25
+     ],
+     "name": "e"
+    },
+    {
+     "label": "lr",
+     "bits": [
+      24
+     ],
+     "name": "lr"
+    },
+    {
+     "label": "compute[22:16]",
+     "bits": [
+      22,
+      16
+     ],
+     "name": "compute",
+     "value_bits": [
+      22,
+      16
+     ]
+    },
+    {
+     "label": "compute[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "compute",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type11a",
+   "problems": []
+  },
+  {
+   "page": 377,
+   "caption": "Figure 15-6:Type11c Instruction",
+   "msb": 15,
+   "lsb": 0,
+   "width": 16,
+   "pattern": "1100000x1xxxxxxx",
+   "fields": [
+    {
+     "label": "x",
+     "bits": [
+      8
+     ],
+     "name": "x"
+    },
+    {
+     "label": "j",
+     "bits": [
+      6
+     ],
+     "name": "j"
+    },
+    {
+     "label": "cond[4:0]",
+     "bits": [
+      5,
+      1
+     ],
+     "name": "cond",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "lr",
+     "bits": [
+      0
+     ],
+     "name": "lr"
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type11c",
+   "problems": []
+  },
+  {
+   "page": 379,
+   "caption": "Figure 15-7:Type12a_imm Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "00001100xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "data[15:8]",
+     "bits": [
+      39,
+      32
+     ],
+     "name": "data",
+     "value_bits": [
+      15,
+      8
+     ]
+    },
+    {
+     "label": "data[7:0]",
+     "bits": [
+      31,
+      24
+     ],
+     "name": "data",
+     "value_bits": [
+      7,
+      0
+     ]
+    },
+    {
+     "label": "mode",
+     "bits": [
+      23
+     ],
+     "name": "mode"
+    },
+    {
+     "label": "reladdr[22:16]",
+     "bits": [
+      22,
+      16
+     ],
+     "name": "reladdr",
+     "value_bits": [
+      22,
+      16
+     ]
+    },
+    {
+     "label": "reladdr[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "reladdr",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type12a_imm",
+   "problems": []
+  },
+  {
+   "page": 380,
+   "caption": "Figure 15-8:Type12a_ureg Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "000011010xxxxxxx00000000xxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "ureg[6:0]",
+     "bits": [
+      38,
+      32
+     ],
+     "name": "ureg",
+     "value_bits": [
+      6,
+      0
+     ]
+    },
+    {
+     "label": "mode",
+     "bits": [
+      23
+     ],
+     "name": "mode"
+    },
+    {
+     "label": "reladdr[22:16]",
+     "bits": [
+      22,
+      16
+     ],
+     "name": "reladdr",
+     "value_bits": [
+      22,
+      16
+     ]
+    },
+    {
+     "label": "reladdr[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "reladdr",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type12a_ureg",
+   "problems": []
+  },
+  {
+   "page": 381,
+   "caption": "Figure 15-9:Type13a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "0000111000xxxxx000000000xxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "term[4:0]",
+     "bits": [
+      37,
+      33
+     ],
+     "name": "term",
+     "value_bits": [
+      4,
+      0
+     ]
+    },
+    {
+     "label": "mode",
+     "bits": [
+      23
+     ],
+     "name": "mode"
+    },
+    {
+     "label": "reladdr[22:16]",
+     "bits": [
+      22,
+      16
+     ],
+     "name": "reladdr",
+     "value_bits": [
+      22,
+      16
+     ]
+    },
+    {
+     "label": "reladdr[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "reladdr",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type13a",
+   "problems": []
+  },
+  {
+   "page": 387,
+   "caption": "Figure 16-1:Type14a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "000100xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "g",
+     "bits": [
+      41
+     ],
+     "name": "g"
+    },
+    {
+     "label": "d",
+     "bits": [
+      40
+     ],
+     "name": "d"
+    },
+    {
+     "label": "l",
+     "bits": [
+      39
+     ],
+     "name": "l"
+    },
+    {
+     "label": "ureg[6:0]",
+     "bits": [
+      38,
+      32
+     ],
+     "name": "ureg",
+     "value_bits": [
+      6,
+      0
+     ]
+    },
+    {
+     "label": "addr[31:16]",
+     "bits": [
+      31,
+      16
+     ],
+     "name": "addr",
+     "value_bits": [
+      31,
+      16
+     ]
+    },
+    {
+     "label": "addr[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "addr",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type14a",
+   "problems": []
+  },
+  {
+   "page": 388,
+   "caption": "Figure 16-2:Type14d Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "0001101xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "d",
+     "bits": [
+      40
+     ],
+     "name": "d"
+    },
+    {
+     "label": "ex",
+     "bits": [
+      39
+     ],
+     "name": "ex"
+    },
+    {
+     "label": "l",
+     "bits": [
+      38
+     ],
+     "name": "l"
+    },
+    {
+     "label": "w",
+     "bits": [
+      37
+     ],
+     "name": "w"
+    },
+    {
+     "label": "x",
+     "bits": [
+      36
+     ],
+     "name": "x"
+    },
+    {
+     "label": "dreg[3:0]",
+     "bits": [
+      35,
+      32
+     ],
+     "name": "dreg",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "addr[31:16]",
+     "bits": [
+      31,
+      16
+     ],
+     "name": "addr",
+     "value_bits": [
+      31,
+      16
+     ]
+    },
+    {
+     "label": "addr[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "addr",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type14d",
+   "problems": []
+  },
+  {
+   "page": 393,
+   "caption": "Figure 16-3:Type15a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "101xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "g",
+     "bits": [
+      44
+     ],
+     "name": "g"
+    },
+    {
+     "label": "i[2:0]",
+     "bits": [
+      43,
+      41
+     ],
+     "name": "i",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "d",
+     "bits": [
+      40
+     ],
+     "name": "d"
+    },
+    {
+     "label": "l",
+     "bits": [
+      39
+     ],
+     "name": "l"
+    },
+    {
+     "label": "ureg[6:0]",
+     "bits": [
+      38,
+      32
+     ],
+     "name": "ureg",
+     "value_bits": [
+      6,
+      0
+     ]
+    },
+    {
+     "label": "addr[31:16]",
+     "bits": [
+      31,
+      16
+     ],
+     "name": "addr",
+     "value_bits": [
+      31,
+      16
+     ]
+    },
+    {
+     "label": "addr[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "addr",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type15a",
+   "problems": []
+  },
+  {
+   "page": 395,
+   "caption": "Figure 16-4:Type15b Instruction",
+   "msb": 31,
+   "lsb": 0,
+   "width": 32,
+   "pattern": "1001xxxxx0x0100000xxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "i[2:0]",
+     "bits": [
+      27,
+      25
+     ],
+     "name": "i",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "d",
+     "bits": [
+      24
+     ],
+     "name": "d"
+    },
+    {
+     "label": "l",
+     "bits": [
+      23
+     ],
+     "name": "l"
+    },
+    {
+     "label": "g",
+     "bits": [
+      21
+     ],
+     "name": "g"
+    },
+    {
+     "label": "ureg[6:0]",
+     "bits": [
+      13,
+      7
+     ],
+     "name": "ureg",
+     "value_bits": [
+      6,
+      0
+     ]
+    },
+    {
+     "label": "data[6:0]",
+     "bits": [
+      6,
+      0
+     ],
+     "name": "data",
+     "value_bits": [
+      6,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type15b",
+   "problems": []
+  },
+  {
+   "page": 397,
+   "caption": "Figure 16-5:Type16a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "1001xxxxxxx000xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "i[2:0]",
+     "bits": [
+      43,
+      41
+     ],
+     "name": "i",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "m[2:0]",
+     "bits": [
+      40,
+      38
+     ],
+     "name": "m",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "g",
+     "bits": [
+      37
+     ],
+     "name": "g"
+    },
+    {
+     "label": "sl",
+     "bits": [
+      33
+     ],
+     "name": "sl"
+    },
+    {
+     "label": "by",
+     "bits": [
+      32
+     ],
+     "name": "by"
+    },
+    {
+     "label": "data[31:16]",
+     "bits": [
+      31,
+      16
+     ],
+     "name": "data",
+     "value_bits": [
+      31,
+      16
+     ]
+    },
+    {
+     "label": "data[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "data",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type16a",
+   "problems": []
+  },
+  {
+   "page": 399,
+   "caption": "Figure 16-6:Type16b Instruction",
+   "msb": 47,
+   "lsb": 16,
+   "width": 32,
+   "pattern": "1001xxxxxxx00100xxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "i[2:0]",
+     "bits": [
+      43,
+      41
+     ],
+     "name": "i",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "m[2:0]",
+     "bits": [
+      40,
+      38
+     ],
+     "name": "m",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "g",
+     "bits": [
+      37
+     ],
+     "name": "g"
+    },
+    {
+     "label": "data[15:0]",
+     "bits": [
+      31,
+      16
+     ],
+     "name": "data",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type16b",
+   "problems": []
+  },
+  {
+   "page": 400,
+   "caption": "Figure 16-7:Type17a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "000011110xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "i[2:0]",
+     "bits": [
+      38,
+      32
+     ],
+     "name": "i",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "data[31:16]",
+     "bits": [
+      31,
+      16
+     ],
+     "name": "data",
+     "value_bits": [
+      31,
+      16
+     ]
+    },
+    {
+     "label": "data[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "data",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type17a",
+   "problems": [
+    "field 'i[2:0]' labels 3 bits but spans 7"
+   ]
+  },
+  {
+   "page": 401,
+   "caption": "Figure 16-8:Type17b Instruction",
+   "msb": 31,
+   "lsb": 0,
+   "width": 32,
+   "pattern": "100100000xxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "ureg[6:0]",
+     "bits": [
+      22,
+      16
+     ],
+     "name": "ureg",
+     "value_bits": [
+      6,
+      0
+     ]
+    },
+    {
+     "label": "data[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "data",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type17b",
+   "problems": []
+  },
+  {
+   "page": 405,
+   "caption": "Figure 17-1:Type18a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "00010100xxx0xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "bop[2:0]",
+     "bits": [
+      39,
+      37
+     ],
+     "name": "bop",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "sreg[3:0]",
+     "bits": [
+      35,
+      32
+     ],
+     "name": "sreg",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "data[31:16]",
+     "bits": [
+      31,
+      16
+     ],
+     "name": "data",
+     "value_bits": [
+      31,
+      16
+     ]
+    },
+    {
+     "label": "data[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "data",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type18a",
+   "problems": []
+  },
+  {
+   "page": 406,
+   "caption": "Figure 17-2:Type19a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "000101xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "sc[1:0]",
+     "bits": [
+      41,
+      40
+     ],
+     "name": "sc",
+     "value_bits": [
+      1,
+      0
+     ]
+    },
+    {
+     "label": "w",
+     "bits": [
+      39
+     ],
+     "name": "w"
+    },
+    {
+     "label": "g",
+     "bits": [
+      38
+     ],
+     "name": "g"
+    },
+    {
+     "label": "idis[2:0]",
+     "bits": [
+      37,
+      35
+     ],
+     "name": "idis",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "is[2:0]",
+     "bits": [
+      34,
+      32
+     ],
+     "name": "is",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "data[31:16]",
+     "bits": [
+      31,
+      16
+     ],
+     "name": "data",
+     "value_bits": [
+      31,
+      16
+     ]
+    },
+    {
+     "label": "data[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "data",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type19a",
+   "problems": []
+  },
+  {
+   "page": 408,
+   "caption": "Figure 17-3:Type19a_bitrev Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "000101000xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "g",
+     "bits": [
+      38
+     ],
+     "name": "g"
+    },
+    {
+     "label": "idis[2:0]",
+     "bits": [
+      37,
+      35
+     ],
+     "name": "idis",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "is[2:0]",
+     "bits": [
+      34,
+      32
+     ],
+     "name": "is",
+     "value_bits": [
+      2,
+      0
+     ]
+    },
+    {
+     "label": "data[31:16]",
+     "bits": [
+      31,
+      16
+     ],
+     "name": "data",
+     "value_bits": [
+      31,
+      16
+     ]
+    },
+    {
+     "label": "data[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "data",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type19a_bitrev",
+   "problems": []
+  },
+  {
+   "page": 410,
+   "caption": "Figure 17-4:Type20a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "00010111xxxxxxx0xxxxx---------------------------",
+   "fields": [
+    {
+     "label": "lpu",
+     "bits": [
+      39
+     ],
+     "name": "lpu"
+    },
+    {
+     "label": "lpo",
+     "bits": [
+      38
+     ],
+     "name": "lpo"
+    },
+    {
+     "label": "spu",
+     "bits": [
+      37
+     ],
+     "name": "spu"
+    },
+    {
+     "label": "spo",
+     "bits": [
+      36
+     ],
+     "name": "spo"
+    },
+    {
+     "label": "ppu",
+     "bits": [
+      35
+     ],
+     "name": "ppu"
+    },
+    {
+     "label": "ppo",
+     "bits": [
+      34
+     ],
+     "name": "ppo"
+    },
+    {
+     "label": "fc",
+     "bits": [
+      33
+     ],
+     "name": "fc"
+    },
+    {
+     "label": "llii",
+     "bits": [
+      31
+     ],
+     "name": "llii"
+    },
+    {
+     "label": "lldwb",
+     "bits": [
+      30
+     ],
+     "name": "lldwb"
+    },
+    {
+     "label": "lldi",
+     "bits": [
+      29
+     ],
+     "name": "lldi"
+    },
+    {
+     "label": "llpwb",
+     "bits": [
+      28
+     ],
+     "name": "llpwb"
+    },
+    {
+     "label": "llpi",
+     "bits": [
+      27
+     ],
+     "name": "llpi"
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "000000000000000000000000000",
+   "tag": "Type20a",
+   "problems": []
+  },
+  {
+   "page": 413,
+   "caption": "Figure 17-5:Type21a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "0000000000--------------------------------------",
+   "fields": [],
+   "unspecified_bits": [],
+   "unused_printed": "00000000000000000000000000000000000000",
+   "tag": "Type21a",
+   "problems": []
+  },
+  {
+   "page": 413,
+   "caption": "Figure 17-6:Type21c Instruction",
+   "msb": 15,
+   "lsb": 0,
+   "width": 16,
+   "pattern": "0000000000000001",
+   "fields": [],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type21c",
+   "problems": []
+  },
+  {
+   "page": 414,
+   "caption": "Figure 17-7:Type22a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "000000001x--------------------------------------",
+   "fields": [
+    {
+     "label": "emu",
+     "bits": [
+      38
+     ],
+     "name": "emu"
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "00000000000000000000000000000000000000",
+   "tag": "Type22a",
+   "problems": []
+  },
+  {
+   "page": 415,
+   "caption": "Figure 17-8:Type22c Instruction",
+   "msb": 15,
+   "lsb": 0,
+   "width": 16,
+   "pattern": "000000000x000001",
+   "fields": [
+    {
+     "label": "emu",
+     "bits": [
+      6
+     ],
+     "name": "emu"
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type22c",
+   "problems": []
+  },
+  {
+   "page": 417,
+   "caption": "Figure 17-9:Type25a_direct Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "000110000000010000000000xxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "addr[23:16]",
+     "bits": [
+      23,
+      16
+     ],
+     "name": "addr",
+     "value_bits": [
+      23,
+      16
+     ]
+    },
+    {
+     "label": "addr[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "addr",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type25a_direct",
+   "problems": []
+  },
+  {
+   "page": 418,
+   "caption": "Figure 17-10:Type25a_pcrel Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "000110000100010000000000xxxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "reladdr[23:16]",
+     "bits": [
+      23,
+      16
+     ],
+     "name": "reladdr",
+     "value_bits": [
+      23,
+      16
+     ]
+    },
+    {
+     "label": "reladdr[15:0]",
+     "bits": [
+      15,
+      0
+     ],
+     "name": "reladdr",
+     "value_bits": [
+      15,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "",
+   "tag": "Type25a_pcrel",
+   "problems": []
+  },
+  {
+   "page": 419,
+   "caption": "Figure 17-11:Type25a_rframe Opcode",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "000110100000010000000000????????????????????----",
+   "fields": [],
+   "unspecified_bits": [
+    23,
+    22,
+    21,
+    20,
+    19,
+    18,
+    17,
+    16,
+    15,
+    14,
+    13,
+    12,
+    11,
+    10,
+    9,
+    8,
+    7,
+    6,
+    5,
+    4
+   ],
+   "unused_printed": "0000",
+   "tag": "Type25a_rframe",
+   "problems": [
+    "bits 23..4 (20) are white with no field label; check the text"
+   ]
+  },
+  {
+   "page": 420,
+   "caption": "Figure 17-12:Type25c_rframe Instruction",
+   "msb": 47,
+   "lsb": 16,
+   "width": 32,
+   "pattern": "0001101000000100????????????----",
+   "fields": [],
+   "unspecified_bits": [
+    31,
+    30,
+    29,
+    28,
+    27,
+    26,
+    25,
+    24,
+    23,
+    22,
+    21,
+    20
+   ],
+   "unused_printed": "0000",
+   "tag": "Type25a_rframe",
+   "problems": [
+    "bits 31..20 (12) are white with no field label; check the text",
+    "figure tag 'Type25a_rframe' does not match caption 'Type25c_rframe Instruction'"
+   ]
+  },
+  {
+   "page": 421,
+   "caption": "Figure 17-13:Type26a Instruction",
+   "msb": 47,
+   "lsb": 0,
+   "width": 48,
+   "pattern": "0000000001000000--------------------------------",
+   "fields": [],
+   "unspecified_bits": [],
+   "unused_printed": "00000000000000000000000000000000",
+   "tag": "Type26a",
+   "problems": []
+  },
+  {
+   "page": 423,
+   "caption": "Figure 18-1:Compute Instruction",
+   "msb": 31,
+   "lsb": 0,
+   "width": 32,
+   "pattern": "---------xxxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "mf",
+     "bits": [
+      22
+     ],
+     "name": "mf"
+    },
+    {
+     "label": "cu[1:0]",
+     "bits": [
+      21,
+      20
+     ],
+     "name": "cu",
+     "value_bits": [
+      1,
+      0
+     ]
+    },
+    {
+     "label": "opcode[7:4]",
+     "bits": [
+      19,
+      16
+     ],
+     "name": "opcode",
+     "value_bits": [
+      7,
+      4
+     ]
+    },
+    {
+     "label": "opcode[3:0]",
+     "bits": [
+      15,
+      12
+     ],
+     "name": "opcode",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "rn[3:0]",
+     "bits": [
+      11,
+      8
+     ],
+     "name": "rn",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "rx[3:0]",
+     "bits": [
+      7,
+      4
+     ],
+     "name": "rx",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "ry[3:0]",
+     "bits": [
+      3,
+      0
+     ],
+     "name": "ry",
+     "value_bits": [
+      3,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "000000000",
+   "tag": "Compute",
+   "problems": []
+  },
+  {
+   "page": 424,
+   "caption": "Figure 18-2:ShortCompute Instruction",
+   "msb": 15,
+   "lsb": 0,
+   "width": 16,
+   "pattern": "----xxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "opcode[3:0]",
+     "bits": [
+      11,
+      8
+     ],
+     "name": "opcode",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "rn[3:0]",
+     "bits": [
+      7,
+      4
+     ],
+     "name": "rn",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "rx[3:0]",
+     "bits": [
+      3,
+      0
+     ],
+     "name": "rx",
+     "value_bits": [
+      3,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "1100",
+   "tag": "ShortCompute",
+   "problems": []
+  },
+  {
+   "page": 425,
+   "caption": "Figure 18-3:ShiftImm Computation Opcode",
+   "msb": 31,
+   "lsb": 0,
+   "width": 32,
+   "pattern": "-----xxxx0xxxxxxxxxxxxxxxxxxxxxx",
+   "fields": [
+    {
+     "label": "dataex[3:0]",
+     "bits": [
+      26,
+      23
+     ],
+     "name": "dataex",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "shiftop[5:0]",
+     "bits": [
+      21,
+      16
+     ],
+     "name": "shiftop",
+     "value_bits": [
+      5,
+      0
+     ]
+    },
+    {
+     "label": "data[7:0]",
+     "bits": [
+      15,
+      8
+     ],
+     "name": "data",
+     "value_bits": [
+      7,
+      0
+     ]
+    },
+    {
+     "label": "rn[3:0]",
+     "bits": [
+      7,
+      4
+     ],
+     "name": "rn",
+     "value_bits": [
+      3,
+      0
+     ]
+    },
+    {
+     "label": "rx[3:0]",
+     "bits": [
+      3,
+      0
+     ],
+     "name": "rx",
+     "value_bits": [
+      3,
+      0
+     ]
+    }
+   ],
+   "unspecified_bits": [],
+   "unused_printed": "00000",
+   "tag": "Shiftimm",
+   "problems": []
+  }
+ ],
+ "anomalies": []
+}
