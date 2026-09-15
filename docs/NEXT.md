@@ -15,7 +15,7 @@ You supply your own `Digitakt_II_OS1.15C.syx`
 ```sh
 uv sync                     # creates .venv on CPython 3.12 from uv.lock
 
-# decompress the sections out of the .syx (about a minute, once)
+# decompress the sections out of the .syx (about a second)
 uv run python -m emu.extract Digitakt_II_OS1.15C.syx -o sections/
 
 uv run python -m dt2.container Digitakt_II_OS1.15C.syx   # section table

@@ -4,6 +4,9 @@ Companion to `tools/sharcldr.py`. The PDFs themselves are gitignored
 (`.gitignore:21`, `docs/refs/*.pdf`); this note is the committed part, and
 cites chapter/page numbers so the claims can be re-checked.
 
+For the documents and method behind `tools/sharcspec/`, see
+`docs/sharc/SOURCES.md`.
+
 ## Why this matters here
 
 Section 7 of the firmware container is the SHARC DSP image. The ColdFire MAIN
@@ -78,12 +81,10 @@ transfer directly.
 
 ## Tooling consequence
 
-CrossCore Embedded Studio is **Windows and Linux only** -- Windows 10/11 Pro or
-Enterprise, Ubuntu 20.04/22.04 -- with no macOS build, so on an Apple Silicon
-Mac it needs a VM or an emulated x86-64 container. Since the encoding tables
-are in the Programming Reference, CCES is a convenience oracle for validating
-decodings, not a prerequisite. A decoder or SLEIGH module can be written from
-this document alone.
+The vendor DSP toolchain is Windows and Linux only, with no macOS build, so
+on an Apple Silicon Mac it needs a VM or an emulated x86-64 container. The
+encoding tables are in the Programming Reference, so it is not needed. A
+decoder or SLEIGH module can be written from this document alone.
 
 ## Not established
 

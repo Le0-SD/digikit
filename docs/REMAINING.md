@@ -21,7 +21,7 @@ inherited from earlier docs. Claims inherited from earlier docs are marked.
 | Step | Tool | State |
 |---|---|---|
 | `.syx` → 8-in-7 decode → ELE3 → section table | `dt2/container.py` | works |
-| sections → decompressed blobs | `emu/extract.py` (runs the device's own aPLib depacker under Unicorn) | works |
+| sections → decompressed blobs | `emu/extract.py` (`dt2/elz.py` by default, all four firmwares; `--oracle` runs the device's own depacker under Unicorn, 1.15C and 1.10E only) | works |
 | byte-exact, length-preserving edit of a decompressed section | `tools/patchimg.py` | works; validates old bytes, refuses overlaps, enforces `len(old)==len(new)` |
 | CRC-32 oracle (`0x80001bd0`) | `emu/oracle.py` | works, byte-exact vs zlib |
 | depack oracle (`0x80000432`) | `emu/oracle.py` | works |
@@ -97,7 +97,8 @@ takes `--str ADDR=OLD:NEW` / `--bytes ADDR=OLDHEX:NEWHEX` on the command line
 and *emits* a JSON manifest for audit, but nothing ever *reads* a manifest back.
 There is no patch file format, no named-patch catalogue, no versioning of a
 patch against a firmware hash, and no selection mechanism. `patches/` is
-unrelated — it holds a source patch for Unicorn's m68k translator.
+unrelated — it holds two source patches for Unicorn's m68k translator (see
+`patches/README.md`).
 
 For the stated goal, what is needed on top of the repack chain:
 
@@ -261,6 +262,9 @@ derived residual. `tools/sharcldr.py` now exposes this as `sw_to_byte()`,
 
 A consequence worth noting: the float-vs-other region heuristic in the old
 output is now obsolete for locating code. Block targets are ground truth.
+
+See also docs/sharc/SPEC-FINDINGS.md §2 for the same boot stream in 1.16 and
+1.11.
 
 ### B.5 The dispatch table is real, and it is an RPC dispatcher
 

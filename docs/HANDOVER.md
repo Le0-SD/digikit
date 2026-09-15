@@ -853,12 +853,12 @@ and `rte` restored the stale frame value. "A `bgt` at `0x40111070` taking
 opposite branches from identical PC, A7, D0 and A0" is exactly that. So is the
 `beq` at `0x40188b40` in section 1.
 
-`patches/unicorn-2.1.4-m68k-sr-read.patch` deletes that one line. Built and
-verified: `reg_read(SR)` after `tst.l d0` with a non-zero operand goes from
-`0x2004` (Z set, wrong) to `0x2000` (Z clear, right). Build with
-`cmake -B build -DCMAKE_BUILD_TYPE=Release -DUNICORN_ARCH=m68k` and drop
-`libunicorn.2.dylib` over the one in `.venv/.../unicorn/lib/`. It is **not**
-installed; stock Unicorn is in place.
+That patch was later replaced by
+`patches/unicorn-2.1.4-m68k-hook-ccr-sync.patch`, which also commits lazy
+condition codes at code-hook and count stops, and
+`patches/unicorn-2.1.4-m68k-emac-mac-load.patch` was added for EMAC MAC and
+MSAC with load. `tools/install-patched-unicorn.sh` builds and installs both;
+see `docs/UNICORN.md`.
 
 **Two things stop this being a win, and both are measured.**
 
@@ -1047,6 +1047,10 @@ re-import. Import `ghidra.*` only *after* `pyghidra.start()`. Scripts in
 `tools/ghidra/` must be Java; this Ghidra build has no PyGhidra. Note the
 decompiler goes to garbage on some large functions (`0x40188b00`,
 `0x40146f54`) — fall back to `dt2.coldfire` for raw disassembly there.
+
+For grep and SQL, dump the program once with `tools/ghidradump.py` (about a
+minute, to `out/ghidra/<tag>/`); for live queries use `tools/ghidraq.py`,
+which chains queries in one JVM. See CLAUDE.md.
 
 **The manuals are in `docs/refs/`** (untracked, ~11 MB of NXP PDF — decide
 before committing). `MCF5441XRM.pdf` is MCF54418RM Rev 5, 1360 pages;
