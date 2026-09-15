@@ -1626,6 +1626,40 @@ Ghidra or disassembly output and it was not re-checked.
 - `docs/sharc/structure-1.16.md` maps the 1.16 DSP program: FreeRTOS tasks, a
   task proposed as the command dispatcher for the ColdFire, and a command block
   at `0x82a00000`. These were found on 1.16 and are hypotheses. **[D][O]**
+- Checked against the main programs of 1.16 and 1.15C (short-word address
+  SW = `0x1c1338` + file offset / 2), with a second check:
+  - A software call is the triple `3c` (raw `0x9ff2`, push R2 through
+    I7/M7), `16a` (stores the goto's short-word address minus 1) and
+    `25a_direct` (the goto): 45 in each version. A return is `9b_abs` (raw
+    `0x083f343f`, indirect jump through I4/M6) then `25c_rframe` (`0x1901`):
+    45 in 1.16, 47 in 1.15C. **[V]**
+  - The RPC dispatcher task is created at SW `0x1c3f5a`-`0x1c3f6a`,
+    byte-identical in both: `17a` ureg2=`0x257800`, `17b` ureg12=1000, `17a`
+    ureg8=`0x2577f0`, `17a` ureg4=`0x1c3bf0`, then `25a_direct` to
+    `0xb8615d` (1.16) / `0xb86159` (1.15C). ureg8 is the name "RPC
+    dispatcher" at loader byte address `0x282577f0`, so data pointers add
+    `0x28000000` without doubling, while ureg4, the entry, is a short-word
+    address. The call target lies outside every loaded section-7 block. The
+    same target creates "Audio Task" at SW `0x1c7775` in 1.16 (entry value
+    `0x1c7749`) and at SW `0x1c7708` in 1.15C (`0x1c76dc`). **[V]**
+  - Exactly 30 instructions in each main program carry a value in
+    `0x82a00000`-`0x82a001ff` (forms `14a`, `14d`, `16a`, `17a`), at the
+    same 30 short-word addresses, all in `0x1c361a`-`0x1c48c3`. **[V]**
+  - Ghidra has no function at `0x1c3bf0`-`0x1c3c3e` in either program: the
+    body calls through the software-call idiom, which the language models as
+    plain gotos. The SPORT/DAI setup writes 34 registers at SW
+    `0x1cb28e`-`0x1cb31a` in 1.16 and `0x1cb222`-`0x1cb2ae` in 1.15C. **[D]**
+  - The two main programs differ in four parts: up to SW `0x1c7501` only
+    single words differ; SW `0x1c74fb`-`0x1c7781` (1.16) against
+    `0x1c74fb`-`0x1c7715` (1.15C), around the Audio Task creation, has
+    several edits that add 108 words; the next 26,733 words are the same
+    code, `0x6c` words later in 1.16; the last 18 words of 1.16 and 126 of
+    1.15C are different code, so both stay 104,848 bytes. **[V]**
+  - Still open: how the dispatcher selects a command (the indirect `9a_abs`
+    through I6/M3 at SW `0x1c46c4` is a candidate; the `9a_rel` at
+    `0x1c551a` has a fixed target), the Audio Task entry (`0x1c7749` is not
+    an instruction boundary in our decode), and how the ColdFire reaches
+    `0x82a00000`; the only confirmed link is the DSPI2 frame. **[O]**
 
 ## Emulation
 
