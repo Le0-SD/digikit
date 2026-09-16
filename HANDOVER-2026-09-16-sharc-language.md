@@ -83,6 +83,83 @@ Replaces `HANDOVER-2026-09-15-sharc-side.md`. Results are in
   `docs/refs/netburner-coldfire/`,
   `docs/refs/dspi2-edma-blocker-and-register-sources.md`.
 
+## Start here: do machines reach the SHARC at all?
+
+This is the fork in the road and it comes before every p-code stage below.
+
+Em's goal is their own machines on Digitakt II and Digitone II. Rungs 1 and 2
+of the eighth-machine ladder are done -- PLACEHOLDER is listed and selectable,
+and the ColdFire side is no longer the blocker (FINDINGS, "The ColdFire machine
+dispatch"). What is not known is whether a machine is distinct DSP code at all.
+
+The evidence says maybe not. Nobody has found the machine type travelling to
+the SHARC: "no call to `FUN_4004fc02` or `FUN_400caf48`, and no read of
+`+0xa2`, was found in the handler or its frame loop" (FINDINGS, "The ColdFire
+tells the SHARC through a periodic DSPI2 frame"), and the same negative result
+holds on Digitone II 1.11. Two readings:
+
+- the type reaches the DSP by a path nobody has traced, inside the per-track
+  tables the frame copies; or
+- there is no per-machine DSP algorithm on a sampler at all. SAMPLE, WERP,
+  STRETCH, REPITCH and SLICE are playback modes of one engine, and a machine is
+  a parameter mapping.
+
+If the second holds for Digitakt II, a new machine needs no assembler and no
+DSP semantics, and stages 1-7 below stop being on its critical path. Digitone
+II is unlikely to go the same way: FM TONE, WAVETONE and SWARMER are different
+synthesis algorithms, so a new one there probably is new DSP code. The stages
+below stay as written; they are the road for Digitone II and for rung 4.
+
+**The experiment.** Capture the frame with one track set to machine A, then to
+machine B, and diff. Bytes that differ at a stable offset are the selector or
+the parameter encoding. Frames identical apart from parameter values say
+machines are mappings.
+
+Digitakt II 1.15C can run it today: `tools/framelink.py` has the profile,
+`snapshots/boot400M.snap` exists, the GUI runs, and `tools/sharcframe.py`
+captures a pass. The only gap is a way to set the machine --
+`tools/machinepatch.py` adds an eighth type, it does not select among the
+seven. Three options, cheapest first:
+
+- `sharcframe.py --poke ADDR=LONG` on the per-track machine field (`+0xa2` of
+  the track struct). Fastest, but a poke may never reach the derived per-track
+  tables the frame actually copies -- the MIDI case shows the commit
+  `FUN_40035e90` writing derived state -- so a null result here is ambiguous.
+- Call the machine setter `FUN_40050cd6` from a Unicorn hook.
+  `tools/sharcframe.py` already hooks the driver call; copy that shape. This is
+  the reliable one.
+- Drive the GUI with `--input` presses, as the 1.15C machine runs under "Still
+  open from 2026-09-14" do. Slowest: 12-23 minutes a run.
+
+**Digitone II needs setup first.** `emu/` supports it properly -- Digitone
+addresses run through `emu/symbols.py`, `pit.py`, `esdhc.py`, `dspboot.py` and
+`device.py` -- but two things are missing:
+
+- `tools/framelink.py` has no Digitone profile, so `sharcframe.py` and
+  `tools/dspmap.py` refuse the image outright. The addresses are partly known
+  (FINDINGS, "Digitone II 1.11: the same link and the same machine table
+  shape"): handler `FUN_40025e36`, driver call
+  `FUN_400cf7be(0xa80, 0x80005e60, 0xabc, 0x800053a4)`, TX 2,688 and RX 2,748,
+  16 per-track slots of `0x92` bytes copied from `0x800068e4 + i*0xca`. The
+  gate and pacing variables have not been located at all. Verify them
+  instruction by instruction, the way 1.16's were, before writing a profile.
+- Boot snapshots exist for Digitone II **1.10E** only
+  (`snapshots/Digitone_II_OS1.10E/boot*.snap`), not 1.11. Either build a 1.11
+  ladder with `emu.longrun.build` as 1.16's was built, or run the experiment on
+  1.10E -- a departure from the 1.16/1.11 rule that costs nothing here, since
+  the question is structural.
+
+**The static cross-check**, which needs no emulator and works on both devices:
+find what writes the per-track tables the frame reads (`0x800047fc + 4i`,
+`0x80003340 + i*0x9a`, `0x80005b50 + i*0x8e` on Digitakt). Only the MIDI flag's
+writer is known. `tools/refscan.py` cannot find these by construction -- they
+are reached as `base + i*stride` and its docstring says it misses computed
+addresses -- so use `tools/dspmap.py`, which pairs the Ghidra dump's data
+xrefs with a refscan sweep and already knows these regions. FINDINGS puts the
+writers "among functions that use file-browser strings (`ENTER DIR NAME`,
+`WRITE PROTECTED`), in about `0x4002c0fa`-`0x4002f000`. About 45 of them are
+called from elsewhere and they were not traced one by one."
+
 ## How to run
 
 ```
