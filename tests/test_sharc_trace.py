@@ -126,6 +126,24 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(s.uregs[2], T.Const(42))
         self.assertEqual(s.trace[0]["action"], "compute")
 
+        s = self.run_one(
+            T.State(1, {0: T.Const(99), 2: T.Const(4), 12: T.Const(4)}),
+            insn(
+                "5a_move",
+                {
+                    "srcureghigh[4:0]": 0,
+                    "srcureglow[1:1]": 0,
+                    "srcureglow[0:0]": 0,
+                    "dstureg[6:0]": 3,
+                    "cond[4:0]": 31,
+                    **full(0, 0x0A, 0, 12, 2),
+                },
+                6,
+            ),
+        )
+        self.assertEqual(s.uregs[0], T.Const(99))
+        self.assertEqual(s.trace[0]["operation"], "compare")
+
     def test_compute_unknown_and_unsupported_do_not_mutate(self):
         s = self.run_one(T.State(1), insn("2c", {"compute[11:0]": 0x251}, 2))
         self.assertIsInstance(s.uregs[5], T.Unknown)

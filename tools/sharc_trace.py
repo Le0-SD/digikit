@@ -351,6 +351,10 @@ def _compute(
     if cu == 0 and opcode == 0x02:
         value = _subtract(left, right, "R%d - R%d" % (rx, ry))
         return rn, value, "subtract"
+    # PRM Table 18-5: ALUOP 00001010 is signed comp(RX, RY). It updates
+    # status only, so the tracer records the comparison without writing RN.
+    if cu == 0 and opcode == 0x0A:
+        return rn, left, "compare"
     if cu == 0 and opcode == 0x21:
         return rn, left, "pass"
     if cu == 1 and opcode == 0x70:
