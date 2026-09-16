@@ -143,6 +143,29 @@ class TraceTest(unittest.TestCase):
         )
         self.assertEqual(s.uregs[0], T.Const(99))
         self.assertEqual(s.trace[0]["operation"], "compare")
+        self.assertTrue(s.trace[0]["status_only"])
+
+        s = self.run_one(
+            T.State(1, {0: T.Const(0x10), 2: T.Const(4)}),
+            insn(
+                "5a_move",
+                {
+                    "srcureghigh[4:0]": 0,
+                    "srcureglow[1:1]": 0,
+                    "srcureglow[0:0]": 0,
+                    "dstureg[6:0]": 2,
+                    "cond[4:0]": 31,
+                    **full(2, 0xCC, 0, 0, 2),
+                },
+                6,
+            ),
+        )
+        self.assertEqual(s.uregs[0], T.Const(0x10))
+        self.assertEqual(s.uregs[2], T.Const(0x10))
+        self.assertEqual(
+            (s.trace[0]["operation"], s.trace[0]["status_only"]),
+            ("bit-test", True),
+        )
 
     def test_compute_unknown_and_unsupported_do_not_mutate(self):
         s = self.run_one(T.State(1), insn("2c", {"compute[11:0]": 0x251}, 2))

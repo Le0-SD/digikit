@@ -360,6 +360,10 @@ def _compute(
     if cu == 1 and opcode == 0x70:
         value = _multiply(left, right, "R%d * R%d" % (rx, ry))
         return rn, value, "multiply"
+    # PRM Table 18-9 and pp. 24-5--24-6: SHIFTOP 11001100 is
+    # btst RX by RY. It changes status flags only and has no RN result.
+    if cu == 2 and opcode == 0xCC:
+        return rn, left, "bit-test"
     raise ValueError("unsupported full compute cu=%#x opcode=%#x" % (cu, opcode))
 
 
@@ -367,8 +371,10 @@ def _apply_compute(
     state: State, insn: Instruction, result: tuple[int, Value, str]
 ) -> None:
     rn, value, operation = result
-    _event(state, insn, "compute", operation=operation, result_register="R%d" % rn)
-    if operation != "compare":
+    if operation in ("compare", "bit-test"):
+        _event(state, insn, "compute", operation=operation, status_only=True)
+    else:
+        _event(state, insn, "compute", operation=operation, result_register="R%d" % rn)
         state.uregs[rn] = value
 
 
