@@ -6,13 +6,24 @@ Replaces `HANDOVER-2026-09-15-sharc-side.md`. Results are in
 ## State
 
 - Branch `sharc-pcode`, from `main` after PR #13 (`machine-engine-link`,
-  merged), pushed to `origin`. Commit `ad2ec98`: CJUMP as a call in the
-  generated SHARC+ language, the rewritten call finder in
-  `tools/sharcflow.py`, `tools/refstext.py`, FINDINGS: the CJUMP
-  correction. Uncommitted: this handover (renamed from
-  `HANDOVER-2026-09-15-sharc-side.md`) and FINDINGS: "Delay slots as one
-  Ghidra instruction".
-- Tests: 193 passed, 5 skipped.
+  merged), pushed to `origin`. Commits: `ad2ec98` CJUMP as a call;
+  `14f85fc` conditional jumps, calls and returns keep a fall-through, plus
+  `tools/sharcpcode.py`; `c8b7990` a sqlite dump per measurement run and
+  `tools/sharcpcode.sql`; `bd153a3` Type21a is the all-zero word, not a
+  prefix; `eed409d` Type22a is idle and neither image contains one, plus
+  `tools/sharcspec/audit_bits.py`. Only the untracked files listed below are
+  uncommitted.
+- Tests: 209 passed, 5 skipped.
+- The language installed in Ghidra is HEAD's (78 constructors, from
+  `tools/ghidra/install-sharc.sh`). The programs in
+  `~/ghidra-projects/elektron-sharc` were imported with an older one:
+  re-import before reading them, or work from the throwaway projects
+  `tools/sharcpcode.py` builds under its own output directory.
+- Measurement runs, git-ignored, each with `lint.json`, `<image>.json`,
+  `<image>.sqlite` and its own Ghidra project: `out/sharcpcode/db-old`
+  (before the conditional-flow change), `db-new`, `t21`, `t22` (a rejected
+  16-bit reading of Type22a's words), and `t23`, which is HEAD. Measure a
+  change against `t23`.
 - Analysis targets are Digitakt II 1.16 and Digitone II 1.11; Em asked on
   2026-09-15 to stop cross-checking 1.15C.
 - The device stays on 1.15C with bootstrap 2.00. Installing 1.16 upgrades the
@@ -86,6 +97,14 @@ uv run --with pymupdf python tools/refstext.py            # manuals to out/refs/
 uv run python tools/sharcflow.py out/sharc/dt2-1.16-main.bin --program /dt2-1.16_SHARC --cover --analyze   # --save writes
 uv run python tools/sharcflow.py out/sharc/dn2-1.11-main.bin --base-sw 0x1c12e2 --program /dn2-1.11_SHARC --cover --analyze
 
+# SHARC: measure a language change, and query a run
+uv run python tools/sharcpcode.py measure --out out/sharcpcode/NEW --ghidra   # ~35 s per image
+uv run python tools/sharcpcode.py compare out/sharcpcode/t23 out/sharcpcode/NEW
+sqlite3 -header -column out/sharcpcode/NEW/dt2-1.16.sqlite \
+  "ATTACH 'out/sharcpcode/t23/dt2-1.16.sqlite' AS old;" ".read tools/sharcpcode.sql"
+uv run python tools/sharcspec/audit_bits.py --top 12     # PRM bits the table does not fix
+(cd tools/sharcspec && uv run python build_table.py)     # after editing the merge rules
+
 # ColdFire: dump, Version Tracking check, frame-table map
 uv run python tools/ghidradump.py --out out/ghidra/dt2-1.16-emac \
   --project $HOME/ghidra-projects/elektron-emac --project-name elektron-emac \
@@ -114,13 +133,23 @@ function boundaries; do not add boundary heuristics to `tools/sharcflow.py`
 regenerates, compiles and installs the language; then
 `tools/sharc_import.py ... --overwrite --seed-calls --analyze` and
 `tools/sharcflow.py ... --cover --analyze --save` rebuild a program (about
-15 s per image; commands under "How to run"). Stages:
+15 s per image; commands under "How to run").
 
-1. Done 2026-09-16 (FINDINGS, "Delay slots as one Ghidra instruction"): a
-   delayed branch plus its two delay-slot instructions compiles and
-   disassembles as one instruction. The throwaway module and script lived
-   in that session's scratchpad and are gone; rebuild the approach in the
-   generator from these rules:
+Measure every change with `tools/sharcpcode.py measure --out DIR --ghidra`
+and `compare out/sharcpcode/t23 DIR`, which fails on new sleigh diagnostics,
+fewer decoded instructions, a conditional branch with no fall-through, a
+decompiler failure, a probe that stops passing, or a timing that grows by more
+than a quarter. HEAD's numbers for 1.16: 21,792 aligned instructions, all
+decoding; 1,170 main-program functions, 95 of them one instruction and 493 two
+to five; 296 functions truncated at bad instruction data; 165 Error bookmarks;
+`8a_rel` branches landing on an instruction start 520 of 590 in range. Read
+the rest with `tools/sharcpcode.sql` against the run's sqlite dump. Mark
+unconfirmed forms unimplemented instead of guessing.
+
+1. Delay slots in the generator: CJUMP, the return and every delayed
+   `8a`/`9a`/`9b` jump, and `11a`/`11c` with j=1 if they compile. The spike
+   that proved this compiles is gone (FINDINGS, "Delay slots as one Ghidra
+   instruction"); rebuild it from these rules:
    - Two structurally identical slot subtables `s1` and `s2`, each a copy of
      every root constructor with an empty body; one subtable cannot appear
      twice in a pattern. Define them before the constructors that use them.
@@ -133,43 +162,46 @@ regenerates, compiles and installs the language; then
      split on j, j=1 as `build s1; build s2; return [0:4];` (j=0 unchanged);
      `8a_abs` jump with j=1 as `... goto target;`. RFRAME bodies emptied: it
      restores I7 and I6 and is not a return.
-   - With compute p-code, a conditional delayed branch must evaluate its
-     condition before the slots run.
-   - Remove the test install: `rm -rf
+   - A conditional delayed branch must evaluate its condition before the
+     slots run. The conditional constructors are already split on cond
+     (`gen_sleigh.py`, `conditional_semantics`), so the slots go inside the
+     branch that takes it.
+   - Remove any test install afterwards: `rm -rf
      /opt/homebrew/Cellar/ghidra/12.1.3/libexec/Ghidra/Processors/SHARC_SPIKE
-     ~/ghidra-projects/spike-sharc ~/ghidra-projects/spike-sharc.rep
-     ~/ghidra-projects/spike-sharc-baseline
-     ~/ghidra-projects/spike-sharc-baseline.rep`.
+     ~/ghidra-projects/spike-sharc*`.
 2. Attach the ureg register names (SHARC+ Core Programming Reference, UREG
    class table: 0x00-0x0f R, 0x10 I, 0x20 M, 0x30 L, 0x40 B, 0x50 S, 0x60 and
    up system registers) and define the status and system registers (ASTAT,
-   STKY, PCSTK, LPSTK, loop registers). Add a test that runs Ghidra's sleigh
-   compiler on the generated module.
-3. Delay slots in the generator per stage 1: CJUMP, the return and every
-   delayed `8a`/`9a`/`9b` jump, and `11a`/`11c` with j=1 if they compile.
-   Re-import both programs, re-run the pass, and compare with the FINDINGS
-   table (1.16: 1,875 main-program functions, 168 with one instruction, 806
-   with two to five).
-4. SW `0x1c13bc` in 1.16: our decoder and Ghidra both read an `8a_rel` jump
+   STKY, PCSTK, LPSTK, loop registers). The sleigh compiler already runs in
+   `tests/test_sharc_pcode.py`.
+3. SW `0x1c13bc` in 1.16: our decoder and Ghidra both read an `8a_rel` jump
    with reladdr `0x3e0030` (raw `00 07 3e 02 30 00`), a nonsensical target,
-   and `FUN_001c136a` stops there, so the function that returns 2748 cannot
-   be decompiled. Check the bytes and the candidate forms against the manual
+   and `FUN_001c136a` stops there, so the probe "returns 2748" fails. Check
+   the bytes and the candidate forms against the manual
    (`out/refs/sc58x-2158x-prm/`) and the unconfirmed forms in
-   `docs/sharc/SPEC-FINDINGS.md`.
-5. P-code for the move and memory forms (`17a`, `17b`, `14a`, `15a`, `15b`,
+   `docs/sharc/SPEC-FINDINGS.md`. `tools/sharcspec/audit_bits.py` says
+   Type8a_rel drops seven PRM bits, which is where to start.
+4. P-code for the move and memory forms (`17a`, `17b`, `14a`, `15a`, `15b`,
    `16a`, `3a`-`3c`, `5a`, `5b`, `19a`) and a calling convention (R4, R8,
    R12 in, R0 out, I7 stack, I6 frame).
-6. Indirect jumps: `9a`/`9b` jumps go to I + M (pre-modify); only the I4/M6
+5. Indirect jumps: `9a`/`9b` jumps go to I + M (pre-modify); only the I4/M6
    jump (raw `0x083f343f`) is a return. The test is the RPC dispatcher's jump
-   at `0x1c3c3c` and its cases that jump back to `0x1c3c1d`.
-7. ALU and multiplier compute (`4a`, `2c`, `1a`, `1b`) with flags; then
-   condition codes, the shifter and float operations.
+   at `0x1c3c3c` and its cases that jump back to `0x1c3c1d`, and the probe
+   "RPC dispatcher is one function", which passes now and must keep passing.
+6. ALU and multiplier compute (`4a`, `2c`, `1a`, `1b`) with flags; then the
+   condition codes, the shifter and float operations. With real flags, the
+   `condition` p-code op the conditional branches call becomes a genuine
+   test of ASTAT instead of a placeholder.
+7. The provisional forms, when there is evidence: `21p_undoc16` (883 in 1.16,
+   969 in 1.11), `23p_undoc16` (407, 399), `22p_undoc48` (91, 129),
+   `26p_undoc48` (1, 1). Their prefixes and lengths fit the images; their
+   names and semantics are unknown, and the public manuals skip Types 23 and
+   24. Twelve of the twenty worst mid-instruction branch targets are still
+   unexplained: the instruction the target lands inside decodes cleanly, so a
+   neighbouring form is wrong as well.
 
-Measure each stage by function boundaries and by the decompiler on known
-functions: `0x1c136a` returns 2748 (R0 is set in a return's delay slot), and
-the RPC dispatcher `0x1c3bef` with its cases should be one function. Mark
-unconfirmed forms unimplemented instead of guessing. After stage 5, take up
-step 1 below (the SPI2 trace) again with the decompiler.
+After stage 4, take up step 1 below (the SPI2 trace) again with the
+decompiler.
 
 ### 1. Where the SHARC receives the ColdFire's frame
 
@@ -369,6 +401,12 @@ TRIG1=25.
   agents run every process, including short commands and git.
 - Analyse Digitakt II 1.16 and Digitone II 1.11 only; use 1.15C only when a
   hardware test needs it.
+- A Ghidra JVM holds one version of a language for its lifetime, so a project
+  read after a different language was installed gives wrong numbers. Measure
+  each language in its own `tools/sharcpcode.py` run.
+- `tools/sharcspec/build_table.py` has no `if __name__` guard: importing it
+  rewrites `decode_table.json`. Copy what you need from it, as
+  `audit_bits.py` does.
 
 ## Workflow
 
