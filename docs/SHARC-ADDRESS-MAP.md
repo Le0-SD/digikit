@@ -50,13 +50,13 @@ one.
 
 | region | bytes | cjump | |
 |---|---|---|---|
-| `0x20000000..0x2001e880` | 125,056 | **1002** | **code** (L1) |
+| `0x20000000..0x2001e880` | 125,056 | **1002** | **code** (L2) |
 | `0x2001e888..0x2008823c` | 432,564 | 0 | data |
 | `0x28240000..0x28240300` | 768 | 0 | |
 | `0x282403f0..0x2826f000` | 191,504 | 0 | rodata |
 | `0x282c0000..0x282dd52c` | 120,108 | 0 | rodata |
 | `0x28380000..0x283825c0` | 9,664 | 10 | |
-| `0x283825c4..0x2839bffc` | 105,016 | **604** | **code** (L2) |
+| `0x283825c4..0x2839bffc` | 105,016 | **604** | **code** (L1) |
 | `0x80000000..0x80000014` | 20 | 0 | |
 | `0x80000018..0x8052fbe0` | 5,438,408 | 0 | DDR, almost all fill |
 
@@ -64,6 +64,20 @@ one.
 spread. The 432 KB data region and the 5.4 MB DDR fill returning zero is the same
 negative control this project already uses (49,152 bytes of float coefficients ->
 zero hits), here obtained without arranging for it.
+
+**[C][D]** The L1 and L2 labels in the table above were the wrong way round when
+this file was merged, and are corrected here. `0x28xxxxxx` is L1 and
+`0x20000000` is L2, which is what `docs/sharc/structure-1.16.md` and
+`docs/sharc/SPEC-FINDINGS.md` already say. Section 1's own evidence settles it:
+`load = exec * 2 + 0x28000000` is a short-word to byte alias, and the SHARC+
+Core Programming Reference documents that aliasing as a property of L1, which is
+four independent blocks each mapped to its own region of the address space (Rev
+1.5, chapter 7, "L1 Memory Interface"). The sub-bases seen here -- `0x2824xxxx`,
+`0x282Cxxxx` and `0x28380000` -- are those blocks. L2 is one instance, L2CTL0, a
+single unified SRAM with the boot ROM rather than four blocks (ADSP-2156x SHARC+
+Processor Hardware Reference, Rev 1.0, chapter 8, "L2 System Memory"), which
+matches the single `0x20000000` region. The addresses, the counts and the
+formula are unchanged.
 
 **1,616 against your 1,656 for Digitakt II** over a comparable region -- two
 products, two extractors, same result. The decode transfers.
