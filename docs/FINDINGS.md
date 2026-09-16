@@ -1922,6 +1922,31 @@ Ghidra or disassembly output and it was not re-checked.
   container decodes cleanly and the chain still misses the target, so a
   neighbouring form is wrong too. **[O]**
 
+### Type22a is idle, and neither image contains one **[D][O]**
+
+- The same merge rule over every other form, audited with the new
+  `tools/sharcspec/audit_bits.py`: Type22a (idle/emuidle) and Type26a (`sync`)
+  print every bit in their figures but matched on a nine- and sixteen-bit
+  prefix, taking 220 and 2 instructions across the two images, while their
+  strict words appear in neither. Both are tightened; the words they took are
+  now the provisional `Type22p_undoc48` and `Type26p_undoc48`
+  (`docs/sharc/SPEC-FINDINGS.md` 3.8). **[D]**
+- This buys a correct name, not a better decode: measured before and after on
+  both images, every flow metric is identical -- 1.16 keeps 296 functions
+  truncated at bad instruction data, 165 Error bookmarks, 1,170 main-program
+  functions, the same branch-target landing and the same form counts, and both
+  probes keep their earlier verdicts. **[D]**
+- A 16-bit reading of the same words was measured and rejected: it split the
+  RPC dispatcher at SW `0x1c3c2e`, added 33 truncated functions in 1.16 and
+  shifted the alignment sweep enough to change unrelated forms' counts. **[D]**
+- Restoring the dropped bits on the compute forms destroys real matches
+  (Type2a: every one of its 1,089 instances in 1.16, and 22% of all aligned
+  instructions), so the merge rule stands for them. Type3d, Type4d and Type20a
+  are neutral. **[D]**
+- Open: what the Type22p and Type26p words do. 220 instructions in two images
+  are decoded at a length that has never been checked against anything but
+  their neighbours' alignment. **[O]**
+
 ## Emulation
 
 Function-level works well and is the practical path. Full boot was pushed as far

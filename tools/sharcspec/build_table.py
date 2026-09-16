@@ -49,9 +49,13 @@ PRM_VALUE_WINS = {"Type2b"}
 # any first word 0x0000-0x007f and swallow the one or two short instructions
 # after it (docs/FINDINGS.md, "Type21a is the all-zero word"). Figure 17-5
 # draws Type21a as 48 zero bits and Figure 17-6 draws Type21c as 0x0001.
+# The value is the whole printed word; `free` lists bits the figure draws as a
+# field rather than a digit (Type22a's `emu` selects idle from emuidle).
 FULL_WORD = {
-    "Type21a": (48, 0x000000000000),
-    "Type21c": (16, 0x000100000000),
+    "Type21a": (48, 0x000000000000, ()),
+    "Type21c": (16, 0x000100000000, ()),
+    "Type22a": (48, 0x008000000000, (38,)),   # Figure 17-7: idle/emuidle
+    "Type26a": (48, 0x004000000000, ()),      # Figure 17-13
 }
 
 # Undocumented 16-bit instruction family, identified only from firmware.
@@ -62,9 +66,10 @@ FULL_WORD = {
 # It exists so the decoder sizes these instructions correctly and stays in sync.
 # Prefix width is deliberately a parameter so it can be re-tuned against the
 # firmware; default top-7 bits = 0000001.
-UNDOCUMENTED_16BIT = [
+UNDOCUMENTED = [
     {
         "name": "Type23p_undoc16",    # provisional; p = provisional
+        "width": 16,
         "prefix_bits": "0000001",      # top bits, MSB-first, from bit47 down
         "note": "provisional, from firmware only (0x023e x329, top-7 0000001 "
                 "family = 62% of unknowns)",
@@ -77,9 +82,29 @@ UNDOCUMENTED_16BIT = [
     # documents them: prefix and length only, no name and no semantics.
     {
         "name": "Type21p_undoc16",
+        "width": 16,
         "prefix_bits": "000000000",
         "note": "provisional, from firmware only (the old Type21a prefix; 95% "
                 "of its matches are not the all-zero NOP word)",
+    },
+    # Type22a is idle/emuidle, and its figure prints every other bit, so the
+    # 220 words that matched its nine-bit prefix across the two images are not
+    # idle instructions. Same treatment as Type21a, but at the width the loose form read.
+    {
+        "name": "Type22p_undoc48",
+        "width": 48,
+        "prefix_bits": "000000001",
+        "note": "provisional, from firmware only (the old Type22a prefix; its "
+                "strict word occurs in neither image; 48 bits as the loose "
+                "Type22a read them -- a 16-bit reading strands the other two "
+                "words)",
+    },
+    {
+        "name": "Type26p_undoc48",
+        "width": 48,
+        "prefix_bits": "0000000001000000",
+        "note": "provisional, from firmware only (the old Type26a prefix; one "
+                "instance per image, too few to judge)",
     },
 ]
 
@@ -264,8 +289,9 @@ for f in prm:
                 if source == "prm":
                     unconfirmed.append(b)
     if name in FULL_WORD:
-        full_width, word = FULL_WORD[name]
-        fixed = {b: (word >> b) & 1 for b in range(48 - full_width, 48)}
+        full_width, word, free = FULL_WORD[name]
+        fixed = {b: (word >> b) & 1 for b in range(48 - full_width, 48)
+                 if b not in free}
         source = "prm figure (every bit printed; the PGR grid leaves them blank)"
     mask = sum(1 << b for b in fixed)
     value = sum(v << b for b, v in fixed.items())
@@ -275,7 +301,7 @@ for f in prm:
         "fields": fields, "source": source, "unconfirmed_bits": len(unconfirmed),
     })
 
-def undocumented_16bit_form(entry):
+def undocumented_form(entry):
     prefix_bits = entry["prefix_bits"]
     mask = 0
     value = 0
@@ -285,17 +311,21 @@ def undocumented_16bit_form(entry):
         if ch == "1":
             value |= 1 << b
     fixed_bits = len(prefix_bits)
-    fields = [{"label": f"operand[{15 - fixed_bits}:0]", "hi": 47 - fixed_bits, "lo": 32}]
+    width = entry.get("width", 16)
+    # A prefix filling the first word leaves no room for an operand; a wider
+    # form leaves its later words unlabelled, as the wildcard forms do.
+    fields = ([] if fixed_bits >= 16 else
+              [{"label": f"operand[{15 - fixed_bits}:0]", "hi": 47 - fixed_bits, "lo": 32}])
     return {
-        "name": entry["name"], "width": 16, "visa": True, "isa": False,
+        "name": entry["name"], "width": width, "visa": True, "isa": width == 48,
         "mask": f"0x{mask:012x}", "value": f"0x{value:012x}", "fixed_bits": fixed_bits,
         "fields": fields, "source": "firmware (undocumented; likely Type23/24; unconfirmed)",
         "unconfirmed_bits": fixed_bits,
     }
 
 
-for entry in UNDOCUMENTED_16BIT:
-    forms.append(undocumented_16bit_form(entry))
+for entry in UNDOCUMENTED:
+    forms.append(undocumented_form(entry))
     notes.append(f"{entry['name']}: {entry['note']}")
 
 json.dump({"forms": forms, "notes": notes}, open("decode_table.json", "w"), indent=1)

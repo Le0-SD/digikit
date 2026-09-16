@@ -761,7 +761,9 @@ CROSSING_RESOLVERS = [
     # is 0 there and 1 here); the provisional Type21p_undoc16 inherits the
     # crossing, since it fixes bits 47-39 while Type22c fixes 47-40 and bit 32.
     dict(winner="Type21p_undoc16", loser="Type22c", extra=[(32, 32, 1)], drop_label=None),
-    dict(winner="Type22a", loser="Type22c", extra=[(32, 32, 1)], drop_label=None),
+    # Type22a now fixes every bit but `emu`, so Type22c no longer crosses it;
+    # the provisional Type22p_undoc48 inherits the crossing as Type21p did.
+    dict(winner="Type22p_undoc48", loser="Type22c", extra=[(32, 32, 1)], drop_label=None),
 ]
 
 

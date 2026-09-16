@@ -234,6 +234,30 @@ here; the firmware is the arbiter.
 - Open: what the instruction is. The first-word values cluster, which is a
   lead; the manuals document nothing in this range beyond `0x0001`.
 
+### 3.8 The same rule over the rest of the table
+
+- `tools/sharcspec/audit_bits.py` lists, per form, the bits the PRM figure
+  prints that the table does not fix. Ranked by how many: Type22a 38,
+  Type26a 32, Type20a 28, Type3d and Type4d 16, Type2a 12, Type13a 11,
+  Type11a 9.
+- Only the idle-class forms are wrong. Type22a (idle/emuidle, Figure 17-7,
+  p.414) prints every bit but `emu`, and Type26a (`sync`) prints every bit.
+  Neither strict word occurs in either image, while their nine- and
+  sixteen-bit prefixes took 220 and 2 instructions. Both are now tightened,
+  and the words they took become `Type22p_undoc48` and `Type26p_undoc48`:
+  48 bits, the width the loose forms always read them at.
+- Restoring the dropped bits on the compute forms destroys real matches:
+  Type2a loses all 1,089 of its instances in Digitakt II 1.16 and the aligned
+  instruction count falls 22%, Type13a goes to zero, Type11a to two. Those
+  PRM digits are the stale template values the merge rule exists to ignore,
+  so it stands for them. Type3d, Type4d and Type20a change nothing
+  measurable either way.
+- A 16-bit reading of Type22a's leftovers was tried first and rejected: it
+  stranded the two words after each one, split the RPC dispatcher into two
+  functions and added 33 truncated functions in 1.16.
+- Open: what the Type22p and Type26p words are. Their length is what the
+  decoder always read; nothing else about them is confirmed.
+
 ---
 
 ## 4. Decoder validation

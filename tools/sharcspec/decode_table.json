@@ -2192,9 +2192,9 @@
    "width": 48,
    "visa": true,
    "isa": true,
-   "mask": "0xff8000000000",
+   "mask": "0xffbfffffffff",
    "value": "0x008000000000",
-   "fixed_bits": 9,
+   "fixed_bits": 47,
    "fields": [
     {
      "label": "emu",
@@ -2202,7 +2202,7 @@
      "lo": 38
     }
    ],
-   "source": "prm",
+   "source": "prm figure (every bit printed; the PGR grid leaves them blank)",
    "unconfirmed_bits": 9
   },
   {
@@ -2298,11 +2298,11 @@
    "width": 48,
    "visa": true,
    "isa": true,
-   "mask": "0xffff00000000",
+   "mask": "0xffffffffffff",
    "value": "0x004000000000",
-   "fixed_bits": 16,
+   "fixed_bits": 48,
    "fields": [],
-   "source": "prm",
+   "source": "prm figure (every bit printed; the PGR grid leaves them blank)",
    "unconfirmed_bits": 16
   },
   {
@@ -2340,6 +2340,36 @@
    ],
    "source": "firmware (undocumented; likely Type23/24; unconfirmed)",
    "unconfirmed_bits": 9
+  },
+  {
+   "name": "Type22p_undoc48",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff8000000000",
+   "value": "0x008000000000",
+   "fixed_bits": 9,
+   "fields": [
+    {
+     "label": "operand[6:0]",
+     "hi": 38,
+     "lo": 32
+    }
+   ],
+   "source": "firmware (undocumented; likely Type23/24; unconfirmed)",
+   "unconfirmed_bits": 9
+  },
+  {
+   "name": "Type26p_undoc48",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xffff00000000",
+   "value": "0x004000000000",
+   "fixed_bits": 16,
+   "fields": [],
+   "source": "firmware (undocumented; likely Type23/24; unconfirmed)",
+   "unconfirmed_bits": 16
   }
  ],
  "notes": [
@@ -2351,6 +2381,8 @@
   "Type10a: split into Type10a_abs/Type10a_rel -- classic.json keeps these as separate absolute-or-indirect/PC-relative tables; see SPLIT_FORMS",
   "Type25c_rframe: 16-bit form from PGR",
   "Type23p_undoc16: provisional, from firmware only (0x023e x329, top-7 0000001 family = 62% of unknowns)",
-  "Type21p_undoc16: provisional, from firmware only (the old Type21a prefix; 95% of its matches are not the all-zero NOP word)"
+  "Type21p_undoc16: provisional, from firmware only (the old Type21a prefix; 95% of its matches are not the all-zero NOP word)",
+  "Type22p_undoc48: provisional, from firmware only (the old Type22a prefix; its strict word occurs in neither image; 48 bits as the loose Type22a read them -- a 16-bit reading strands the other two words)",
+  "Type26p_undoc48: provisional, from firmware only (the old Type26a prefix; one instance per image, too few to judge)"
  ]
 }
