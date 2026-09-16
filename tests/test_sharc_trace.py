@@ -360,6 +360,127 @@ class TraceTest(unittest.TestCase):
             self.run_one(T.State(1), insn("19p", {}, kind="uncertain")).stopped,
         )
 
+    def test_affine_canonicalization_and_arithmetic(self):
+        value = T.Affine(0x1_0000_0001, (("z", 2), ("a", 1), ("z", -2), ("a", -1)))
+        self.assertEqual((value.constant, value.terms), (1, ()))
+        self.assertEqual(T._affine(3, (("z", 1),)), T.Affine(3, (("z", 1),)))
+        self.assertEqual(T._affine(3, ()), T.Const(3))
+        receive = T.symbol("receive_buffer")
+        self.assertEqual(
+            T._subtract(T._add(receive, T.Const(4), "ignored"), T.Const(5), "ignored"),
+            T.Affine(0xFFFFFFFF, (("receive_buffer", 1),)),
+        )
+        self.assertEqual(
+            T._multiply(T.Const(2), T.symbol("track_index"), "ignored"),
+            T.Affine(0, (("track_index", 2),)),
+        )
+        rejected = T._multiply(
+            receive, T.symbol("track_index"), "receive_buffer * track_index"
+        )
+        self.assertIsInstance(rejected, T.Unknown)
+        self.assertIn("non-affine", rejected.reason)
+        with self.assertRaises(ValueError):
+            T.symbol("not-valid")
+
+    def test_affine_compute_and_memory_events(self):
+        short = lambda opcode, rn, rx: {"compute[11:0]": (opcode << 8) | (rn << 4) | rx}
+        state = T.State(1, {1: T.symbol("receive_buffer"), 2: T.Const(0x94)})
+        state = self.run_one(state, insn("2c", short(0, 1, 2), 2))
+        self.assertEqual(state.uregs[1], T.Affine(0x94, (("receive_buffer", 1),)))
+        self.assertEqual(T._render(state.uregs[1]), "receive_buffer + 0x94")
+        state.uregs[3] = T.symbol("track_index")
+        state.uregs[4] = T.Const(2)
+        full = {"compute[22:16]": 0x17, "compute[15:0]": 0x0534}
+        state.uregs[5] = T._compute(full, False, state.uregs)[1]
+        state = self.run_one(state, insn("2c", short(0, 1, 5), 2))
+        self.assertEqual(
+            T._render(state.uregs[1]),
+            "receive_buffer + 2*track_index + 0x94",
+        )
+        store = {"i[2:0]": 1, "g": 0, "d": 1, "l": 1, "ureg[6:0]": 2, "data[6:0]": 0x14}
+        event = self.run_one(
+            T.State(1, {17: state.uregs[1], 2: T.Const(5)}), insn("15b", store)
+        ).trace[0]
+        self.assertEqual(event["expression"], "receive_buffer + 2*track_index + 0xa8")
+        self.assertEqual(
+            event["address"],
+            {
+                "affine": {
+                    "constant": 0xA8,
+                    "terms": [["receive_buffer", 1], ["track_index", 2]],
+                }
+            },
+        )
+        self.assertEqual(json.loads(json.dumps(event))["address"], event["address"])
+
+    def test_affine_type19_and_seed_handling(self):
+        f = {"g": 0, "idis[2:0]": 2, "is[2:0]": 1, "data[31:16]": 0, "data[15:0]": 0x94}
+        state = self.run_one(
+            T.State(1, {17: T.symbol("receive_buffer")}), insn("19a", f, 6)
+        )
+        self.assertEqual(T._render(state.uregs[18]), "receive_buffer + 0x94")
+        seeded = T.trace(b"", 0, 0, {"R1": 7}, max_steps=0)[0]
+        self.assertEqual(seeded.uregs[1], T.Const(7))
+        symbolic = T.trace(b"", 0, 0, {"R1": "@receive_buffer"}, max_steps=0)[0]
+        self.assertEqual(symbolic.uregs[1], T.symbol("receive_buffer"))
+        with self.assertRaises(ValueError):
+            T.trace(b"", 0, 0, {"R1": "@"}, max_steps=0)
+
+    def test_cli_symbolic_seed(self):
+        with tempfile.NamedTemporaryFile("wb", delete=False) as f:
+            path = f.name
+        try:
+            valid = subprocess.run(
+                [
+                    sys.executable,
+                    "tools/sharc_trace.py",
+                    path,
+                    "--base-sw",
+                    "0",
+                    "--start",
+                    "0",
+                    "--set",
+                    "R1=@receive_buffer",
+                    "--json",
+                ],
+                capture_output=True,
+            )
+            invalid = subprocess.run(
+                [
+                    sys.executable,
+                    "tools/sharc_trace.py",
+                    path,
+                    "--base-sw",
+                    "0",
+                    "--start",
+                    "0",
+                    "--set",
+                    "R1=@not-valid",
+                ],
+                capture_output=True,
+            )
+            invalid_register = subprocess.run(
+                [
+                    sys.executable,
+                    "tools/sharc_trace.py",
+                    path,
+                    "--base-sw",
+                    "0",
+                    "--start",
+                    "0",
+                    "--set",
+                    "BOGUS=1",
+                ],
+                capture_output=True,
+            )
+            self.assertEqual(valid.returncode, 0, valid.stderr.decode())
+            self.assertNotEqual(invalid.returncode, 0)
+            self.assertIn("NAME=@symbol", invalid.stderr.decode())
+            self.assertNotEqual(invalid_register.returncode, 0)
+            self.assertNotIn("Traceback", invalid_register.stderr.decode())
+        finally:
+            os.unlink(path)
+
     def test_event_values_are_json_safe(self):
         type3c = {"dmi[2:0]": 0, "dmm[2:0]": 0, "d": 1, "dreg[3:0]": 3}
         s = self.run_one(

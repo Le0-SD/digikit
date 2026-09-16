@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -74,11 +75,52 @@ class Const:
 
 
 @dataclass(frozen=True)
+class Affine:
+    """A canonical 32-bit affine expression, constant plus named terms."""
+
+    constant: int
+    terms: tuple[tuple[str, int], ...]
+
+    def __post_init__(self):
+        coefficients: dict[str, int] = {}
+        for name, coefficient in self.terms:
+            if not _SYMBOL_RE.fullmatch(name):
+                raise ValueError("invalid symbol name: " + repr(name))
+            coefficients[name] = (coefficients.get(name, 0) + coefficient) & 0xFFFFFFFF
+        object.__setattr__(self, "constant", self.constant & 0xFFFFFFFF)
+        object.__setattr__(
+            self,
+            "terms",
+            tuple(
+                sorted(
+                    (name, coefficient)
+                    for name, coefficient in coefficients.items()
+                    if coefficient
+                )
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class Unknown:
     reason: str
 
 
-Value = Union[Const, Unknown]
+Value = Union[Const, Affine, Unknown]
+_SYMBOL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def _affine(constant: int, terms: tuple[tuple[str, int], ...]) -> Const | Affine:
+    """Build a canonical affine value, collapsing a constant expression."""
+    value = Affine(constant, terms)
+    return Const(value.constant) if not value.terms else value
+
+
+def symbol(name: str) -> Affine:
+    """Return the named symbolic value NAME."""
+    if not _SYMBOL_RE.fullmatch(name):
+        raise ValueError("invalid symbol name: " + repr(name))
+    return Affine(0, ((name, 1),))
 
 
 @dataclass(frozen=True)
@@ -114,18 +156,56 @@ def _wide(f: Mapping[str, int], stem: str) -> int:
     return (_field(f, stem + "[31:16]") << 16) | _field(f, stem + "[15:0]")
 
 
-def _json_value(value: Value | int) -> int | dict[str, str]:
+def _signed32(value: int) -> int:
+    return _signed(value & 0xFFFFFFFF, 32)
+
+
+def _render(value: Value | int) -> str:
+    if isinstance(value, Const):
+        return _render(value.value)
+    if isinstance(value, Affine):
+        parts: list[tuple[int, str]] = []
+        for name, coefficient in value.terms:
+            coefficient = _signed32(coefficient)
+            magnitude = (
+                name if abs(coefficient) == 1 else "%d*%s" % (abs(coefficient), name)
+            )
+            parts.append((coefficient, magnitude))
+        constant = _signed32(value.constant)
+        if constant:
+            parts.append((constant, hex(abs(constant))))
+        if not parts:
+            return "0x0"
+        first_sign, first = parts[0]
+        rendered = ("-" if first_sign < 0 else "") + first
+        for sign, magnitude in parts[1:]:
+            rendered += (" - " if sign < 0 else " + ") + magnitude
+        return rendered
+    if isinstance(value, Unknown):
+        return value.reason
+    return ("-" if value < 0 else "") + hex(abs(value))
+
+
+def _json_value(value: Value | int) -> int | dict:
     """Render tracer values without leaking internal dataclasses into CLI JSON."""
     if isinstance(value, Const):
         return value.value
+    if isinstance(value, Affine):
+        return {
+            "affine": {
+                "constant": value.constant,
+                "terms": [list(term) for term in value.terms],
+            }
+        }
     if isinstance(value, Unknown):
         return {"unknown": value.reason}
     return value
 
 
 def _event(state: State, insn: Instruction, action: str, **extra) -> None:
-    if "value" in extra:
-        extra["value"] = _json_value(extra["value"])
+    for key in ("address", "value"):
+        if key in extra:
+            extra[key] = _json_value(extra[key])
     state.trace.append(
         {"pc_sw": state.pc_sw, "form": insn.type_name, "action": action, **extra}
     )
@@ -154,10 +234,61 @@ def _ureg(values: Mapping[int, Value], code: int) -> Value:
     return values.get(code, Unknown("uninitialized " + UREG_NAMES[code]))
 
 
+def _terms(value: Const | Affine) -> tuple[int, tuple[tuple[str, int], ...]]:
+    return (
+        (value.value, ()) if isinstance(value, Const) else (value.constant, value.terms)
+    )
+
+
 def _add(left: Value, right: Value, expression: str) -> Value:
+    if isinstance(left, Unknown) or isinstance(right, Unknown):
+        return Unknown(expression)
+    constant, terms = _terms(left)
+    other_constant, other_terms = _terms(right)
+    return _affine(constant + other_constant, terms + other_terms)
+
+
+def _negate(value: Value, expression: str) -> Value:
+    if isinstance(value, Unknown):
+        return Unknown(expression)
+    constant, terms = _terms(value)
+    return _affine(
+        -constant, tuple((name, -coefficient) for name, coefficient in terms)
+    )
+
+
+def _subtract(left: Value, right: Value, expression: str) -> Value:
+    return _add(left, _negate(right, expression), expression)
+
+
+def _multiply(left: Value, right: Value, expression: str) -> Value:
+    if isinstance(left, Unknown) or isinstance(right, Unknown):
+        return Unknown(expression)
     if isinstance(left, Const) and isinstance(right, Const):
-        return Const(left.value + right.value)
+        return Const(left.value * right.value)
+    if isinstance(left, Const):
+        constant, terms = _terms(right)
+        return _affine(
+            left.value * constant,
+            tuple((name, left.value * coefficient) for name, coefficient in terms),
+        )
+    if isinstance(right, Const):
+        constant, terms = _terms(left)
+        return _affine(
+            right.value * constant,
+            tuple((name, right.value * coefficient) for name, coefficient in terms),
+        )
+    return Unknown(expression + " (non-affine multiplication)")
+
+
+def _bitwise(left: Value, right: Value, expression: str, operation) -> Value:
+    if isinstance(left, Const) and isinstance(right, Const):
+        return Const(operation(left.value, right.value))
     return Unknown(expression)
+
+
+def _not(value: Value, expression: str) -> Value:
+    return Const(~value.value) if isinstance(value, Const) else Unknown(expression)
 
 
 def _compute(
@@ -176,44 +307,35 @@ def _compute(
         left, right = _ureg(values, rn), _ureg(values, rx)
         operations = {
             0: ("add", lambda: _add(left, right, "R%d + R%d" % (rn, rx))),
-            1: (
-                "subtract",
-                lambda: _add(left, Const(-right.value), "R%d - R%d" % (rn, rx))
-                if isinstance(right, Const)
-                else Unknown("R%d - R%d" % (rn, rx)),
-            ),
+            1: ("subtract", lambda: _subtract(left, right, "R%d - R%d" % (rn, rx))),
             2: ("pass", lambda: right),
             4: (
                 "not",
-                lambda: Const(~right.value)
-                if isinstance(right, Const)
-                else Unknown("not R%d" % rx),
+                lambda: _not(right, "not R%d" % rx),
             ),
             5: ("increment", lambda: _add(right, Const(1), "R%d + 1" % rx)),
             6: ("decrement", lambda: _add(right, Const(-1), "R%d - 1" % rx)),
             7: (
                 "multiply",
-                lambda: Const(left.value * right.value)
-                if isinstance(left, Const) and isinstance(right, Const)
-                else Unknown("R%d * R%d" % (rn, rx)),
+                lambda: _multiply(left, right, "R%d * R%d" % (rn, rx)),
             ),
             0xC: (
                 "and",
-                lambda: Const(left.value & right.value)
-                if isinstance(left, Const) and isinstance(right, Const)
-                else Unknown("R%d and R%d" % (rn, rx)),
+                lambda: _bitwise(
+                    left, right, "R%d and R%d" % (rn, rx), lambda a, b: a & b
+                ),
             ),
             0xD: (
                 "or",
-                lambda: Const(left.value | right.value)
-                if isinstance(left, Const) and isinstance(right, Const)
-                else Unknown("R%d or R%d" % (rn, rx)),
+                lambda: _bitwise(
+                    left, right, "R%d or R%d" % (rn, rx), lambda a, b: a | b
+                ),
             ),
             0xE: (
                 "xor",
-                lambda: Const(left.value ^ right.value)
-                if isinstance(left, Const) and isinstance(right, Const)
-                else Unknown("R%d xor R%d" % (rn, rx)),
+                lambda: _bitwise(
+                    left, right, "R%d xor R%d" % (rn, rx), lambda a, b: a ^ b
+                ),
             ),
         }
         if opcode == 3:
@@ -226,20 +348,12 @@ def _compute(
     rn, rx, ry = (field >> 8) & 0xF, (field >> 4) & 0xF, field & 0xF
     left, right = _ureg(values, rx), _ureg(values, ry)
     if cu == 0 and opcode == 0x02:
-        value = (
-            _add(left, Const(-right.value), "R%d - R%d" % (rx, ry))
-            if isinstance(right, Const)
-            else Unknown("R%d - R%d" % (rx, ry))
-        )
+        value = _subtract(left, right, "R%d - R%d" % (rx, ry))
         return rn, value, "subtract"
     if cu == 0 and opcode == 0x21:
         return rn, left, "pass"
     if cu == 1 and opcode == 0x70:
-        value = (
-            Const(left.value * right.value)
-            if isinstance(left, Const) and isinstance(right, Const)
-            else Unknown("R%d * R%d" % (rx, ry))
-        )
+        value = _multiply(left, right, "R%d * R%d" % (rx, ry))
         return rn, value, "multiply"
     raise ValueError("unsupported full compute cu=%#x opcode=%#x" % (cu, opcode))
 
@@ -380,19 +494,9 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         iv = _ureg(old, 16 + index)
         space = "PM" if _field(f, "g") else "DM"
         if _field(f, "u"):
-            address, next_i = (
-                (iv.value if isinstance(iv, Const) else "I%d" % index),
-                _add(iv, Const(offset), "I%d + %d" % (index, offset)),
-            )
+            address, next_i = iv, _add(iv, Const(offset), "I%d + %d" % (index, offset))
         else:
-            address, next_i = (
-                (
-                    (iv.value + offset) & 0xFFFFFFFF
-                    if isinstance(iv, Const)
-                    else "I%d + %d" % (index, offset)
-                ),
-                iv,
-            )
+            address, next_i = _add(iv, Const(offset), "I%d + %d" % (index, offset)), iv
         code = _field(f, "dreg")
         if _field(f, "d"):
             _event(
@@ -403,10 +507,10 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                 dreg="R%d" % code,
                 value=_ureg(old, code),
                 address=address,
-                expression=str(address),
+                expression=_render(address),
             )
         else:
-            state.uregs[code] = Unknown("memory-address " + str(address))
+            state.uregs[code] = Unknown("memory-address " + _render(address))
             _event(
                 state,
                 insn,
@@ -414,7 +518,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                 space=space,
                 dreg="R%d" % code,
                 address=address,
-                expression=str(address),
+                expression=_render(address),
             )
         state.uregs[16 + index] = next_i
         if compute is not None:
@@ -424,7 +528,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         index, modifier = _field(f, "dmi"), _field(f, "dmm")
         old = dict(state.uregs)
         iv, mv = _ureg(old, 16 + index), _ureg(old, 32 + modifier)
-        address = iv.value if isinstance(iv, Const) else "I%d" % index
+        address = iv
         state.uregs[16 + index] = _add(iv, mv, "I%d + M%d" % (index, modifier))
         code = _field(f, "dreg")
         if _field(f, "d"):
@@ -436,10 +540,10 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                 dreg="R%d" % code,
                 value=_ureg(old, code),
                 address=address,
-                expression=str(address),
+                expression=_render(address),
             )
         else:
-            state.uregs[code] = Unknown("memory-address " + str(address))
+            state.uregs[code] = Unknown("memory-address " + _render(address))
             _event(
                 state,
                 insn,
@@ -447,7 +551,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                 space="DM",
                 dreg="R%d" % code,
                 address=address,
-                expression=str(address),
+                expression=_render(address),
             )
         return _advance(state, insn)
     if name == "16a":
@@ -459,14 +563,14 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         )
         old = dict(state.uregs)
         iv, mv = _ureg(old, 16 + index), _ureg(old, 32 + modifier)
-        address = iv.value if isinstance(iv, Const) else "I%d" % index
+        address = iv
         _event(
             state,
             insn,
             "store",
             space="PM" if _field(f, "g") else "DM",
             address=address,
-            expression=str(address),
+            expression=_render(address),
             value=_wide(f, "data"),
             by=_field(f, "by"),
             sl=_field(f, "sl"),
@@ -477,11 +581,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         index = _field(f, "i") + (8 if _field(f, "g") else 0)
         offset = _signed(_field(f, "data[6:0]"), 7)
         iv = state.uregs.get(16 + index, Unknown("uninitialized I%d" % index))
-        address = (
-            (iv.value + offset) & 0xFFFFFFFF
-            if isinstance(iv, Const)
-            else "I%d + %d" % (index, offset)
-        )
+        address = _add(iv, Const(offset), "I%d + %d" % (index, offset))
         code = _field(f, "ureg")
         if _field(f, "d"):
             value = state.uregs.get(code, Unknown("uninitialized " + UREG_NAMES[code]))
@@ -491,18 +591,18 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                 "store",
                 ureg=UREG_NAMES[code],
                 address=address,
-                expression=str(address),
+                expression=_render(address),
                 long_word=bool(_field(f, "l")),
             )
         else:
-            state.uregs[code] = Unknown("memory-address " + str(address))
+            state.uregs[code] = Unknown("memory-address " + _render(address))
             _event(
                 state,
                 insn,
                 "load",
                 ureg=UREG_NAMES[code],
                 address=address,
-                expression=str(address),
+                expression=_render(address),
                 long_word=bool(_field(f, "l")),
             )
         return _advance(state, insn)
@@ -513,11 +613,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         )
         v = state.uregs.get(16 + src, Unknown("uninitialized I%d" % src))
         delta = _signed(_wide(f, "data"), 32)
-        state.uregs[16 + dst] = (
-            Const(v.value + delta)
-            if isinstance(v, Const)
-            else Unknown("I%d + %d" % (src, delta))
-        )
+        state.uregs[16 + dst] = _add(v, Const(delta), "I%d + %d" % (src, delta))
         _event(
             state,
             insn,
@@ -539,18 +635,38 @@ def _execute(state: State, insn: Instruction) -> List[State]:
     return [_stop(state, insn, "unsupported form " + str(name))]
 
 
+def _seed_value(value: int | Value | str) -> Value:
+    if isinstance(value, (Const, Affine, Unknown)):
+        return value
+    if isinstance(value, int):
+        return Const(value)
+    if isinstance(value, str) and value.startswith("@"):
+        return symbol(value[1:])
+    raise ValueError("seed value must be an integer, Value, or @symbol")
+
+
+def _seed_code(key: str | int) -> int:
+    if isinstance(key, str):
+        try:
+            return UREG_CODES[key.upper()]
+        except KeyError as error:
+            raise ValueError("unknown UREG: " + key) from error
+    if not 0 <= key < len(UREG_NAMES):
+        raise ValueError("UREG code out of range: %d" % key)
+    return key
+
+
 def trace(
     data: bytes,
     base_sw: int,
     start: int,
-    sets: Optional[Mapping[Union[str, int], int]] = None,
+    sets: Optional[Mapping[Union[str, int], int | Value | str]] = None,
     max_steps: int = 100,
     max_states: int = 32,
 ) -> List[State]:
     uregs: Dict[int, Value] = {}
     for key, value in (sets or {}).items():
-        code = UREG_CODES[key.upper()] if isinstance(key, str) else key
-        uregs[code] = Const(value)
+        uregs[_seed_code(key)] = _seed_value(value)
     active, done = [State(start, uregs)], []
     while active:
         state = active.pop(0)
@@ -582,9 +698,11 @@ def main(argv=None) -> int:
     for item in a.sets:
         try:
             name, value = item.split("=", 1)
-            values[name] = int(value, 0)
+            values[name] = value if value.startswith("@") else int(value, 0)
+            _seed_code(name)
+            _seed_value(values[name])
         except ValueError:
-            p.error("--set must be NAME=VALUE")
+            p.error("--set must be NAME=VALUE or NAME=@symbol")
     with open(a.image, "rb") as fh:
         states = trace(fh.read(), a.base_sw, a.start, values, a.max_steps, a.max_states)
     result = [
