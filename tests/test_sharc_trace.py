@@ -2,6 +2,7 @@
 
 import json
 import os
+import struct
 import subprocess
 import sys
 import tempfile
@@ -12,6 +13,22 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "tools"))
 T = import_module("sharc_trace")
 Instruction = import_module("sharc_disasm").Instruction
+L = import_module("sharcldr")
+
+
+def loader_block(code, address, count, arg=0, payload=b""):
+    """Build a checksum-valid synthetic loader block."""
+    header = bytearray(struct.pack("<IIII", code | 0xAD000000, address, count, arg))
+    header[2] = 0
+    checksum = 0
+    for byte in header:
+        checksum ^= byte
+    header[2] = checksum
+    return bytes(header) + payload
+
+
+def loader_memory(*blocks):
+    return L.LoadedMemory.from_stream(b"".join(blocks))
 
 
 def insn(name, fields, length=4, kind="confident"):
@@ -281,6 +298,150 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(s.trace[0]["action"], "store")
         self.assertEqual(s.trace[0]["expression"], "I1 + -1")
 
+    def test_type3b_dm_premodify_load_and_pm_postmodify_store(self):
+        load = {
+            "u": 0,
+            "i[2:0]": 1,
+            "m[2:0]": 2,
+            "g": 0,
+            "d": 0,
+            "l": 0,
+            "x": 1,
+            "w": 1,
+            "ureg[6:0]": 7,
+            "cond[4:0]": 31,
+        }
+        s = self.run_one(
+            T.State(1, {17: T.symbol("buffer"), 34: T.Const(4)}), insn("3b", load)
+        )
+        event = s.trace[0]
+        self.assertEqual(
+            (
+                event["space"],
+                event["expression"],
+                event["addressing_mode"],
+                event["access_width"],
+            ),
+            ("DM", "buffer + 0x4", "pre-modify", "normal-word"),
+        )
+        self.assertEqual(s.uregs[17], T.symbol("buffer"))
+        self.assertEqual(s.uregs[7], T.Unknown("memory-address buffer + 0x4"))
+
+        store = {
+            **load,
+            "u": 1,
+            "i[2:0]": 2,
+            "m[2:0]": 3,
+            "g": 1,
+            "d": 1,
+            "ureg[6:0]": 4,
+        }
+        s = self.run_one(
+            T.State(1, {26: T.Const(0x90), 43: T.Const(4), 4: T.Const(0x55)}),
+            insn("3b", store),
+        )
+        event = s.trace[0]
+        self.assertEqual(
+            (
+                event["space"],
+                event["address"],
+                event["value"],
+                event["addressing_mode"],
+            ),
+            ("PM", 0x90, 0x55, "post-modify"),
+        )
+        self.assertEqual(s.uregs[26], T.Const(0x94))
+
+    def test_type3b_widths_and_rejections_do_not_mutate(self):
+        base = {
+            "u": 0,
+            "i[2:0]": 0,
+            "m[2:0]": 0,
+            "g": 0,
+            "d": 0,
+            "ureg[6:0]": 2,
+            "cond[4:0]": 31,
+        }
+        expected = {
+            (0, 1, 1): "normal-word",
+            (0, 0, 0): "byte",
+            (0, 1, 0): "byte-sign-extended",
+            (1, 0, 0): "short-word",
+            (1, 1, 0): "short-word-sign-extended",
+            (1, 1, 1): "long-word",
+        }
+        for (l, x, w), access_width in expected.items():
+            event = self.run_one(
+                T.State(1, {16: T.Const(0x80), 32: T.Const(3)}),
+                insn("3b", {**base, "l": l, "x": x, "w": w}),
+            ).trace[0]
+            self.assertEqual(event["access_width"], access_width)
+
+        for fields, reason in (
+            ({"l": 0, "x": 0, "w": 1}, "unsupported Type3b access width"),
+            (
+                {"d": 1, "l": 0, "x": 1, "w": 0},
+                "unsupported Type3b sign-extended store",
+            ),
+            ({"cond[4:0]": 1, "l": 0, "x": 1, "w": 1}, "unsupported predicate"),
+        ):
+            state = self.run_one(
+                T.State(1, {16: T.Const(0x80), 32: T.Const(3), 2: T.Const(9)}),
+                insn("3b", {**base, **fields}),
+            )
+            self.assertEqual(state.stopped, reason)
+            self.assertEqual(
+                state.uregs, {16: T.Const(0x80), 32: T.Const(3), 2: T.Const(9)}
+            )
+
+    def test_type3b_dm_postmodify_and_pm_premodify(self):
+        store = {
+            "i[2:0]": 1,
+            "m[2:0]": 2,
+            "d": 1,
+            "l": 0,
+            "x": 1,
+            "w": 1,
+            "ureg[6:0]": 4,
+            "cond[4:0]": 31,
+        }
+        dm = self.run_one(
+            T.State(1, {17: T.symbol("dm"), 34: T.Const(4), 4: T.Const(7)}),
+            insn("3b", {**store, "u": 1, "g": 0}),
+        )
+        self.assertEqual(dm.trace[0]["expression"], "dm")
+        self.assertEqual(dm.uregs[17], T.Affine(4, (("dm", 1),)))
+
+        pm = self.run_one(
+            T.State(1, {25: T.symbol("pm"), 42: T.Const(4), 4: T.Const(7)}),
+            insn("3b", {**store, "u": 0, "g": 1}),
+        )
+        self.assertEqual(pm.trace[0]["expression"], "pm + 0x4")
+        self.assertEqual(pm.uregs[25], T.symbol("pm"))
+
+    def test_type3b_second_call_delay_slot_preserves_call_target(self):
+        call = insn("25a_direct", {"addr[23:16]": 0, "addr[15:0]": 99}, 4)
+        type3b = insn(
+            "3b",
+            {
+                "u": 1,
+                "i[2:0]": 0,
+                "m[2:0]": 0,
+                "g": 0,
+                "d": 0,
+                "l": 0,
+                "x": 1,
+                "w": 1,
+                "ureg[6:0]": 2,
+                "cond[4:0]": 31,
+            },
+        )
+        s = self.run_one(T.State(10, {16: T.Const(0x80), 32: T.Const(4)}), call)
+        s = self.run_one(s, insn("17b", {"ureg[6:0]": 0, "data[15:0]": 1}, 4))
+        s = self.run_one(s, type3b)
+        self.assertEqual(s.stopped, "external-call")
+        self.assertEqual((s.trace[-1]["return_sw"], s.trace[-1]["target_sw"]), (16, 99))
+
     def test_19a_constant_and_unknown(self):
         f = {
             "g": 1,
@@ -480,6 +641,108 @@ class TraceTest(unittest.TestCase):
             self.assertNotIn("Traceback", invalid_register.stderr.decode())
         finally:
             os.unlink(path)
+
+    def test_blob_backed_exact_pc_decode(self):
+        pc = 0x20
+        address = L.sw_to_byte(pc)
+        rframe = bytes.fromhex("0119")
+        full = bytes.fromhex("000f00000000")  # Confident 48-bit Type 17a.
+
+        # The established flat-image API remains unchanged.
+        self.assertEqual(T.decode_at(rframe, pc, pc).type_name, "25c_rframe")
+        self.assertEqual(
+            T.decode_at(
+                loader_memory(loader_block(0, address, 6, payload=full)), None, pc
+            ).type_name,
+            "17a",
+        )
+        # Adjacent loader blocks are one contiguous decode window.
+        self.assertEqual(
+            T.decode_at(
+                loader_memory(
+                    loader_block(0, address, 4, payload=full[:4]),
+                    loader_block(0, address + 4, 2, payload=full[4:]),
+                ),
+                None,
+                pc,
+            ).type_name,
+            "17a",
+        )
+        # Trying smaller windows permits a valid 16-bit form at range end.
+        self.assertEqual(
+            T.decode_at(
+                loader_memory(loader_block(0, address, 2, payload=rframe)), None, pc
+            ).type_name,
+            "25c_rframe",
+        )
+
+    def test_blob_backed_gap_truncation_and_overlap(self):
+        pc = 0x30
+        address = L.sw_to_byte(pc)
+        truncated = T.decode_at(
+            loader_memory(
+                loader_block(0, address, 4, payload=bytes.fromhex("000f0000"))
+            ),
+            None,
+            pc,
+        )
+        self.assertEqual(truncated.kind, "unknown")
+        self.assertIn("17a (48 bits) but only 4 bytes remain", truncated.note)
+        unmapped = T.decode_at(
+            loader_memory(
+                loader_block(0, address + 2, 2, payload=bytes.fromhex("0119"))
+            ),
+            None,
+            pc,
+        )
+        self.assertEqual(unmapped.note, "PC unmapped in loader memory")
+        # LoadedMemory's stream-order last-write rule is visible to decoding.
+        overwritten = loader_memory(
+            loader_block(0, address, 2, payload=bytes.fromhex("0119")),
+            loader_block(0, address, 2, payload=bytes.fromhex("800a")),
+        )
+        self.assertEqual(T.decode_at(overwritten, None, pc).type_name, "11c")
+
+    def test_blob_cli_validation_and_json(self):
+        pc = 0x40
+        address = L.sw_to_byte(pc)
+        with tempfile.NamedTemporaryFile("wb", delete=False) as stream:
+            stream.write(loader_block(0, address, 2, payload=bytes.fromhex("0119")))
+            stream.write(loader_block(1 << L.BFLAGS["FINAL"], 0, 0))
+            stream_path = stream.name
+        with tempfile.NamedTemporaryFile("wb", delete=False) as empty:
+            empty.write(loader_block(1 << L.BFLAGS["FINAL"], 0, 0))
+            empty_path = empty.name
+        try:
+            command = [sys.executable, "tools/sharc_trace.py"]
+            missing_base = subprocess.run(
+                command + [stream_path, "--start", hex(pc)], capture_output=True
+            )
+            ambiguous = subprocess.run(
+                command + [stream_path, "--blob", "--base-sw", "0", "--start", hex(pc)],
+                capture_output=True,
+            )
+            no_ranges = subprocess.run(
+                command + [empty_path, "--blob", "--start", hex(pc)],
+                capture_output=True,
+            )
+            valid = subprocess.run(
+                command + [stream_path, "--blob", "--start", hex(pc), "--json"],
+                capture_output=True,
+            )
+            self.assertNotEqual(missing_base.returncode, 0)
+            self.assertIn("--base-sw is required", missing_base.stderr.decode())
+            self.assertNotEqual(ambiguous.returncode, 0)
+            self.assertIn("ambiguous", ambiguous.stderr.decode())
+            self.assertNotEqual(no_ranges.returncode, 0)
+            self.assertIn("no loaded ranges", no_ranges.stderr.decode())
+            self.assertEqual(valid.returncode, 0, valid.stderr.decode())
+            self.assertNotIn("Traceback", valid.stderr.decode())
+            self.assertNotIn("raw", valid.stdout.decode())
+            json.loads(valid.stdout)
+        finally:
+            os.unlink(stream_path)
+            os.unlink(empty_path)
 
     def test_event_values_are_json_safe(self):
         type3c = {"dmi[2:0]": 0, "dmm[2:0]": 0, "d": 1, "dreg[3:0]": 3}

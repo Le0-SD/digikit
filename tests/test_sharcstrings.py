@@ -18,12 +18,14 @@ sharcstrings = import_module("sharcstrings")
 
 
 def block(code, address, payload=b""):
-    header = bytearray(struct.pack("<IIII", code, address, len(payload), 0))
-    header[3] = 0
+    header = bytearray(
+        struct.pack("<IIII", code | 0xAD000000, address, len(payload), 0)
+    )
+    header[2] = 0
     checksum = 0
     for value in header:
         checksum ^= value
-    header[3] = checksum
+    header[2] = checksum
     return bytes(header) + payload
 
 

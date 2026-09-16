@@ -128,6 +128,7 @@ data reference before treating a hit as a label.
 | `tools/sharcfields.py` | Report per-form decoded-field distributions across main programs. |
 | `tools/sharccompare.py` | Compare the generated decoder against the independent specification decoder. |
 | `tools/sharcpcode.py` | Build and measure the generated Ghidra language, record decoder/Ghidra views in SQLite, and compare two measurement runs. |
+| `tools/sharc_seeddecode.py` | Decode exact Ghidra instruction-start seeds from every loader-mapped region and report form, field, length, and confidence agreement without sweeping data blocks. |
 
 Language changes should be measured before and after:
 
@@ -139,6 +140,18 @@ uv run python tools/sharcpcode.py compare out/sharcpcode/old out/sharcpcode/new
 Use `tools/sharcpcode.sql` and the generated SQLite files for questions the
 measurement already records; avoid starting another Ghidra JVM just to repeat
 a query.
+
+To inspect a non-main function through the loader map:
+
+```sh
+uv run python tools/sharc_seeddecode.py \
+  out/sections/dt2-1.16/section_7_BLOB.bin \
+  out/sharcpcode/new/dt2-1.16.sqlite \
+  --function 0xFUNCTION --only-problems
+```
+
+The SQLite instruction starts are boundary evidence; the tool never performs
+a linear sweep over loader regions that may contain data.
 
 ## Targeted SHARC+ data flow
 
@@ -152,6 +165,10 @@ PC. It currently models a proved subset of register moves, integer compute,
 DAG address updates, memory accesses, and two independent delay slots.
 Unsupported or provisional forms stop the state explicitly.
 
+The default mode reads a flat extracted region and therefore requires
+`--base-sw`. `--blob` instead decodes exact PCs directly from the complete
+section-7 loader memory map, including non-main and cross-block code.
+
 Seeds can be concrete or symbolic:
 
 ```sh
@@ -159,6 +176,10 @@ uv run python tools/sharc_trace.py out/sharc/dt2-1.16-main.bin \
   --base-sw 0x1c1338 --start 0xSTART \
   --set I2=@receive_words --set R4=@track_index \
   --max-steps 100 --max-states 32 --json
+
+uv run python tools/sharc_trace.py \
+  out/sections/dt2-1.16/section_7_BLOB.bin \
+  --blob --start 0xSTART --max-steps 100 --json
 ```
 
 Symbolic arithmetic is affine, so expressions such as
@@ -197,6 +218,7 @@ sources.
 | What does this loader offset become in DSP memory? | `sharcldr.py` |
 | Where is a known constant or peripheral address used? | `sharcimm.py`, then SQLite |
 | Which exact offset calculations are plausible readers? | `sharc_candidates.py` |
+| Which non-main instructions disagree with the decoder? | `sharc_seeddecode.py --only-problems` |
 | Does a pointer remain `base + stride*index + offset`? | `sharc_trace.py` |
 | Did Ghidra miss a ColdFire reference? | `refscan.py` |
 | Did a language change regress decoding or analysis? | `sharcpcode.py compare` |

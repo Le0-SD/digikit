@@ -19,7 +19,8 @@ from typing import Dict, List, Optional, Union
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
-from sharc_disasm import Instruction, disassemble
+from sharc_disasm import Instruction, decode_loaded_at, disassemble
+from sharcldr import LoadedMemory
 
 UREG_NAMES = tuple(
     [f"R{i}" for i in range(16)]
@@ -367,7 +368,14 @@ def _apply_compute(
         state.uregs[rn] = value
 
 
-def decode_at(data: bytes, base_sw: int, pc_sw: int) -> Instruction:
+def decode_at(
+    data: bytes | LoadedMemory, base_sw: Optional[int], pc_sw: int
+) -> Instruction:
+    """Decode exactly at PC_SW from a flat image or loader-backed memory."""
+    if isinstance(data, LoadedMemory):
+        return decode_loaded_at(data, pc_sw)
+    if base_sw is None:
+        raise ValueError("base_sw is required for flat image decoding")
     offset = (pc_sw - base_sw) * 2
     if offset < 0 or offset >= len(data):
         return Instruction(
@@ -524,6 +532,62 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         if compute is not None:
             _apply_compute(state, insn, compute)
         return _advance(state, insn)
+    if name == "3b":
+        if _field(f, "cond") != 0x1F:
+            return [_stop(state, insn, "unsupported predicate")]
+        # SHARC+ Core Programming Reference rev. 1.4, pp. 13-16--13-19.
+        width_fields = (_field(f, "l"), _field(f, "x"), _field(f, "w"))
+        widths = {
+            (0, 1, 1): "normal-word",
+            (0, 0, 0): "byte",
+            (0, 1, 0): "byte-sign-extended",
+            (1, 0, 0): "short-word",
+            (1, 1, 0): "short-word-sign-extended",
+            (1, 1, 1): "long-word",
+        }
+        access_width = widths.get(width_fields)
+        if access_width is None:
+            return [_stop(state, insn, "unsupported Type3b access width")]
+        if _field(f, "d") and access_width.endswith("sign-extended"):
+            return [_stop(state, insn, "unsupported Type3b sign-extended store")]
+        old = dict(state.uregs)
+        bank = 8 if _field(f, "g") else 0
+        index, modifier = _field(f, "i") + bank, _field(f, "m") + bank
+        iv, mv = _ureg(old, 16 + index), _ureg(old, 32 + modifier)
+        post_modify = bool(_field(f, "u"))
+        addressing_mode = "post-modify" if post_modify else "pre-modify"
+        address = iv if post_modify else _add(iv, mv, f"I{index} + M{modifier}")
+        if _field(f, "d"):
+            _event(
+                state,
+                insn,
+                "store",
+                space="PM" if bank else "DM",
+                ureg=UREG_NAMES[_field(f, "ureg")],
+                value=_ureg(old, _field(f, "ureg")),
+                address=address,
+                expression=_render(address),
+                addressing_mode=addressing_mode,
+                access_width=access_width,
+            )
+        else:
+            state.uregs[_field(f, "ureg")] = Unknown(
+                "memory-address " + _render(address)
+            )
+            _event(
+                state,
+                insn,
+                "load",
+                space="PM" if bank else "DM",
+                ureg=UREG_NAMES[_field(f, "ureg")],
+                address=address,
+                expression=_render(address),
+                addressing_mode=addressing_mode,
+                access_width=access_width,
+            )
+        if post_modify:
+            state.uregs[16 + index] = _add(iv, mv, "I%d + M%d" % (index, modifier))
+        return _advance(state, insn)
     if name == "3c":
         index, modifier = _field(f, "dmi"), _field(f, "dmm")
         old = dict(state.uregs)
@@ -657,8 +721,8 @@ def _seed_code(key: str | int) -> int:
 
 
 def trace(
-    data: bytes,
-    base_sw: int,
+    data: bytes | LoadedMemory,
+    base_sw: Optional[int],
     start: int,
     sets: Optional[Mapping[Union[str, int], int | Value | str]] = None,
     max_steps: int = 100,
@@ -686,8 +750,9 @@ def trace(
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("image")
-    p.add_argument("--base-sw", required=True, type=lambda x: int(x, 0))
+    p.add_argument("source")
+    p.add_argument("--blob", action="store_true")
+    p.add_argument("--base-sw", type=lambda x: int(x, 0))
     p.add_argument("--start", required=True, type=lambda x: int(x, 0))
     p.add_argument("--set", dest="sets", action="append", default=[])
     p.add_argument("--max-steps", type=int, default=100)
@@ -703,8 +768,25 @@ def main(argv=None) -> int:
             _seed_value(values[name])
         except ValueError:
             p.error("--set must be NAME=VALUE or NAME=@symbol")
-    with open(a.image, "rb") as fh:
-        states = trace(fh.read(), a.base_sw, a.start, values, a.max_steps, a.max_states)
+    if a.blob and a.base_sw is not None:
+        p.error("--base-sw is ambiguous with --blob")
+    if not a.blob and a.base_sw is None:
+        p.error("--base-sw is required unless --blob is used")
+    try:
+        with open(a.source, "rb") as fh:
+            source = fh.read()
+    except OSError as error:
+        p.error(str(error))
+    if a.blob:
+        try:
+            source = LoadedMemory.from_stream(source)
+        except (TypeError, ValueError) as error:
+            p.error("invalid loader stream: " + str(error))
+        if not source.ranges():
+            p.error("loader stream has no loaded ranges")
+        if not source.blocks or "FINAL" not in source.blocks[-1].get("flags", ()):
+            p.error("loader stream ended before a final marker")
+    states = trace(source, a.base_sw, a.start, values, a.max_steps, a.max_states)
     result = [
         {"stopped": s.stopped, "steps": s.steps, "trace": s.trace} for s in states
     ]
