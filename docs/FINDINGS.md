@@ -1887,6 +1887,41 @@ Ghidra or disassembly output and it was not re-checked.
   crossing resolver in `tools/sharcspec/ghidra/gen_sleigh.py` against the PRM.
   Not checked. **[O]**
 
+### Type21a was swallowing the two words after it **[C][D][O]**
+
+- Corrects the open item above. `Type21a` matched any first word `0x0000` to
+  `0x007f` and constrained nothing in the other two words, so it absorbed the
+  short instructions that followed: 904 matches in 1.16, only 44 of them the
+  all-zero word the PRM draws (1.11: 31 of 898). `tools/sharcspec/build_table.py`
+  now takes every bit from the figure for Type21a and Type21c, and the
+  left-over first words are the provisional 16-bit `Type21p_undoc16`
+  (`docs/sharc/SPEC-FINDINGS.md` 3.7). **[D]**
+- Measured with `tools/sharcpcode.py measure --ghidra` before and after, both
+  images, same machine: **[D]**
+
+| | DT2 1.16 | DN2 1.11 |
+|---|---|---|
+| `8a_rel` branches landing on an instruction start | 434/552 -> 520/590 | 533/649 -> 625/695 |
+| decompiler "overlaps instruction" warnings | 70 -> 46 | 66 -> 48 |
+| "call to offcut address" warnings | 13 -> 9 | not recorded |
+| aligned instructions our decoder finds | 21,270 -> 21,792 | 20,805 -> 21,361 |
+| main-program functions | 1,211 -> 1,170 | 1,084 -> 1,049 |
+| ... with one instruction | 114 -> 95 | not recorded |
+| functions the decompiler truncates at bad data | 280 -> 296 | 335 -> 343 |
+| import and analysis / the sharcflow pass, seconds | 4.2 -> 6.0 / 7.5 -> 10.0 | 4.3 -> 5.9 / 8.2 -> 11.1 |
+
+- Aligned counts in 1.16: `21a` 904 -> 49, `21c` 336 -> 175, `23p_undoc16`
+  366 -> 407, and 883 of the new `21p_undoc16`. The branch targets that landed
+  two words inside a `21a` are gone; what is left lands inside `2a`, `6a_mem`,
+  `14a` and `4a`, in counts of three to ten. **[D]**
+- Open: Digitone II's `25a_direct` landing fell, 239/269 -> 217/276, with no
+  explanation yet. Both images decode more bytes, so Ghidra meets more bad
+  instruction data and analysis takes about 35% longer. 1.16 keeps 165 Error
+  bookmarks but 53 of them are different ones; 1.11 goes 172 -> 182. Twelve of
+  the twenty worst mid-instruction branch targets are still unexplained: their
+  container decodes cleanly and the chain still misses the target, so a
+  neighbouring form is wrong too. **[O]**
+
 ## Emulation
 
 Function-level works well and is the practical path. Full boot was pushed as far

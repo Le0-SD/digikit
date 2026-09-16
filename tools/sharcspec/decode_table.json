@@ -2168,11 +2168,11 @@
    "width": 48,
    "visa": true,
    "isa": true,
-   "mask": "0xff8000000000",
+   "mask": "0xffffffffffff",
    "value": "0x000000000000",
-   "fixed_bits": 9,
+   "fixed_bits": 48,
    "fields": [],
-   "source": "pgr values + prm layout",
+   "source": "prm figure (every bit printed; the PGR grid leaves them blank)",
    "unconfirmed_bits": 0
   },
   {
@@ -2180,11 +2180,11 @@
    "width": 16,
    "visa": true,
    "isa": false,
-   "mask": "0xffc100000000",
+   "mask": "0xffff00000000",
    "value": "0x000100000000",
-   "fixed_bits": 11,
+   "fixed_bits": 16,
    "fields": [],
-   "source": "pgr values + prm layout",
+   "source": "prm figure (every bit printed; the PGR grid leaves them blank)",
    "unconfirmed_bits": 0
   },
   {
@@ -2322,6 +2322,24 @@
    ],
    "source": "firmware (undocumented; likely Type23/24; unconfirmed)",
    "unconfirmed_bits": 7
+  },
+  {
+   "name": "Type21p_undoc16",
+   "width": 16,
+   "visa": true,
+   "isa": false,
+   "mask": "0xff8000000000",
+   "value": "0x000000000000",
+   "fixed_bits": 9,
+   "fields": [
+    {
+     "label": "operand[6:0]",
+     "hi": 38,
+     "lo": 32
+    }
+   ],
+   "source": "firmware (undocumented; likely Type23/24; unconfirmed)",
+   "unconfirmed_bits": 9
   }
  ],
  "notes": [
@@ -2332,6 +2350,7 @@
   "Type9b: split into Type9b_abs/Type9b_rel -- classic.json keeps these as separate absolute-or-indirect/PC-relative tables; see SPLIT_FORMS",
   "Type10a: split into Type10a_abs/Type10a_rel -- classic.json keeps these as separate absolute-or-indirect/PC-relative tables; see SPLIT_FORMS",
   "Type25c_rframe: 16-bit form from PGR",
-  "Type23p_undoc16: provisional, from firmware only (0x023e x329, top-7 0000001 family = 62% of unknowns)"
+  "Type23p_undoc16: provisional, from firmware only (0x023e x329, top-7 0000001 family = 62% of unknowns)",
+  "Type21p_undoc16: provisional, from firmware only (the old Type21a prefix; 95% of its matches are not the all-zero NOP word)"
  ]
 }

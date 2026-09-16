@@ -211,6 +211,29 @@ here; the firmware is the arbiter.
   where our provisional form makes it 16-bit. Branch alignment did not regress, so
   the 16-bit call holds for now, but the exact extent of the family is not final.
 
+### 3.7 Type 21a is the whole word, not a prefix
+
+- The PRM prints a value for every bit of Type 21a (Figure 17-5, p.413: 48
+  zero bits) and Type 21c (Figure 17-6: `0x0001`). The classic PGR grid leaves
+  those bits blank, and `build_table.py` read a blank as "any value", so
+  `Type21a` matched any first word `0x0000`-`0x007f` and swallowed the one or
+  two short instructions after it: **904 matches in Digitakt II 1.16, of which
+  only 44 (4.9%) are the all-zero word** (Digitone II 1.11: 31 of 898).
+- `FULL_WORD` in `build_table.py` now takes every bit from the figure for these
+  two forms: Type21a `0xffffffffffff`/`0`, Type21c `0xffff00000000`/
+  `0x000100000000`.
+- The left-over first words become **`Type21p_undoc16`**, provisional in the
+  same sense as Type23p_undoc16: top nine bits zero, a 7-bit operand, 16 bits
+  long, no name and no semantics. 883 in 1.16, 969 in 1.11. Its commonest
+  first words are `0x0032`, `0x001c`, `0x0008`, `0x0030`, `0x0010`. It is
+  followed by itself 18% of the time, then by `2a`, `23p_undoc16` and `3a` —
+  not the signature 3.6 records for Type23p_undoc16, so the two are probably
+  unrelated despite the shared construction.
+- In the SLEIGH module the crossing pattern with Type22c moves from Type21a to
+  Type21p_undoc16 (bit 32), and Type21c stops crossing anything.
+- Open: what the instruction is. The first-word values cluster, which is a
+  lead; the manuals document nothing in this range beyond `0x0001`.
+
 ---
 
 ## 4. Decoder validation

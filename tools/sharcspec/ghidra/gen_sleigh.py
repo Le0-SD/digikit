@@ -757,7 +757,10 @@ CROSSING_RESOLVERS = [
     #  the resolver's extra constraint exactly subsumes it -- or None)
     dict(winner="Type7d", loser="Type7b", extra=[(22, 16, 0x3f)],
          drop_label="compute"),
-    dict(winner="Type21a", loser="Type22c", extra=[(32, 32, 1)], drop_label=None),
+    # Type21a is now the all-zero word, so it no longer crosses Type22c (bit 32
+    # is 0 there and 1 here); the provisional Type21p_undoc16 inherits the
+    # crossing, since it fixes bits 47-39 while Type22c fixes 47-40 and bit 32.
+    dict(winner="Type21p_undoc16", loser="Type22c", extra=[(32, 32, 1)], drop_label=None),
     dict(winner="Type22a", loser="Type22c", extra=[(32, 32, 1)], drop_label=None),
 ]
 

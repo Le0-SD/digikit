@@ -43,6 +43,17 @@ ISA_ONLY = {"Type10a"}  # PRM heading "Type 10a ISA (...)"; every other form is 
 # call against the PRM was wrong for these.
 PRM_VALUE_WINS = {"Type2b"}
 
+# Forms whose PRM figure prints a value for every bit: the instruction is the
+# whole word, not a prefix. The classic PGR grid leaves the low bits blank, and
+# the merge rule below treats a blank as "any value" -- which let Type21a match
+# any first word 0x0000-0x007f and swallow the one or two short instructions
+# after it (docs/FINDINGS.md, "Type21a is the all-zero word"). Figure 17-5
+# draws Type21a as 48 zero bits and Figure 17-6 draws Type21c as 0x0001.
+FULL_WORD = {
+    "Type21a": (48, 0x000000000000),
+    "Type21c": (16, 0x000100000000),
+}
+
 # Undocumented 16-bit instruction family, identified only from firmware.
 # ADI's public PRM omits Type 23 and Type 24; the firmware contains a heavily-used
 # 16-bit instruction with top-7 bits 0000001 and a 9-bit operand field (the word
@@ -55,6 +66,20 @@ UNDOCUMENTED_16BIT = [
     {
         "name": "Type23p_undoc16",    # provisional; p = provisional
         "prefix_bits": "0000001",      # top bits, MSB-first, from bit47 down
+        "note": "provisional, from firmware only (0x023e x329, top-7 0000001 "
+                "family = 62% of unknowns)",
+    },
+    # The words Type21a used to swallow: with Type21a tightened to the all-zero
+    # word, a first word whose top nine bits are zero and whose rest is not is
+    # left over. 95% of the old Type21a matches are such words (859 of 904 in
+    # Digitakt II 1.16), and treating them as one short instruction lands 86
+    # more Type8a_rel branches on an instruction start. No public figure
+    # documents them: prefix and length only, no name and no semantics.
+    {
+        "name": "Type21p_undoc16",
+        "prefix_bits": "000000000",
+        "note": "provisional, from firmware only (the old Type21a prefix; 95% "
+                "of its matches are not the all-zero NOP word)",
     },
 ]
 
@@ -238,6 +263,10 @@ for f in prm:
                 fixed[b] = int(pb[b])
                 if source == "prm":
                     unconfirmed.append(b)
+    if name in FULL_WORD:
+        full_width, word = FULL_WORD[name]
+        fixed = {b: (word >> b) & 1 for b in range(48 - full_width, 48)}
+        source = "prm figure (every bit printed; the PGR grid leaves them blank)"
     mask = sum(1 << b for b in fixed)
     value = sum(v << b for b, v in fixed.items())
     forms.append({
@@ -267,7 +296,7 @@ def undocumented_16bit_form(entry):
 
 for entry in UNDOCUMENTED_16BIT:
     forms.append(undocumented_16bit_form(entry))
-    notes.append(f"{entry['name']}: provisional, from firmware only (0x023e x329, top-7 {entry['prefix_bits']} family = 62% of unknowns)")
+    notes.append(f"{entry['name']}: {entry['note']}")
 
 json.dump({"forms": forms, "notes": notes}, open("decode_table.json", "w"), indent=1)
 for fm in forms:
