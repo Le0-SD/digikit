@@ -26,9 +26,20 @@
 
 ### Local availability and reproducible route
 
-No process-execution capability is exposed to this research session, so local executables could not be truthfully enumerated or run; this is a residual check, not evidence of absence. On the shared host, probe without installing: `command -v m68k-elf-gcc m68k-linux-gnu-gcc m68k-elf-as m68k-linux-gnu-as`, then run `…gcc -mcpu=54415 -Q --help=target` and `…as -mcpu=54415 --version`.
+GNU Binutils 2.47 is now built locally under ignored
+`out/toolchains/prefix/binutils-2.47/`; nothing was installed system-wide. The
+official `binutils-2.47.tar.xz` SHA-512 from Sourceware's `sha512.sum` is
+`3126a1064374d8da40d4d70630c204ed1e75d542c447d53fca9778c7ceff095c28e9b445e15a313fef9729082d7966471ee6b5b715d479aa6d568528743e1d98`.
+The out-of-tree configuration was `--target=m68k-elf --disable-nls
+--disable-werror`; only `all-binutils`, `all-gas`, `install-binutils`, and
+`install-gas` were needed. The installed tools report version
+`2.47.20260726`.
 
-If absent, build only public GNU sources in a separate directory: obtain a matching released binutils tarball and GCC release tarball from [GNU binutils releases](https://ftp.gnu.org/gnu/binutils/) and [GNU GCC releases](https://ftp.gnu.org/gnu/gcc/); configure/install binutils with `--target=m68k-elf --prefix=$PREFIX --disable-nls`, put `$PREFIX/bin` first, then configure GCC with `--target=m68k-elf --prefix=$PREFIX --enable-languages=c --without-headers --disable-nls` (and an out-of-tree build). Pin tarball SHA-256, release versions, host compiler and configure lines in fixture documentation. This neither installs a tool here nor processes firmware-derived input.
+The reproducible, committed fixture is
+[`tests/fixtures/coldfire/mcf54415-oracle.s`](../../tests/fixtures/coldfire/mcf54415-oracle.s),
+with its manually reviewed byte/disassembly contract and tool provenance in
+[`mcf54415-oracle.json`](../../tests/fixtures/coldfire/mcf54415-oracle.json).
+The generated object and raw binary remain under temporary/ignored paths.
 
 ## Limits
 
@@ -40,9 +51,33 @@ GCC is GPLv3-or-later; GAS/binutils are GPL-licensed. Treat the built tools and 
 
 Compiler-generated synthetic assembly, object files, and binaries from repository-authored trivial source are suitable committed fixtures in principle: generated output alone is normally not a derivative software implementation, but retain the authored source, tool release/version/configuration, command line, SHA-256, and a note that GNU output was used as an oracle. Prefer committing source and checked textual expected bytes/disassembly over opaque binaries; obtain a licensing review before importing any upstream GNU test text or distributing a fixture produced from nontrivial copied input.
 
-## Smallest experiment
+## Completed smallest experiment
 
-**Do this now:** create (in a future dedicated change) a ten-to-twenty-instruction, manually authored MCF54415 `.s` fixture containing `movclr`, one `mac` load form, accumulator moves, `movec` to `ACR4` and `RGPIOBAR`, and one ISA-C instruction; assemble with GNU GAS `-mcpu=54415`, record `objdump -dr` bytes, and add a paired negative assembly case under `-mcpu=5206`. Feed the positive words to the local `68000:BE:32:ColdfireEMAC` language and assert decode length, operands, and p-code shape. This directly targets its stated `movclr`/operand/control-register gaps without touching firmware material or inferring firmware provenance.
+The 17-instruction fixture covers `movclr`, scalar MAC, MAC and MSAC load
+forms, accumulator moves, ACR4–ACR7, RGPIOBAR, `mov3q`, `bitrev`, `byterev`,
+`ff1`, and a trailing decode sentinel. GNU GAS produces the same 50-byte text
+for `-mcpu=54415` and `-mcpu=54418`; `-mcpu=5206` rejects the source. The test
+compiles the local SLEIGH source afresh, then pins instruction starts, lengths,
+display text, and selected P-code data flow.
+
+`68000:BE:32:ColdfireEMAC` gets all 17 instruction boundaries and the tested
+EMAC/ISA-C operand forms right. Its only fixture mismatches are the five
+MCF5441x control-register destinations: selectors `0x00c`–`0x00f` display as
+`UNK_CTL` instead of ACR4–ACR7, and `0x009` displays as `UNK_CTL` instead of
+RGPIOBAR. Their P-code writes a throwaway temporary rather than named state.
+
+**Decision:** the fixture plus the manual-audited full control map is
+sufficient evidence for a distinct `68000:BE:32:MCF5441x` language seam, but
+not for broadening the generic ColdFireEMAC variant. The device manual assigns
+chip-specific meanings to these selectors, and other MCF5441x selectors
+collide with names in the inherited generic 68k table (for example
+ASID/ACR/MMUBAR versus generic MMU registers). A new language ID can name
+those registers without changing decode of other ColdFire targets; its
+implementation may still share parameterized SLEIGH source with the generic
+variant. The fixture does not reveal a new instruction-boundary blocker in
+the firmware, so this remains a bounded correctness/readability improvement
+rather than a reason to prioritize a full CPU-language rewrite ahead of the
+active SHARC path.
 
 ## Sources
 
