@@ -580,9 +580,9 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             _apply_compute(state, insn, compute)
         return _advance(state, insn)
     if name == "3b":
-        if _field(f, "cond") != 0x1F:
-            return [_stop(state, insn, "unsupported predicate")]
         # SHARC+ Core Programming Reference rev. 1.4, pp. 13-16--13-19.
+        # Validate and decode the complete access before making a predicate
+        # assumption, so unsupported forms stop rather than creating paths.
         width_fields = (_field(f, "l"), _field(f, "x"), _field(f, "w"))
         widths = {
             (0, 1, 1): "normal-word",
@@ -595,46 +595,76 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         access_width = widths.get(width_fields)
         if access_width is None:
             return [_stop(state, insn, "unsupported Type3b access width")]
-        if _field(f, "d") and access_width.endswith("sign-extended"):
+        store = bool(_field(f, "d"))
+        if store and access_width.endswith("sign-extended"):
             return [_stop(state, insn, "unsupported Type3b sign-extended store")]
-        old = dict(state.uregs)
         bank = 8 if _field(f, "g") else 0
         index, modifier = _field(f, "i") + bank, _field(f, "m") + bank
-        iv, mv = _ureg(old, 16 + index), _ureg(old, 32 + modifier)
         post_modify = bool(_field(f, "u"))
         addressing_mode = "post-modify" if post_modify else "pre-modify"
-        address = iv if post_modify else _add(iv, mv, f"I{index} + M{modifier}")
-        if _field(f, "d"):
-            _event(
-                state,
-                insn,
-                "store",
-                space="PM" if bank else "DM",
-                ureg=UREG_NAMES[_field(f, "ureg")],
-                value=_ureg(old, _field(f, "ureg")),
-                address=address,
-                expression=_render(address),
-                addressing_mode=addressing_mode,
-                access_width=access_width,
+        space = "PM" if bank else "DM"
+        ureg = _field(f, "ureg")
+        cond = _field(f, "cond")
+
+        def access(executed: State) -> None:
+            old = dict(executed.uregs)
+            iv, mv = _ureg(old, 16 + index), _ureg(old, 32 + modifier)
+            address = (
+                iv if post_modify else _add(iv, mv, f"I{index} + M{modifier}")
             )
-        else:
-            state.uregs[_field(f, "ureg")] = Unknown(
-                "memory-address " + _render(address)
-            )
-            _event(
-                state,
-                insn,
-                "load",
-                space="PM" if bank else "DM",
-                ureg=UREG_NAMES[_field(f, "ureg")],
-                address=address,
-                expression=_render(address),
-                addressing_mode=addressing_mode,
-                access_width=access_width,
-            )
-        if post_modify:
-            state.uregs[16 + index] = _add(iv, mv, "I%d + M%d" % (index, modifier))
-        return _advance(state, insn)
+            if store:
+                _event(
+                    executed,
+                    insn,
+                    "store",
+                    space=space,
+                    ureg=UREG_NAMES[ureg],
+                    value=_ureg(old, ureg),
+                    address=address,
+                    expression=_render(address),
+                    addressing_mode=addressing_mode,
+                    access_width=access_width,
+                    condition=cond,
+                    predicate_assumption=True,
+                )
+            else:
+                executed.uregs[ureg] = Unknown("memory-address " + _render(address))
+                _event(
+                    executed,
+                    insn,
+                    "load",
+                    space=space,
+                    ureg=UREG_NAMES[ureg],
+                    address=address,
+                    expression=_render(address),
+                    addressing_mode=addressing_mode,
+                    access_width=access_width,
+                    condition=cond,
+                    predicate_assumption=True,
+                )
+            if post_modify:
+                executed.uregs[16 + index] = _add(
+                    iv, mv, "I%d + M%d" % (index, modifier)
+                )
+
+        predicate = _predicate(cond)
+        if predicate is True:
+            access(state)
+            return _advance(state, insn)
+        executed, skipped = _copy(state), _copy(state)
+        access(executed)
+        _event(
+            skipped,
+            insn,
+            "memory-access-skipped",
+            space=space,
+            ureg=UREG_NAMES[ureg],
+            addressing_mode=addressing_mode,
+            access_width=access_width,
+            condition=cond,
+            predicate_assumption=False,
+        )
+        return _advance(executed, insn) + _advance(skipped, insn)
     if name == "3c":
         index, modifier = _field(f, "dmi"), _field(f, "dmm")
         old = dict(state.uregs)

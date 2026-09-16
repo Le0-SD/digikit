@@ -544,7 +544,6 @@ class TraceTest(unittest.TestCase):
                 {"d": 1, "l": 0, "x": 1, "w": 0},
                 "unsupported Type3b sign-extended store",
             ),
-            ({"cond[4:0]": 1, "l": 0, "x": 1, "w": 1}, "unsupported predicate"),
         ):
             state = self.run_one(
                 T.State(1, {16: T.Const(0x80), 32: T.Const(3), 2: T.Const(9)}),
@@ -554,6 +553,70 @@ class TraceTest(unittest.TestCase):
             self.assertEqual(
                 state.uregs, {16: T.Const(0x80), 32: T.Const(3), 2: T.Const(9)}
             )
+
+        invalid = T._execute(
+            T.State(1, {16: T.Const(0x80), 32: T.Const(3), 2: T.Const(9)}),
+            insn("3b", {**base, "cond[4:0]": 1, "l": 0, "x": 0, "w": 1}),
+        )
+        self.assertEqual(len(invalid), 1)
+        self.assertEqual(invalid[0].stopped, "unsupported Type3b access width")
+        self.assertEqual(
+            invalid[0].uregs, {16: T.Const(0x80), 32: T.Const(3), 2: T.Const(9)}
+        )
+
+    def test_type3b_unknown_predicate_forks_premodify_load_and_postmodify_store(self):
+        load = {
+            "u": 0,
+            "i[2:0]": 1,
+            "m[2:0]": 2,
+            "g": 0,
+            "d": 0,
+            "l": 0,
+            "x": 1,
+            "w": 1,
+            "ureg[6:0]": 7,
+            "cond[4:0]": 1,
+        }
+        executed, skipped = T._execute(
+            T.State(10, {17: T.symbol("buffer"), 34: T.Const(4)}),
+            insn("3b", load),
+        )
+        self.assertEqual((executed.pc_sw, skipped.pc_sw), (12, 12))
+        self.assertEqual(executed.uregs[7], T.Unknown("memory-address buffer + 0x4"))
+        self.assertNotIn(7, skipped.uregs)
+        self.assertEqual(executed.uregs[17], T.symbol("buffer"))
+        self.assertEqual(skipped.uregs[17], T.symbol("buffer"))
+        self.assertEqual(
+            (executed.trace[-1]["condition"], executed.trace[-1]["predicate_assumption"]),
+            (1, True),
+        )
+        self.assertEqual(
+            skipped.trace[-1],
+            {
+                "pc_sw": 10,
+                "form": "3b",
+                "action": "memory-access-skipped",
+                "space": "DM",
+                "ureg": "R7",
+                "addressing_mode": "pre-modify",
+                "access_width": "normal-word",
+                "condition": 1,
+                "predicate_assumption": False,
+            },
+        )
+
+        store = {**load, "u": 1, "d": 1, "ureg[6:0]": 4}
+        executed, skipped = T._execute(
+            T.State(10, {17: T.Const(0x80), 34: T.Const(4), 4: T.Const(7)}),
+            insn("3b", store),
+        )
+        self.assertEqual(executed.uregs[17], T.Const(0x84))
+        self.assertEqual(skipped.uregs[17], T.Const(0x80))
+        self.assertEqual(executed.trace[-1]["value"], 7)
+        self.assertEqual(skipped.trace[-1]["addressing_mode"], "post-modify")
+        executed.uregs[4] = T.Const(99)
+        executed.uregs[17] = T.Const(0)
+        self.assertEqual((skipped.uregs[4], skipped.uregs[17]), (T.Const(7), T.Const(0x80)))
 
     def test_type3b_dm_postmodify_and_pm_premodify(self):
         store = {
@@ -580,7 +643,7 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(pm.trace[0]["expression"], "pm + 0x4")
         self.assertEqual(pm.uregs[25], T.symbol("pm"))
 
-    def test_type3b_second_call_delay_slot_preserves_call_target(self):
+    def test_type3b_unknown_predicate_second_call_delay_slot_preserves_call_target(self):
         call = insn("25a_direct", {"addr[23:16]": 0, "addr[15:0]": 99}, 4)
         type3b = insn(
             "3b",
@@ -594,14 +657,20 @@ class TraceTest(unittest.TestCase):
                 "x": 1,
                 "w": 1,
                 "ureg[6:0]": 2,
-                "cond[4:0]": 31,
+                "cond[4:0]": 1,
             },
         )
         s = self.run_one(T.State(10, {16: T.Const(0x80), 32: T.Const(4)}), call)
         s = self.run_one(s, insn("17b", {"ureg[6:0]": 0, "data[15:0]": 1}, 4))
-        s = self.run_one(s, type3b)
-        self.assertEqual(s.stopped, "external-call")
-        self.assertEqual((s.trace[-1]["return_sw"], s.trace[-1]["target_sw"]), (16, 99))
+        executed, skipped = T._execute(s, type3b)
+        for result, assumed in ((executed, True), (skipped, False)):
+            self.assertEqual(result.stopped, "external-call")
+            self.assertEqual(
+                (result.trace[-1]["return_sw"], result.trace[-1]["target_sw"]), (16, 99)
+            )
+            self.assertEqual(result.trace[-2]["predicate_assumption"], assumed)
+        self.assertIn(2, executed.uregs)
+        self.assertNotIn(2, skipped.uregs)
 
     def test_19a_constant_and_unknown(self):
         f = {
