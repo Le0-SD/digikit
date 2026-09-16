@@ -221,12 +221,17 @@ class Sig:
     place firmware bytes are embedded). Any 4-byte big-endian window that
     falls in [lo, hi) -- an inlined address into the loaded image itself,
     which relocates between builds -- is wildcarded out before matching.
-    Must find exactly one match in the target image."""
+    Must find exactly one match in the target image.
 
-    def __init__(self, ref_hex, lo=0x40000000, hi=0x40400000):
+    `wild` additionally masks individual byte offsets that are not addresses
+    but still move between builds -- a small immediate the compiler chose, for
+    instance. Use it sparingly and say in a comment what the byte is, because
+    every masked byte is one less thing keeping the match unique."""
+
+    def __init__(self, ref_hex, lo=0x40000000, hi=0x40400000, wild=()):
         self.raw = bytes.fromhex(ref_hex)
         self.lo, self.hi = lo, hi
-        self.regex = re.compile(_mask_pattern(self.raw, lo, hi), re.DOTALL)
+        self.regex = re.compile(_mask_pattern(self.raw, lo, hi, wild), re.DOTALL)
 
     def resolve(self, img, load_addr, got):
         hits = [m.start() for m in self.regex.finditer(img)]
@@ -414,7 +419,7 @@ def _shape_match(data, shape):
     return True
 
 
-def _mask_pattern(raw, lo, hi):
+def _mask_pattern(raw, lo, hi, wild=()):
     n = len(raw)
     mask = bytearray(n)
     i = 0
@@ -426,6 +431,8 @@ def _mask_pattern(raw, lo, hi):
             i += 4
         else:
             i += 1
+    for k in wild:
+        mask[k] = 1
     return b''.join(b'.' if m else re.escape(bytes([b])) for b, m in zip(raw, mask))
 
 
@@ -786,8 +793,15 @@ SYMBOLS = [
     # re-pointing routine, recognisable by its two hard MMIO literals (the
     # PIT3 base 0xfc08c000 and the INTC at 0xfc050050/0xfc05001d).
     # ----------------------------------------------------------------
+    # Byte +15 is the `moveq #N,%d1` immediately after the queue-receive call
+    # -- 40 on Digitakt II 1.15C and Digitone II 1.10E, 41 on Digitone II 1.11.
+    # It is a plain immediate, not an address, so the [lo, hi) masking does not
+    # reach it and the signature missed 1.11 entirely: bootcheck then reported
+    # MISSING: mainloop entered and PARTIAL_MAIN_OS on a run whose main
+    # application task was in fact scheduled and drawing. Masking that one byte
+    # keeps the match unique on all three builds.
     ('mainloop', Sig('48794094ef3c4eb940001928588f722824407192b28065e8',
-                     hi=DATA_HI), False),
+                     hi=DATA_HI, wild=(15,)), False),
     ('main_queue', Operand('mainloop', at=2), False),
     ('job_pump', Sig('4fefffcc48d77c3c246f0038240f2a0a260a068500000014'), False),
     ('display_start', Sig('701041f9fc08c000245f13c1fc050050722313c0fc05001d'), False),
