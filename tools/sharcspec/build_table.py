@@ -51,6 +51,39 @@ PRM_VALUE_WINS = {"Type2b"}
 # draws Type21a as 48 zero bits and Figure 17-6 draws Type21c as 0x0001.
 # The value is the whole printed word; `free` lists bits the figure draws as a
 # field rather than a digit (Type22a's `emu` selects idle from emuidle).
+# Field declarations to ignore, so the classic grid's fixed values at those bits
+# are used instead. Type19a's PRM figure draws bits 41-40 as a selector
+# `sc[1:0]` and bit 39 as `w`, while the PGR grid and the ADSP-2106x, ADSP-21065L
+# and ADSP-21160 manuals all fix bits 44-40 at 10110 and make bit 39 the
+# bit-reverse flag. With the fields declared, Type19a matched on six bits and
+# took the whole 000101 block, including the undocumented 10101; without them it
+# matches on nine, like Type19a_bitrev. See docs/FINDINGS.md, "Type19a's mask is
+# two bits short".
+DROP_FIELDS = {"Type19a": {"sc[1:0]", "w"}}
+
+# Bits where a split branch form takes the PRM figure's digit although its own
+# classic table leaves that bit blank, listed per emitted form name. The generic
+# merge refuses this wholesale and is right to: filling every such gap on the
+# branch forms costs 225 aligned instructions in Digitakt II 1.16 and 279 in
+# Digitone II 1.11, and takes Type8a_abs from 29 matches to 6. Most of those
+# PRM digits are the stale template values the merge rule exists to ignore,
+# exactly as on the compute forms (SPEC-FINDINGS 3.8). Measured per bit over
+# both images, only bit 25 on the Type8a pair is a real discriminator; bit 23,
+# which the same wholesale fill would have fixed on Type9a, is set in 18 of
+# Type9a_abs's 98 instructions and 14 of Type9a_rel's 34, so it is a field in
+# use, not a zero. Measure before adding a bit here (SPEC-FINDINGS 3.10).
+RESTORE_PRM_GAP = {
+    # Of Type8a_rel's 1,382 instructions across the two images, 13 have bit 25
+    # set and 12 of those 13 carry a target top byte outside {0x00, 0xff},
+    # where every real relative branch stays. Of Type8a_abs's 54, 19 have it
+    # set and 18 of those point at something that is not a code address. One of
+    # them is the nonsense `jump 0x3e0030` that truncates FUN_001c136a -- the
+    # same six bytes `00 07 3e 02 30 00` at 1.16 SW 0x1c13bc and 1.11 SW
+    # 0x1c1366.
+    "Type8a_abs": {25},
+    "Type8a_rel": {25},
+}
+
 FULL_WORD = {
     "Type21a": (48, 0x000000000000, ()),
     "Type21c": (16, 0x000100000000, ()),
@@ -106,6 +139,61 @@ UNDOCUMENTED = [
         "note": "provisional, from firmware only (the old Type26a prefix; one "
                 "instance per image, too few to judge)",
     },
+    # Bits 44-40 = 10101 sits between Type 18 (10100) and Type 19 (10110), and
+    # no ADI manual across four generations puts an instruction there. Type19a
+    # used to take it, because its figure declares bits 41-39 as fields where
+    # the classic grid fixes them; with Type19a tightened to nine bits these
+    # words need a home. 757 across the two images, 748 of them with bit 39 set.
+    # The field layout below is Type19a's, which the frames fit -- an index
+    # register and a small signed immediate -- but that is a reading of the
+    # bytes, not a source, and bit 39's meaning is unknown.
+    # The words Type8a used to take on its loose eight-bit prefix, now that
+    # both halves fix bit 25 to zero (RESTORE_PRM_GAP). Excluding them without
+    # giving them a home costs 50 aligned instructions in 1.16 and 71 in 1.11
+    # and adds two truncated functions, because an undecoded word strands the
+    # sweep -- so they keep their 48-bit length and lose only the claim to be a
+    # branch. One prefix covers both halves: bit 40 is Type8a's own abs/rel
+    # selector, kept here as the field `r`. 32 across the two images, 30 of
+    # them pointing at something that is not an address.
+    {
+        "name": "Type8p_undoc48",
+        "width": 48,
+        "prefix_bits": "0000011",
+        "extra_fixed": {25: 1},
+        "fields": [
+            {"label": "r", "hi": 40, "lo": 40},
+            {"label": "b", "hi": 39, "lo": 39},
+            {"label": "a", "hi": 38, "lo": 38},
+            {"label": "cond[4:0]", "hi": 37, "lo": 33},
+            {"label": "j", "hi": 26, "lo": 26},
+            {"label": "ci", "hi": 24, "lo": 24},
+            {"label": "imm[23:16]", "hi": 23, "lo": 16},
+            {"label": "imm[15:0]", "hi": 15, "lo": 0},
+        ],
+        "source": "firmware (undocumented; the bit-25 words Type8a used to "
+                  "take; unconfirmed)",
+        "note": "provisional, from firmware only (bits 47-41 = 0000011 with "
+                "bit 25 set, which no real Type 8a branch has; 32 across the "
+                "two images)",
+    },
+    {
+        "name": "Type19p_undoc48",
+        "width": 48,
+        "prefix_bits": "00010101",
+        "fields": [
+            {"label": "u", "hi": 39, "lo": 39},
+            {"label": "g", "hi": 38, "lo": 38},
+            {"label": "idis[2:0]", "hi": 37, "lo": 35},
+            {"label": "is[2:0]", "hi": 34, "lo": 32},
+            {"label": "data[31:16]", "hi": 31, "lo": 16},
+            {"label": "data[15:0]", "hi": 15, "lo": 0},
+        ],
+        "source": "firmware (undocumented; the 10101 gap between Type 18 and "
+                  "Type 19; unconfirmed)",
+        "note": "provisional, from firmware only (bits 44-40 = 10101, which no "
+                "manual documents; taken from Type19a when its mask is "
+                "tightened to the nine bits the classic grid fixes)",
+    },
 ]
 
 # ----------------------------------------------------------------------
@@ -150,12 +238,21 @@ INDIRECT_REGISTER_LABELS = {"pmi[2:2]", "pmi[1:0]", "pmm[2:0]"}
 RELADDR6_FIELDS = [{"label": "reladdr[5:5]", "hi": 32, "lo": 32}, {"label": "reladdr[4:0]", "hi": 31, "lo": 27}]
 
 
-def fixed_bits_for(width, fields, keys):
+def fixed_bits_for(width, fields, keys, prm=None, gap_bits=()):
     """Fixed-bit dict for a SINGLE classic.json table (`keys` has one entry):
     every bit position not claimed by a field, where that classic table
     marks a concrete 0/1 value. This is the same rule the generic multi-key
     merge below uses (a 1-element `variants` list trivially agrees with
-    itself), factored out so split_branch_form can use it per variant."""
+    itself), factored out so split_branch_form can use it per variant.
+
+    With `prm`, a bit the classic table leaves blank also takes the PRM
+    figure's digit. The generic merge refuses to do that, and is right to: on
+    the compute forms the PRM's digits in those gaps are stale template values,
+    and restoring them destroys real matches (SPEC-FINDINGS 3.8). The branch
+    figures are different -- they print honest zeros where their classic tables
+    are blank, and without those zeros Type8a_rel matches words that are not
+    branches at all (SPEC-FINDINGS 3.10).
+    """
     variants = [rebase(classic[k]["pattern"], classic[k]["msb"]) for k in keys]
     field_bits = {b for fl in fields for b in range(fl["lo"], fl["hi"] + 1)}
     fixed = {}
@@ -165,21 +262,25 @@ def fixed_bits_for(width, fields, keys):
         vals = {v.get(b) for v in variants}
         if len(vals) == 1 and vals <= {"0", "1"}:
             fixed[b] = int(vals.pop())
+        elif (b in gap_bits and prm is not None and vals <= {".", None}
+              and prm.get(b) in ("0", "1")):
+            fixed[b] = int(prm[b])
     return fixed
 
 
-def make_form(name, width, fields, fixed, source):
+def make_form(name, width, fields, fixed, source, keys=()):
     mask = sum(1 << b for b in fixed)
     value = sum(v << b for b, v in fixed.items())
     isa_only = name.split("_")[0] in ISA_ONLY
     return {
         "name": name, "width": width, "visa": not isa_only, "isa": width == 48,
         "mask": f"0x{mask:012x}", "value": f"0x{value:012x}", "fixed_bits": len(fixed),
-        "fields": fields, "source": source, "unconfirmed_bits": 0,
+        "fields": fields, "source": source, "classic_keys": list(keys),
+        "unconfirmed_bits": 0,
     }
 
 
-def split_branch_form(name, width, fields, cfg):
+def split_branch_form(name, width, fields, cfg, prm=None):
     """Split one PRM-merged branch figure into its classic-confirmed
     absolute-or-indirect (selector=0) and PC-relative (selector=1) forms.
     See SPLIT_FORMS above for the rationale."""
@@ -196,12 +297,14 @@ def split_branch_form(name, width, fields, cfg):
         abs_fields = common
         rel_fields = [fl for fl in common if fl["label"] not in INDIRECT_REGISTER_LABELS] + RELADDR6_FIELDS
 
-    abs_fixed = fixed_bits_for(width, abs_fields, [cfg["abs_key"]])
-    rel_fixed = fixed_bits_for(width, rel_fields, [cfg["rel_key"]])
+    abs_fixed = fixed_bits_for(width, abs_fields, [cfg["abs_key"]], prm,
+                               RESTORE_PRM_GAP.get(f"{name}_abs", ()))
+    rel_fixed = fixed_bits_for(width, rel_fields, [cfg["rel_key"]], prm,
+                               RESTORE_PRM_GAP.get(f"{name}_rel", ()))
     src = "pgr (split from merged PRM figure; see build_table.py SPLIT_FORMS)"
     return [
-        make_form(f"{name}_abs", width, abs_fields, abs_fixed, src),
-        make_form(f"{name}_rel", width, rel_fields, rel_fixed, src),
+        make_form(f"{name}_abs", width, abs_fields, abs_fixed, src, [cfg["abs_key"]]),
+        make_form(f"{name}_rel", width, rel_fields, rel_fixed, src, [cfg["rel_key"]]),
     ]
 
 
@@ -229,7 +332,7 @@ for f in prm:
         fields.append({"label": fl["label"], "hi": hi, "lo": lo})
 
     if name in SPLIT_FORMS:
-        forms.extend(split_branch_form(name, width, fields, SPLIT_FORMS[name]))
+        forms.extend(split_branch_form(name, width, fields, SPLIT_FORMS[name], pb))
         notes.append(f"{name}: split into {name}_abs/{name}_rel -- classic.json keeps these as "
                       "separate absolute-or-indirect/PC-relative tables; see SPLIT_FORMS")
         continue
@@ -258,6 +361,12 @@ for f in prm:
         if name == "Type17a" and fl["label"] == "i[2:0]":
             fl["label"] = "ureg[6:0]"
         fl["label"] = fl["label"].replace("data[5:5", "data[5:5]").replace("]]", "]")
+
+    if name in DROP_FIELDS:
+        dropped = sorted(DROP_FIELDS[name])
+        fields = [fl for fl in fields if fl["label"] not in DROP_FIELDS[name]]
+        notes.append(f"{name}: PRM field declarations {dropped} dropped so the "
+                      "classic grid's fixed values at those bits are used")
 
     fixed = {}
     unconfirmed = []
@@ -298,7 +407,8 @@ for f in prm:
     forms.append({
         "name": name, "width": width, "visa": name not in ISA_ONLY, "isa": width == 48,
         "mask": f"0x{mask:012x}", "value": f"0x{value:012x}", "fixed_bits": len(fixed),
-        "fields": fields, "source": source, "unconfirmed_bits": len(unconfirmed),
+        "fields": fields, "source": source, "classic_keys": list(keys),
+        "unconfirmed_bits": len(unconfirmed),
     })
 
 def undocumented_form(entry):
@@ -310,16 +420,25 @@ def undocumented_form(entry):
         mask |= 1 << b
         if ch == "1":
             value |= 1 << b
-    fixed_bits = len(prefix_bits)
+    extra_fixed = entry.get("extra_fixed", {})
+    for bit, val in extra_fixed.items():
+        mask |= 1 << bit
+        if val:
+            value |= 1 << bit
+    fixed_bits = len(prefix_bits) + len(extra_fixed)
     width = entry.get("width", 16)
     # A prefix filling the first word leaves no room for an operand; a wider
     # form leaves its later words unlabelled, as the wildcard forms do.
-    fields = ([] if fixed_bits >= 16 else
-              [{"label": f"operand[{15 - fixed_bits}:0]", "hi": 47 - fixed_bits, "lo": 32}])
+    fields = entry.get("fields")
+    if fields is None:
+        fields = ([] if fixed_bits >= 16 else
+                  [{"label": f"operand[{15 - fixed_bits}:0]", "hi": 47 - fixed_bits, "lo": 32}])
     return {
         "name": entry["name"], "width": width, "visa": True, "isa": width == 48,
         "mask": f"0x{mask:012x}", "value": f"0x{value:012x}", "fixed_bits": fixed_bits,
-        "fields": fields, "source": "firmware (undocumented; likely Type23/24; unconfirmed)",
+        "fields": fields,
+        "source": entry.get("source", "firmware (undocumented; unconfirmed)"),
+        "classic_keys": [],
         "unconfirmed_bits": fixed_bits,
     }
 

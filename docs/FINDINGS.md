@@ -1947,6 +1947,279 @@ Ghidra or disassembly output and it was not re-checked.
   are decoded at a length that has never been checked against anything but
   their neighbours' alignment. **[O]**
 
+### Instruction Types 23 and 24, and why the modern manuals skip them **[D]**
+
+- The SHARC+ Core Programming Reference Rev 1.5 and the classic SHARC Processor
+  Programming Reference Rev 2.4 both number straight from Type 22 to Type 25
+  with no note explaining the gap, so `docs/sharc/SPEC-FINDINGS.md` 3.6 recorded
+  Types 23 and 24 as undocumented. Three older ADI manuals, fetched into
+  `docs/refs/` on 2026-09-16, close it. **[D]**
+- ADSP-2106x SHARC Processor User's Manual Rev 2.1 (March 2004) and ADSP-21065L
+  SHARC DSP Technical Reference Rev 2.0 (July 2003) each document **Type 23 =
+  `IDLE16`** and **Type 24 = `CJUMP`/`RFRAME`** in full -- syntax, prose and
+  opcode bit maps (2106x Appendix A-53 and A-54; 21065L pages 99 and 101). **[D]**
+- ADSP-21160 SHARC DSP Instruction Set Reference Rev 2.1 (April 2013) records
+  the renumbering that made them vanish. Table 1-21 prints
+  `Type 23: Idle16 -- Not supported on ADSP-21160`,
+  `Type 24: creg<->ureg -- Not documented on ADSP-21160` and
+  `Type 25: Cjump/Rframe  0001 1000 0000 0100 0000 0`
+  (`out/refs/ADSP-21160_isr_rev2.1/all.txt` 2390-2401). **[D]**
+- So the gap is a renumbering, not an omission. CJUMP/RFRAME moved from Type 24
+  to Type 25 and kept its encoding: the classic Type 24 direct-branch word
+  `0001 1000 0000 0100` is bit-for-bit the `Type25a_direct` the table already
+  carries. Type numbers are ADI's labels, not a field, so the vacated number
+  says nothing about encoding space and there is no hole to search. **[D]**
+- `IDLE16` is an ordinary 48-bit instruction. The 16 is the clock divisor --
+  "the internal clock continues to run at 1/16th the rate of CLKIN"
+  (`out/refs/3789835185494138226006565l_book_tr/all.txt` 3826-3830) -- not a
+  16-bit encoding, so it is not a candidate for the provisional 16-bit forms.
+  Its word is `000 00000 1 01` where Type 22 `idle` is `000 00000 1`, which puts
+  it inside the nine-bit prefix `Type22p_undoc48` now covers. Whether any of
+  those 220 words is an `IDLE16` has not been checked. **[O]**
+- `creg<->ureg` is an instruction ADI acknowledges and declines to document.
+  The same manual's glossary defines `creg` as "One of 32 cache entries, an
+  entry consisting of a CH, CL, & CA" (`all.txt` 1423), so it moves between an
+  instruction-cache entry and a universal register -- systems code, not
+  something to expect hundreds of times in an audio program. Its Table 1-21 row
+  carries no opcode bits at all. **[O]**
+
+### A third opcode source: Type 7a confirmed, Type 19a's bit 39 settled **[D][C]**
+
+- `tools/sharcspec/compare_sources.py` diffs two sources, the PRM figures and
+  the classic PGR grid. The three manuals added on 2026-09-16 give a third for
+  every form the classic core had, which is enough to break the ties the two-way
+  diff left open in `docs/sharc/SPEC-FINDINGS.md` 3.2 and 3.3. **[D]**
+- Type 7a: the PRM figure shades nine fixed bits, `000001001`, for Type 7a and
+  Type 7d alike, which is why the two are indistinguishable there. Both new
+  manuals print `000 00100` over bits 47-40 and make bit 39 the `G` field,
+  "Selects DAG1 or DAG2" (`out/refs/3789835185494138226006565l_book_tr/all.txt`
+  2414-2454; `out/refs/ADSP-21160_isr_rev2.1/all.txt` 3712-3745). Eight fixed
+  bits, not nine. **[D]**
+- `decode_table.json` already has this right: `Type7a` is `mask
+  0xff0000000000`, `fixed_bits 8`, bit 39 unconstrained, because
+  `tools/sharcspec/build_table.py` 273-275 declines to fix a bit the PRM shades
+  where the PGR leaves a blank. The third source confirms that merge rule rather
+  than correcting it. Type 7a decodes 311 times in 1.16 and 369 in 1.11. **[D]**
+- Type 19a: bit 39 is the bit-reverse flag, `0` for `MODIFY` and `1` for
+  `BITREV`, printed explicitly as a `0`/`1` pair in both new manuals
+  (`out/refs/ADSP-21160_isr_rev2.1/all.txt` 5723-5745;
+  `out/refs/3789835185494138226006565l_book_tr/all.txt` 3617-3670). Bits 41-39
+  are `100` without bit-reverse and `101` with. That is the PGR value the PRM
+  figure contradicts with `000`, so 3.2's open item closes in the PGR's favour.
+  **[C][D]**
+
+### Type19a's mask is two bits short, and 757 instructions live in the gap **[V][O]**
+
+- `tools/sharcfields.py`, new here, is the mirror of
+  `tools/sharcspec/audit_bits.py`: where that lists bits a PRM figure prints
+  that the table does not fix, this tallies what values the fields the table
+  *declares* actually take across the aligned instructions of both images, and
+  flags any field sitting on bits the classic PGR grid fixes. Three fields
+  qualify. One is large. **[D]**
+- `Type19a` fixes six bits, `000101`, where its neighbours in the opcode space
+  fix eight or nine: `Type18a` `00010100`, `Type19a_bitrev` `000101101`,
+  `Type20a` `00010111`. The PRM's Figure 17-2 shades only six and declares bits
+  41-40 a SHARC+ field `sc[1:0]` and bit 39 a field `w`, while the classic grid
+  and all three older manuals fix bits 44-40 at `10110`
+  (`tools/sharcspec/classic.json` "Type 19a", pattern `000101100...`). **[D]**
+- So `Type19a` claims the whole `000101` block and, by longest-leading-prefix,
+  keeps whatever its tighter neighbours leave: its own `10110` with `w=0`, and
+  the whole of `10101`. Of its 1,935 matches across the two images, 1,178 are
+  `10110 0`, the documented `MODIFY`; **748 are `10101 1` and 9 are
+  `10101 0`**. **[V]**
+- Bits 44-40 = `10101` is documented by nothing. The sequence runs Type 18
+  `10100` (system register bit manipulation), the gap, Type 19 `10110`, Type 20
+  `10111` -- in the PGR Rev 2.4 (`all.txt` 19877-19942), the ADSP-21160 ISR Rev
+  2.1 (`all.txt` 5637-5741 and Table 1-19 at 2280-2321), the 21065L and the
+  2106x alike. Four manual generations, no instruction at `10101`. **[D]**
+- Checked against the bytes by a second agent that used no project decoder: in
+  1.16, SW `0x1c14a0` is `87 15 ff ff fc ff`, frame `0x1587fffffffc`, bits 47-39
+  `000101011`; in 1.11, SW `0x1c1445` is `87 15 ff ff ee ff`, frame
+  `0x1587ffffffee`. A naive scan of every even offset finds 851 frames with
+  `10101 1` across the two images, of which the aligned sweep takes 748 -- a
+  subset, as it must be. **[V]**
+- Read through `Type19a`'s field layout, those two frames give `g=DAG1,
+  idis=0, is=I7, data=-4` and `data=-18`: an index register and a small negative
+  immediate, the shape of a `MODIFY`. The words are structurally a sibling of
+  Type 19, not noise, and they sit in the aligned sweep without disturbing it.
+  **[D]**
+- Two readings, disagreeing about the table rather than the bytes. Either
+  SHARC+ really did widen Type 19 with a two-bit `sc` selector, as its own
+  figure says, and `sc=01` is a new variant; or `10101` is a separate
+  instruction `Type19a` is swallowing. Against the first: within `sc=01`, bit 39
+  is `1` in 748 of 757, so if `w` were still the bit-reverse flag then almost
+  every one of them would be a `BITREV`, while the documented bit-reverse form
+  occurs 8 times in both images combined. **[O]**
+- (`figures.json`'s `Type19a_bitrev` pattern `000101000` is not a new problem:
+  bits 41-39 = `000` is exactly the PRM erratum `docs/sharc/SPEC-FINDINGS.md`
+  3.2 already records, and `build_table.py` already takes the PGR value.) **[D]**
+- Done, and it holds. `Type19a` now fixes the nine bits the classic grid fixes,
+  `000101100` (`mask 0xff8000000000`), with its `sc[1:0]` and `w` field
+  declarations removed through a new `DROP_FIELDS` table in
+  `tools/sharcspec/build_table.py` -- an override there, not an edit to
+  `figures.json`, which `extract_figures.py` regenerates. The provisional 48-bit
+  `Type19p_undoc48` (`00010101`, eight fixed bits) takes the gap. **[V]**
+- `tools/sharcpcode.py compare out/sharcpcode/t23 out/sharcpcode/t24` reports
+  **0 regressions**. Aligned and decoded counts identical (1.16 21,792 of
+  21,792; 1.11 21,361 of 21,361); 1,170 and 1,049 main-program functions with
+  the same size histogram; 296 and 343 functions truncated at bad instruction
+  data; both probes keeping their earlier verdicts; and every Error and warning
+  bookmark count byte-identical -- "Bad instruction - Truncating control flow
+  here" 337, "Control flow encountered bad instruction data" 296, overlapping
+  instructions 46, offcut calls 9. The only movement is timing noise of a few
+  per cent in both directions. **[V]**
+- Only the per-form split moved, and both sums are exact: 1.16 `19a` 969 ->
+  559 plus `19p_undoc48` 410; 1.11 `19a` 966 -> 619 plus 347. That is 757 words
+  across the two images, the same 757 `tools/sharcfields.py` found. `18a`,
+  `20a` and `19a_bitrev` are untouched, `19p_undoc48` has no undecoded words and
+  no length mismatches, `tools/sharccompare.py` still has both decoders agreeing
+  on every offset of 1.16, and `sharcfields` no longer flags Type19a. **[V]**
+- So 757 words keep their length, their neighbours and every flow metric, and
+  only stop being called Type 19. That is the strongest evidence available short
+  of a manual that the split is right, and it says nothing about what they
+  do. **[D]**
+- Still open: what `10101` is, and what bit 39 selects within it -- 748 of the
+  757 have it set. Two of the mid-instruction branch targets the handover counts
+  as unexplained still land inside a `19a` (1.16 SW `0x1c866b` inside
+  `0x1c866a`, and `0x1c87a0` inside `0x1c879e`), so a neighbouring form is wrong
+  as well. **[O]**
+
+### The decode table now records which classic tables it merged **[V][C]**
+
+- `tools/sharcfields.py` guessed a form's classic.json table from its name, and
+  the guess is wrong for every split form: `Type8a_rel` resolves to `Type 8a`
+  where the merge really used `Type 8a #2`. `build_table.py` knew the answer and
+  threw it away, so every emitted form now carries `classic_keys`, and
+  `sharcfields` reads it instead of guessing. **[V]**
+- It also now mirrors the merge rule: a bit counts as fixed only where every
+  merged variant prints the same digit. That corrects two false positives this
+  tool reported on its first run. `Type11a` merges both `Type 11a` (`00001010`)
+  and `Type 11a #2` (`00001011`), whose patterns differ at bit 40 -- so bit 40
+  is the digit that picks between the two tables, `build_table.py` is right to
+  leave it free, and the PRM is right to call it the field `x`. Its `lr` at bit
+  24 is a second such selector. Neither was a conflict; the count of fields
+  sitting on bits the classic grid fixes goes 3 to 0. **[V][C]**
+- No form's decode changed: masks, values, widths and fields are identical, and
+  `tools/sharccompare.py` still has both decoders agreeing on all 22,886
+  offsets of 1.16. **[V]**
+
+### The Type 8a branch forms were taking words that are not branches **[V][C]**
+
+- `audit_bits.py` reports `Type8a_abs` and `Type8a_rel` dropping seven PRM bits
+  (32-27 and 25), which the handover named as where to start on the `8a_rel`
+  with the nonsensical target. Restoring all of them is wrong, and measurably:
+  it costs 225 aligned instructions in 1.16 and 279 in 1.11, and takes
+  `Type8a_abs` from 29 matches to 6. **[V]**
+- Measured per bit over both images instead, only one bit is a real
+  discriminator. Bit 25 is set in 13 of `8a_rel`'s 1,382 instructions and 19 of
+  `8a_abs`'s 54, and 30 of those 32 carry a target that is not a plausible
+  address. The other six gap bits are each set in 7 to 20 instances, and bit 23
+  -- which the wholesale fill would also have fixed, on `Type9a` -- is set in 18
+  of `Type9a_abs`'s 98 and 14 of `Type9a_rel`'s 34. Those are fields in use, not
+  zeros, so the PRM's digits in the branch figures' gaps are the same stale
+  template values as on the compute forms (`docs/sharc/SPEC-FINDINGS.md` 3.8).
+  **[V]**
+- Fixing bit 25 to zero and leaving the words homeless still regressed: decoded
+  instructions fell 50 in 1.16 and 71 in 1.11 and `halt_baddata` went 296 to
+  298, because an undecoded word strands the alignment sweep. Giving them a
+  48-bit home instead is flat. **`Type8p_undoc48`** takes bits 47-41 = `0000011`
+  with bit 25 set -- one prefix for both halves, since bit 40 is Type8a's own
+  abs/rel selector, kept as the field `r` -- and holds 16 instructions per
+  image. **[V]**
+- Measured: `compare` reports **0 regressions** against both `out/sharcpcode/t24`
+  and `out/sharcpcode/t23`. Aligned counts are identical to baseline (21,792 and
+  21,361), and `8a_rel` + `8a_abs` + `8p_undoc48` sums exactly to the old
+  `8a_rel` + `8a_abs`: 636 + 19 + 16 = 671 in 1.16, 733 + 16 + 16 = 765 in 1.11.
+  The nonsense `jump 0x3e0030` at 1.16 SW `0x1c13bc` and 1.11 SW `0x1c1366` --
+  the same six bytes `00 07 3e 02 30 00` in both images -- is gone from the
+  listing. **[V]**
+- **Corrects the handover.** The probe `returns 2748` does not fail because of
+  that word, and `FUN_001c136a` does not stop there: it decompiles to the same
+  57 instructions before and after, and removing the bogus branch leaves the
+  probe exactly as it was. 2748 is `0xabc`, loaded by the `17b` at SW
+  `0x1c1498`, which sits in the delay slot of the `9b_abs` return at
+  `0x1c1496` (`0x083f343f`, the I4/M6 idiom). The probe cannot pass until the
+  language models delay slots. It is blocked on stage 1, not on the decoder.
+  **[V][C]**
+- Open: what the `Type8p` words are. 32 across two images, several of them
+  byte-identical in both (`0x062207100000`, `0x062207300000`, `0x06220f8e0002`,
+  `0x07110f840003`), so they are real shared code, not misalignment. **[O]**
+
+### A generated subtable with no user **[V]**
+
+- Adding a fixed bit to a split branch form made `sleighc` warn "Unreferenced
+  table `target_pcrel_6b_w0`", and `tests/test_sharc_pcode.py` caught it.
+  `gen_sleigh.py` calls `get_target_subtable()` once per branch form before it
+  knows whether that form's constructors will need an `extra_by_word` variant
+  instead; when every sharer of a shape takes a variant, the plain one is left
+  with no user and nothing prunes it. The generator now emits only the
+  subtables its constructors reference, matching on whole identifiers because
+  `target_pcrel_6b_w0` is a substring of `target_pcrel_6b_w0_v2`. **[V]**
+
+### The two decoders disagreed on one word, past the end of the file **[V]**
+
+- `tools/sharccompare.py` had them agreeing on all 22,886 offsets of 1.16 but
+  differing by one on Digitone II 1.11: `unknown only in ours 1`. It is the last
+  word of the image. `out/sharc/dn2-1.11-main.bin` is 105,016 bytes and ends on
+  an all-zero word at byte offset `0x19a36`, where only two of the six bytes a
+  48-bit instruction needs exist. **[V]**
+- Both decoders zero-pad the missing words before matching, and an all-zero
+  frame trivially satisfies `Type21a`, whose figure fixes every one of its 48
+  bits. `tools/sharc_disasm.py` 108 checks the matched form's width against how
+  many real words were read and refuses; `tools/sharcspec/sharc_decode.py`'s
+  `linear()` had no such check and reported a phantom 48-bit instruction sitting
+  on four bytes that are not in the file. It now makes the same check. **[V]**
+- It predates today's work: the same single offset and form reproduce with
+  HEAD's committed `decode_table.json` in a scratch tree, so none of
+  `Type8a_abs`, `Type8a_rel`, `Type8p_undoc48`, `Type19a` or `Type19p_undoc48`
+  is involved. 1.16 never showed it because its image does not end that way.
+  **[V]**
+
+### Every measurement here was of a stale language until it wasn't **[V][C]**
+
+- `tools/sharcpcode.py measure` compiles the slaspec sitting in
+  `tools/sharcspec/ghidra/SHARC_VISA/data/languages/` (`sharcpcode.py` 66,
+  215-235). Nothing regenerates it, and it is git-ignored (`.gitignore` 34), so
+  editing `decode_table.json` leaves it behind with no sign. **[V]**
+- The guard that exists cannot catch this. `sharcpcode.py` 791-796 compares the
+  compiled `.sla` against the one installed in Ghidra -- but a stale slaspec
+  compiles to the stale `.sla` that is installed, so the two agree and the run
+  proceeds. Runs `t24`, `t25`, `t26` and `t27` all recorded
+  `slaspec_sha256 93c238502b…`, written at 11:17:10, before `Type19p_undoc48`
+  and `Type8p_undoc48` existed. Their Ghidra numbers -- function counts,
+  bookmarks, decompiler warnings, probe verdicts -- are of a language without
+  those forms. **[C]**
+- Their decoder numbers are unaffected: `aligned`, the per-form counts,
+  `tools/sharcfields.py` and `tools/sharccompare.py` all read
+  `decode_table.json` directly. Lengths agreed by luck -- the stale `Type19a`
+  and `Type8a_rel` are 48 bits wide, like the forms that replaced them -- which
+  is why nothing tripped. **[V]**
+- `tests/test_sharc_pcode.py` 56-67 regenerates into a temp directory on every
+  run, excluding the `SHARC_VISA` output tree from its copy. That is why the
+  test caught the unreferenced-table warning and four measurements did not.
+  **[V]**
+- Measured properly, after `tools/ghidra/install-sharc.sh` and a fresh
+  generation (slaspec `ca2362aa…`, 80 constructors), against the session's
+  starting point `out/sharcpcode/t23`: **0 regressions**, and the flow metrics
+  improve. **[V]**
+
+| | DT2 1.16 | DN2 1.11 |
+|---|---|---|
+| "Bad instruction - Truncating control flow here" | 337 -> 323 | 414 -> 399 |
+| functions truncated at bad instruction data | 296 -> 289 | 343 -> 336 |
+| Error bookmarks | 165 -> 160 | 182 -> 178 |
+| main-program functions | 1,170 -> 1,169 | 1,049 -> 1,048 |
+
+- `FUN_001c136a` loses its `halt_baddata()` call and both warning comments, so
+  removing the bogus branch did repair that function -- it still cannot satisfy
+  the `returns 2748` probe, which needs the delay slot. `8p_undoc48` now emits
+  no p-code where those same words used to emit `goto`/`call` as `8a_rel`.
+  **[V]**
+- `measure` now regenerates into a temp directory and refuses when the slaspec
+  on disk is not what `gen_sleigh.py` produces from the current table, and
+  records `decode_table_sha256` in `lint.json` so a past run can be audited.
+  **[V]**
+
 ## Emulation
 
 Function-level works well and is the practical path. Full boot was pushed as far

@@ -52,6 +52,7 @@ import sqlite3
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 from collections import Counter
 
@@ -171,6 +172,7 @@ def meta():
         'git_head': git(['rev-parse', 'HEAD']),
         'sharcspec_dirty': bool(git(['status', '--porcelain', '--', 'tools/sharcspec'])),
         'slaspec_sha256': sha256_file(os.path.join(LANG_DIR, 'sharc_visa.slaspec')),
+        'decode_table_sha256': sha256_file(os.path.join(TOOLS, 'sharcspec', 'decode_table.json')),
     }
 
 
@@ -233,6 +235,44 @@ def build_language(src_dir, dst_dir, compiler):
         'sla_sha256': sha256_file(sla) if plain['returncode'] == 0 and os.path.exists(sla) else None,
     })
     return lint, os.path.join(dst_dir, 'sharc_visa.ldefs')
+
+
+def regenerate_slaspec(dst):
+    """Run gen_sleigh.py over a copy of tools/sharcspec in dst -> the slaspec.
+
+    The copy leaves out the generated SHARC_VISA tree, so what comes back is
+    what the current decode_table.json and gen_sleigh.py produce with nothing
+    inherited from the output already on disk. Same approach as
+    tests/test_sharc_pcode.py's GeneratedLanguage."""
+    spec = os.path.join(dst, 'sharcspec')
+    shutil.copytree(os.path.join(TOOLS, 'sharcspec'), spec,
+                    ignore=shutil.ignore_patterns('SHARC_VISA', '__pycache__'))
+    subprocess.run([sys.executable, os.path.join(spec, 'ghidra', 'gen_sleigh.py')],
+                   check=True, capture_output=True)
+    return os.path.join(spec, 'ghidra', 'SHARC_VISA', 'data', 'languages',
+                        'sharc_visa.slaspec')
+
+
+def check_language_current():
+    """Fail unless LANG_DIR's slaspec is what gen_sleigh.py produces right now.
+
+    Nothing regenerates LANG_DIR on its own and it is git-ignored, so editing
+    decode_table.json or gen_sleigh.py leaves it behind without a trace. The
+    installed-language check in cmd_measure cannot catch that: a stale slaspec
+    compiles to the stale .sla that is installed, the two agree, and the run
+    silently measures the old language. That happened on 2026-09-16 -- four
+    runs recorded the same slaspec hash across two new decode forms."""
+    on_disk = os.path.join(LANG_DIR, 'sharc_visa.slaspec')
+    if not os.path.exists(on_disk):
+        raise SystemExit('no slaspec in %s; run tools/ghidra/install-sharc.sh' % LANG_DIR)
+    tmp = tempfile.mkdtemp(prefix='sharcpcode-gen-')
+    try:
+        if sha256_file(regenerate_slaspec(tmp)) != sha256_file(on_disk):
+            raise SystemExit(
+                'the slaspec in %s is not what gen_sleigh.py makes from the current '
+                'decode_table.json; run tools/ghidra/install-sharc.sh' % LANG_DIR)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # --- lift -------------------------------------------------------------------
@@ -782,6 +822,7 @@ def cmd_measure(args):
     compiler = find_sleigh(prefer_ghidra=True)
     if args.ghidra and compiler[0] != 'ghidra':
         raise SystemExit('--ghidra needs Ghidra at GHIDRA_INSTALL_DIR (%s)' % ghidra_dir())
+    check_language_current()
     lint, ldefs = build_language(LANG_DIR, os.path.join(args.out, 'lang'), compiler)
     lint['meta'] = meta()
     write_json(os.path.join(args.out, 'lint.json'), lint)

@@ -802,6 +802,25 @@ def gen_crossing_resolvers(ctors_by_form):
     return resolvers
 
 
+def _identifiers(text):
+    """Every bare identifier in a chunk of generated SLEIGH.
+
+    Used to tell which subtables the constructors actually reference. A plain
+    substring test will not do: `target_pcrel_6b_w0` is a substring of
+    `target_pcrel_6b_w0_v2`, so an orphan would look used.
+    """
+    out, cur = set(), []
+    for ch in text:
+        if ch.isalnum() or ch == "_":
+            cur.append(ch)
+        elif cur:
+            out.add("".join(cur))
+            cur = []
+    if cur:
+        out.add("".join(cur))
+    return out
+
+
 def main():
     forms = load_forms()
     visa_forms = [f for f in forms if f["visa"]]
@@ -879,12 +898,27 @@ def main():
                       " ".join(f"R{i}" for i in range(16)) + " ];")
         lines.append("")
 
-    if SUBTABLES:
+    # get_target_subtable() registers the plain, no-extra-bits variant for a
+    # branch form before it is known whether that form's constructors will end
+    # up on an `extra_by_word` variant instead. When every sharer of a
+    # (mode, shape) takes a variant, the plain one is left with no user and
+    # sleighc warns "Unreferenced table". Emit only what is referenced.
+    ctor_text = [ctor.emit() for ctor in all_ctors]
+    used = set()
+    for text in ctor_text:
+        used |= _identifiers(text)
+    live = [e for e in SUBTABLES.values() if e["name"] in used]
+    orphans = sorted(e["name"] for e in SUBTABLES.values() if e["name"] not in used)
+    if orphans:
+        print(f"# {len(orphans)} unreferenced subtable(s) not emitted: "
+              + ", ".join(orphans), file=sys.stderr)
+
+    if live:
         lines.append("# ---------------------------------------------------------------------")
         lines.append("# Shared branch-target subtables (export a sized address varnode so the")
         lines.append("# control-flow forms below can `goto target;` / `call target;` directly).")
         lines.append("# ---------------------------------------------------------------------")
-        for entry in SUBTABLES.values():
+        for entry in live:
             lines.append(entry["text"])
 
     lines.append("# ---------------------------------------------------------------------")
@@ -893,8 +927,7 @@ def main():
     lines.append("# p-code, the register-indirect return forms get a generic `return`, and")
     lines.append("# everything else is disassembly-only (empty {} body) for this pass.")
     lines.append("# ---------------------------------------------------------------------")
-    for ctor in all_ctors:
-        lines.append(ctor.emit())
+    lines.extend(ctor_text)
 
     os.makedirs(OUT_DIR, exist_ok=True)
     slaspec_path = os.path.join(OUT_DIR, "sharc_visa.slaspec")

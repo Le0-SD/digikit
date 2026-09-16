@@ -16,6 +16,9 @@ independent list of SHARC+ manual sections is in `docs/refs/sharc-plus-isa.md`.
 | `2156x_EZKIT_Manual.pdf` | ADZS-21569-EZKIT manual | 36 | Board context only |
 | `adsp-2156x-hwr.pdf` | ADSP-2156x SHARC+ Processor Hardware Reference, Rev 1.0 (December 2020) | 2331 | Boot stream block flags in `tools/sharcldr.py`; peripheral register addresses (Appendix A), DMA channel assignment (Table 27-2) and SEC ids (Table 6-5) in `tools/sharcimm.py` |
 | `sharc-plus-prm.pdf` | SHARC+ Core Programming Reference, Rev 1.4 | | Page citations in `tools/sharc_visa_tables.py` |
+| `ADSP-21160_isr_rev2.1.pdf` | ADSP-21160 SHARC DSP Instruction Set Reference, Rev 2.1 (April 2013) | 262 | Third opcode source; Table 1-21 records the Type 23/24/25 renumbering |
+| `50836807228561adsp2106xsharcprocessorusersmanual_revision2_1.pdf` | ADSP-2106x SHARC Processor User's Manual, Rev 2.1 (March 2004) | 698 | Third opcode source; documents Type 23 (`IDLE16`) and Type 24 (`CJUMP`/`RFRAME`) |
+| `3789835185494138226006565l_book_tr.pdf` | ADSP-21065L SHARC DSP Technical Reference, Rev 2.0 (July 2003) | 508 | Third opcode source; per-type opcode bit maps in its instruction-set appendix |
 
 `dt2/elz.py`, the section decompressor, follows the format of `aplib.c` in
 [mischa85/elektron-firmware-tool](https://github.com/mischa85/elektron-firmware-tool)
