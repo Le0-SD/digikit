@@ -176,6 +176,126 @@ class TraceTest(unittest.TestCase):
         self.assertIn("unsupported short compute", s.stopped)
         self.assertEqual(s.uregs, {1: T.Const(2)})
 
+    def test_type2a_increment_unconditional_and_affine(self):
+        def full(opcode, rn, rx, ry=0):
+            return {
+                "compute[22:16]": opcode >> 4,
+                "compute[15:0]": ((opcode & 0xF) << 12) | (rn << 8) | (rx << 4) | ry,
+            }
+
+        concrete = self.run_one(
+            T.State(10, {4: T.Const(0x41)}),
+            insn("2a", {"cond[4:0]": 0x1F, **full(0x29, 3, 4)}, 6),
+        )
+        self.assertEqual((concrete.pc_sw, concrete.uregs[3]), (13, T.Const(0x42)))
+        self.assertEqual(
+            concrete.trace[-1],
+            {
+                "pc_sw": 10,
+                "form": "2a",
+                "action": "compute",
+                "operation": "increment",
+                "result_register": "R3",
+                "condition": 0x1F,
+                "predicate_assumption": True,
+            },
+        )
+        affine = self.run_one(
+            T.State(10, {4: T.symbol("counter")}),
+            insn("2a", {"cond[4:0]": 0x1F, **full(0x29, 3, 4)}, 6),
+        )
+        self.assertEqual(affine.uregs[3], T.Affine(1, (("counter", 1),)))
+
+    def test_type2a_unknown_predicate_forks_execute_and_skip(self):
+        fields = {
+            "cond[4:0]": 1,
+            "compute[22:16]": 2,
+            "compute[15:0]": 0x9340,
+        }
+        executed, skipped = T._execute(
+            T.State(10, {4: T.Const(7)}), insn("2a", fields, 6)
+        )
+        self.assertEqual((executed.pc_sw, skipped.pc_sw), (13, 13))
+        self.assertEqual(executed.uregs[3], T.Const(8))
+        self.assertNotIn(3, skipped.uregs)
+        self.assertEqual(
+            (
+                executed.trace[-1]["condition"],
+                executed.trace[-1]["predicate_assumption"],
+            ),
+            (1, True),
+        )
+        self.assertEqual(
+            (
+                skipped.trace[-1]["action"],
+                skipped.trace[-1]["condition"],
+                skipped.trace[-1]["predicate_assumption"],
+            ),
+            ("compute-skipped", 1, False),
+        )
+        executed.uregs[3] = T.Const(0)
+        self.assertNotIn(3, skipped.uregs)
+
+    def test_type2a_status_only_and_unsupported_do_not_write(self):
+        compare = self.run_one(
+            T.State(10, {0: T.Const(0x55), 2: T.Const(4), 12: T.Const(4)}),
+            insn(
+                "2a",
+                {
+                    "cond[4:0]": 0x1F,
+                    "compute[22:16]": 0,
+                    "compute[15:0]": 0xA0C2,
+                },
+                6,
+            ),
+        )
+        self.assertEqual(compare.uregs[0], T.Const(0x55))
+        self.assertEqual(
+            (compare.trace[-1]["operation"], compare.trace[-1]["status_only"]),
+            ("compare", True),
+        )
+        original = {1: T.Const(2)}
+        unsupported = self.run_one(
+            T.State(10, dict(original)),
+            insn(
+                "2a",
+                {"cond[4:0]": 0x1F, "compute[22:16]": 0xF, "compute[15:0]": 0x1234},
+                6,
+            ),
+        )
+        self.assertIn("unsupported full compute", unsupported.stopped)
+        self.assertEqual(unsupported.uregs, original)
+        empty = self.run_one(
+            T.State(10, dict(original)),
+            insn(
+                "2a",
+                {"cond[4:0]": 0x1F, "compute[22:16]": 0, "compute[15:0]": 0},
+                6,
+            ),
+        )
+        self.assertEqual(empty.stopped, "empty full compute")
+        self.assertEqual(empty.uregs, original)
+
+    def test_type2a_second_call_delay_slot_forks_to_external_call(self):
+        call = insn("25a_direct", {"addr[23:16]": 0, "addr[15:0]": 99}, 4)
+        first_slot = insn("17b", {"ureg[6:0]": 0, "data[15:0]": 1}, 4)
+        type2a = insn(
+            "2a",
+            {"cond[4:0]": 1, "compute[22:16]": 2, "compute[15:0]": 0x9340},
+            6,
+        )
+        state = self.run_one(T.State(10, {4: T.Const(7)}), call)
+        state = self.run_one(state, first_slot)
+        executed, skipped = T._execute(state, type2a)
+        for result, assumed in ((executed, True), (skipped, False)):
+            self.assertEqual(result.stopped, "external-call")
+            self.assertEqual(
+                (result.trace[-1]["return_sw"], result.trace[-1]["target_sw"]), (17, 99)
+            )
+            self.assertEqual(result.trace[-2]["predicate_assumption"], assumed)
+        self.assertEqual(executed.uregs[3], T.Const(8))
+        self.assertNotIn(3, skipped.uregs)
+
     def test_type4a_pre_post_and_type3c(self):
         base = {
             "i[2:0]": 1,

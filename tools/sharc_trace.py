@@ -357,6 +357,8 @@ def _compute(
         return rn, left, "compare"
     if cu == 0 and opcode == 0x21:
         return rn, left, "pass"
+    if cu == 0 and opcode == 0x29:
+        return rn, _add(left, Const(1), "R%d + 1" % rx), "increment"
     if cu == 1 and opcode == 0x70:
         value = _multiply(left, right, "R%d * R%d" % (rx, ry))
         return rn, value, "multiply"
@@ -499,6 +501,41 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             return [_stop(state, insn, "empty short compute")]
         _apply_compute(state, insn, compute)
         return _advance(state, insn)
+    if name == "2a":
+        # Type 2a conditionally executes a full compute.  Decode against the
+        # pre-instruction register file before either predicate assumption mutates it.
+        try:
+            compute = _compute(f, False, dict(state.uregs))
+        except ValueError as error:
+            return [_stop(state, insn, str(error))]
+        if compute is None:
+            return [_stop(state, insn, "empty full compute")]
+        cond = _field(f, "cond")
+        predicate = _predicate(cond)
+        if predicate is True:
+            _apply_compute(state, insn, compute)
+            state.trace[-1].update(condition=cond, predicate_assumption=True)
+            return _advance(state, insn)
+        if predicate is False:
+            _event(
+                state,
+                insn,
+                "compute-skipped",
+                condition=cond,
+                predicate_assumption=False,
+            )
+            return _advance(state, insn)
+        executed, skipped = _copy(state), _copy(state)
+        _apply_compute(executed, insn, compute)
+        executed.trace[-1].update(condition=cond, predicate_assumption=True)
+        _event(
+            skipped,
+            insn,
+            "compute-skipped",
+            condition=cond,
+            predicate_assumption=False,
+        )
+        return _advance(executed, insn) + _advance(skipped, insn)
     if name == "4a":
         if _field(f, "cond") != 0x1F:
             return [_stop(state, insn, "unsupported predicate")]
