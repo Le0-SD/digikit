@@ -1068,6 +1068,11 @@ Ghidra or disassembly output and it was not re-checked.
   parser `FUN_400cd594` on `ENTER TEST MODE` and by `FUN_400cef6c`.
   `EXIT TEST MODE` calls `FUN_4002d5c4`, which reinstalls `0x4002d652`.
   **[D]**
+- **Superseded on the machine-type question by "The machine type reaches
+    the SHARC, at TX frame offset `0x94 + 2i`" below.** The negative result in
+    the next bullet is correct as stated -- the handler does not read `+0xa2`
+    -- but it does read a copy of that byte in SRAM, and the type does reach
+    the frame. **[C]**
 - Machine type: no call to `FUN_4004fc02` or `FUN_400caf48`, and no read
   of `+0xa2`, was found in the handler or its frame loop. The one link
   found is in the commit `FUN_40035e90`: when the new type is 5 (MIDI) it
@@ -1335,6 +1340,170 @@ Ghidra or disassembly output and it was not re-checked.
   handlers in both. The 1.11 handler is 7582 bytes against 5796, and its
   driver compares the TX length with `0xaf0` where 1.15C uses `0xbc0`.
   **[V]**
+
+### The machine type reaches the SHARC, at TX frame offset `0x94 + 2i` **[V][C]**
+
+This corrects "The ColdFire tells the SHARC through a periodic DSPI2 frame"
+above, which recorded that no link from a track's machine type into the frame
+could be found. The link exists. Earlier searches missed it because the frame
+handler never reads the machine-type field of a track object: it reads a
+**copy** of that byte in on-chip SRAM. No xref query and no `tools/refscan.py`
+sweep for `+0xa2` could have found it. **[C]**
+
+Addresses are Digitakt II 1.16.
+
+- `FUN_4002d438(src, track)` reads the machine type at `src + 0xa2`, asks
+  `FUN_400da3b0` whether it is permitted, and on yes memcpys `0x9a` bytes
+  **starting at that same byte** into SRAM at `0x80003cd0 + track*0x9a`. Byte
+  0 of each SRAM row is therefore the track's machine type. **[V]**
+
+  ```
+  4002d458  712a 00a2       mvs.b (0xa2,A2),D0      ; the type byte
+  4002d45e  4eb9 400d a3b0  jsr FUN_400da3b0.l      ; permitted?
+  4002d4aa  486a 00a2       pea (0xa2,A2)           ; source = the type byte
+  4002d4b8  0680 8000 3cd0  addi.l #-0x7fffc330,D0  ; dest = 0x80003cd0 + track*0x9a
+  4002d4c0  4e93            jsr (A3)                ; memcpy, 0x9a bytes
+  ```
+
+- The vector-191 handler `0x4002dd0c` loads that byte into D7 and stores it,
+  sign-extended to a word, into the TX frame: **[V]**
+
+  ```
+  4002eb4a  1e28 0990       move.b (0x990,A0),D7b   ; A0 = 0x80003340 + i*0x9a,
+                                                    ; so +0x990 is 0x80003cd0 + i*0x9a
+  4002eb80  4887            ext.w D7w
+  4002ebe0  3747 0094       move.w D7w,(0x94,A3)    ; A3 = 0x80005348, the TX buffer
+  ```
+
+  Nothing between `0x4002eb80` and `0x4002ebe0` writes D7: the four
+  `FUN_401360ac` copies in between take stack arguments and do not touch it.
+  The `tst.b D7b` at `0x4002eb68` is a second, independent use of the same
+  register, not its only one. Reading only that first use is what made an
+  earlier pass conclude the type was reduced to a boolean. **[C]**
+
+- Measured, not only read. `tools/sharcframe.py` on
+  `out/snapshots/dt2-1.16/boot400M.snap` with `--open-gate --passes 3`, poking
+  track 0's type byte at `0x80003cd0` and diffing the captured 2050-byte frame
+  against a type-0 baseline, changes exactly two bytes -- reproducibly across
+  passes 1 and 2, and across three values: **[V]**
+
+  | poked type | frame `0x95` | frame `0x73d` |
+  |---|---|---|
+  | 4 | `00` -> `04` | `00` -> `01` |
+  | 5 | `00` -> `05` | `00` -> `01` |
+  | 6 | `00` -> `06` | `00` -> `01` |
+
+  `0x95` is the low byte of the big-endian word at `0x94 + 2i`: the type
+  verbatim. `0x73d` is the low byte of the word at `0x73c + 2i`, a derived
+  flag. The static read and the measurement were made by different agents from
+  different evidence and agree exactly.
+
+- So a new machine is not a ColdFire-side concern only. The DSP is told, per
+  track and every frame, which of the seven types a track is. What the SHARC
+  does with the value is the open question, and it is now a sharp one: find
+  the reader of receive-buffer offset `0x94 + 2i` in the DSP program. **[O]**
+
+#### The per-track TX frame map **[D]**
+
+The frame is 2050 bytes at `0x80005348`, sent by
+`FUN_400cd2bc(0x802, 0x80005348, 0xabc, 0x8000488c)`. Sixteen tracks; each
+field is a big-endian word at `offset + 2i`. Traced from the handler's
+disassembly. Only `0x94` and `0x73c` are confirmed by measurement.
+
+| TX offset | source |
+|---|---|
+| `0x02` | low word of `*(long *)(0x800047fc + 4i) >> 8` |
+| `0x34` | word at `0x800047dc + 2i` |
+| `0x54` | sign-extended byte at `0x80003cd0 + i*0x9a + 2` |
+| `0x74` | word at `0x80005b50 + 2i` |
+| `0x94` | sign-extended byte at `0x80003cd0 + i*0x9a + 0` -- **the machine type** **[V]** |
+| `0xb4` | sign-extended byte at `0x80003cd0 + i*0x9a + 1` |
+| `0x73c` | `0` if the type is 0 and the word at `src + 0x60` is 0, else `1` **[V]** |
+| `0x75c` | constant `0` |
+| `0x77c` | low word of `*(long *)(0x47db41d0 + i*0x14 + 8)` |
+| `0x79c` | high word of the same long |
+| `0x7bc` | word at `0x47db41d0 + i*0x14 + 0x12` |
+
+There is also a per-track `0x60`-stride sub-block: when the type is 6, slice
+boundaries go to `0xee`, `0xf0`, `0xf2`, `0xf4`, `0xf6` and `0xf8`, each
+`+ i*0x60`. That type-6 test is at `0x4002ec18` (`moveq #6,D1`) and reads the
+same SRAM byte. **[D]**
+
+The single `FUN_400cd2bc` call is at `0x4002dd74`, at the **top** of the
+handler, before the per-track loop that fills the buffer. Each firing sends
+the frame built by the previous firing and then rebuilds it: a
+one-cycle-delayed double buffer, not build-then-send. **[D]**
+
+#### Corrections to the SRAM layout **[C][O]**
+
+- The `0x9a`-stride per-track table is at **`0x80003cd0`**, not `0x80003340`.
+  The handler addresses a row as `0x80003340 + i*0x9a` plus a `+0x990`
+  displacement, and `0x80003340 + 0x990 = 0x80003cd0`; the base register, not
+  the table, sits at `0x80003340`. `tools/framelink.py`'s `TABLES` entry
+  `(0x80003340, 0x9a, 16, 'track_9a')` therefore names the wrong 2,464 bytes:
+  the rows run `0x80003cd0`-`0x80004670`. Not yet corrected in the tool.
+  **[C][O]**
+- `FUN_4002d438`'s `0x8e`-byte copy goes to `0x80003362 + track*0x8e`, from
+  `src + 0x14`. Whether that is the same structure as the
+  `0x80003340 + i*0x8e` rows `FUN_400d92a2` reads -- the two bases are `0x22`
+  apart with equal stride -- is unresolved. **[O]**
+- `FUN_400d92a2` has two loops, and only the second writes
+  `0x80005b50 + i*0x8e`: a verbatim copy of three longs from
+  `0x80003340 + i*0x8e`, at `+0x2a`, `+0x3a` and `+0x4a`. The EMAC-saturating
+  loop reads `0x8000dd40` and writes the adjacent `0x80005b4c`, a different
+  region. **[D][C]**
+- The type == 4 or 6 compare that gates `FUN_400d907e` is at `0x4002e5f8`, not
+  at `0x4002eb4a`. Both read the same byte; `0x4002eb4a` feeds the `0x94` and
+  `0x73c` frame fields. **[C]**
+- That branch is gated on `*(long *)(local_68 + 0x64) > 0` (`ble.b` at
+  `0x4002e5e4`), a slice count carried in the machine-set message. On a stock
+  boot with no sliced sample the branch is never taken: confirmed in the
+  emulator, where `0x800033a0` was never written in any run, patched or not.
+  Testing it needs a track carrying a sample with slices. **[V][O]**
+- The permission mask table is 7 longs of which only the high word is read
+  (`mvz.w (0,A0,D0*4),D0`), and every high word is `0xffff`: `0x401fbda6` on
+  1.15C and `0x4020ecbe` on 1.16, byte-for-byte identical. An earlier reading
+  of that table as consecutive small integers came from using load base
+  `0x40000000` instead of `0x40000400`, and is withdrawn. Both images load at
+  `0x40000400`. **[V][C]**
+
+### Digitone II 1.11 has the same machine machinery, with five machines **[D]**
+
+Every anchor of the Digitakt II machine machinery has a Digitone II 1.11
+counterpart of the same shape with different data. The addresses for all three
+mapped images are in `tools/machineprofile.py`.
+
+- Five machine types, not seven: `0 FM Tone`/`FMT`, `1 WaveTone`/`WVT`,
+  `2 FM Drum`/`FMD`, `3 Swarmer`/`SWM`, `4 MIDI`/`MIDI`. The display-name
+  table is at `0x401f77f0`, the same 12-byte rows of three `char *` as
+  Digitakt's, with the hint column null on every row. **[D]**
+- The descriptor dispatch is `FUN_400c248e`: bound 4, stride `0x2c` -- **the
+  same 44-byte descriptor as Digitakt** -- array base `0x42432b24`. Its
+  out-of-range fallback `0x42432bd4` is MIDI's own descriptor, which is also
+  what index 4 computes to, so MIDI is not special-cased. Rows 0-3 are
+  confirmed by the registration function `FUN_400c2aea`, which `pea`s each
+  machine-name string next to the matching row address. **[D]**
+- The type byte is at `+0xde` of the per-track object, not `+0xa2`. The setter
+  `FUN_4004cc08` reaches the object the same way, through the slot's vtable
+  `+0x28`. **[D]**
+- The permission check `FUN_400dc19a` has the same shape and its mask table
+  `0x401f7932` is five entries of `0xffff`. The grouping helper `FUN_40059274`
+  has the same shape too: synthesis types to group 1, MIDI to group 2,
+  anything else to 0. **[D]**
+- Two of the three name accessors, at `0x400dc358` and `0x400dc37e`, are not
+  Ghidra functions at all -- they sit in the gap after `FUN_400dc332`. The
+  same is true of the two Digitakt ones. Disassemble the gaps. **[D]**
+- Three things Digitakt has were not found: the six-long list filter table,
+  the sort comparator with its function-local `std::map` (there is no
+  `stable_sort` anywhere in the image, and with five static entries in a fixed
+  source order there may be no runtime sort to break), and the per-type byte
+  table. A patch template must treat all three as optional. **[O]**
+- Digitone II has a per-machine parameter-page layer Digitakt has no
+  counterpart for: `MachineParameterPageView`, `SrcMachineParamPageCopy`,
+  `FilterMachineParamPageCopy`. Its machines are synthesis engines with their
+  own parameter pages, so a sixth machine there is a materially bigger job
+  than an eighth on Digitakt -- a descriptor and a name row will not be
+  enough. **[O]**
 
 ### The frame link on Digitakt II 1.16 **[V][O]**
 
