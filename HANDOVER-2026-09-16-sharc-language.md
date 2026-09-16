@@ -6,24 +6,29 @@ Replaces `HANDOVER-2026-09-15-sharc-side.md`. Results are in
 ## State
 
 - Branch `sharc-pcode`, from `main` after PR #13 (`machine-engine-link`,
-  merged), pushed to `origin`. Commits: `ad2ec98` CJUMP as a call;
-  `14f85fc` conditional jumps, calls and returns keep a fall-through, plus
-  `tools/sharcpcode.py`; `c8b7990` a sqlite dump per measurement run and
-  `tools/sharcpcode.sql`; `bd153a3` Type21a is the all-zero word, not a
-  prefix; `eed409d` Type22a is idle and neither image contains one, plus
-  `tools/sharcspec/audit_bits.py`. Only the untracked files listed below are
+  merged). Commits: `ad2ec98` CJUMP as a call; `14f85fc` conditional jumps,
+  calls and returns keep a fall-through, plus `tools/sharcpcode.py`;
+  `c8b7990` a sqlite dump per measurement run and `tools/sharcpcode.sql`;
+  `bd153a3` Type21a is the all-zero word, not a prefix; `eed409d` Type22a is
+  idle and neither image contains one, plus `tools/sharcspec/audit_bits.py`;
+  `534f73b` the previous handover; `78a4ee5` three older manuals, two more
+  provisional forms, and the stale-language hole below. **`78a4ee5` and this
+  handover are not pushed.** Only the untracked files listed below are
   uncommitted.
 - Tests: 209 passed, 5 skipped.
-- The language installed in Ghidra is HEAD's (78 constructors, from
-  `tools/ghidra/install-sharc.sh`). The programs in
-  `~/ghidra-projects/elektron-sharc` were imported with an older one:
-  re-import before reading them, or work from the throwaway projects
-  `tools/sharcpcode.py` builds under its own output directory.
+- The language installed in Ghidra is current: 80 constructors, slaspec
+  `ca2362aa`, installed by `tools/ghidra/install-sharc.sh` on 2026-09-16. The
+  programs in `~/ghidra-projects/elektron-sharc` were imported under two older
+  languages now: re-import before reading them, or work from the throwaway
+  projects `tools/sharcpcode.py` builds under its own output directory.
 - Measurement runs, git-ignored, each with `lint.json`, `<image>.json`,
-  `<image>.sqlite` and its own Ghidra project: `out/sharcpcode/db-old`
-  (before the conditional-flow change), `db-new`, `t21`, `t22` (a rejected
-  16-bit reading of Type22a's words), and `t23`, which is HEAD. Measure a
-  change against `t23`.
+  `<image>.sqlite` and its own Ghidra project, under `out/sharcpcode/`:
+  `db-old`, `db-new`, `t21`, `t22`, `t23`, `t24`, `t25`, `t26`, `t27`, `t28`,
+  `t29`, `t30`. **Measure a change against `t30`.** `t24` to `t27` compiled a
+  stale slaspec: their decoder numbers are sound but their Ghidra numbers are
+  of the language as it was before `78a4ee5` -- see the Gotchas. `t28` is lint
+  only (the guard stopped it); `t29` and `t30` are the first runs whose
+  language matches the decode table.
 - Analysis targets are Digitakt II 1.16 and Digitone II 1.11; Em asked on
   2026-09-15 to stop cross-checking 1.15C.
 - The device stays on 1.15C with bootstrap 2.00. Installing 1.16 upgrades the
@@ -99,9 +104,10 @@ uv run python tools/sharcflow.py out/sharc/dn2-1.11-main.bin --base-sw 0x1c12e2 
 
 # SHARC: measure a language change, and query a run
 uv run python tools/sharcpcode.py measure --out out/sharcpcode/NEW --ghidra   # ~35 s per image
-uv run python tools/sharcpcode.py compare out/sharcpcode/t23 out/sharcpcode/NEW
+uv run python tools/sharcpcode.py compare out/sharcpcode/t30 out/sharcpcode/NEW
+uv run python tools/sharcfields.py                        # declared fields vs the classic grid
 sqlite3 -header -column out/sharcpcode/NEW/dt2-1.16.sqlite \
-  "ATTACH 'out/sharcpcode/t23/dt2-1.16.sqlite' AS old;" ".read tools/sharcpcode.sql"
+  "ATTACH 'out/sharcpcode/t30/dt2-1.16.sqlite' AS old;" ".read tools/sharcpcode.sql"
 uv run python tools/sharcspec/audit_bits.py --top 12     # PRM bits the table does not fix
 (cd tools/sharcspec && uv run python build_table.py)     # after editing the merge rules
 
@@ -136,15 +142,25 @@ regenerates, compiles and installs the language; then
 15 s per image; commands under "How to run").
 
 Measure every change with `tools/sharcpcode.py measure --out DIR --ghidra`
-and `compare out/sharcpcode/t23 DIR`, which fails on new sleigh diagnostics,
+and `compare out/sharcpcode/t30 DIR`, which fails on new sleigh diagnostics,
 fewer decoded instructions, a conditional branch with no fall-through, a
 decompiler failure, a probe that stops passing, or a timing that grows by more
-than a quarter. HEAD's numbers for 1.16: 21,792 aligned instructions, all
-decoding; 1,170 main-program functions, 95 of them one instruction and 493 two
-to five; 296 functions truncated at bad instruction data; 165 Error bookmarks;
-`8a_rel` branches landing on an instruction start 520 of 590 in range. Read
-the rest with `tools/sharcpcode.sql` against the run's sqlite dump. Mark
-unconfirmed forms unimplemented instead of guessing.
+than a quarter. `measure` regenerates the slaspec into a temp directory first
+and refuses when the one on disk has drifted from `decode_table.json`, so run
+`tools/ghidra/install-sharc.sh` after any table or generator change.
+
+`t30`'s numbers for 1.16: 21,792 aligned instructions, all decoding; 1,169
+main-program functions, 95 of them one instruction and 493 two to five; 289
+functions truncated at bad instruction data; 160 Error bookmarks; `8a_rel`
+branches landing on an instruction start 520 of 590 in range. For 1.11: 21,361
+aligned, 1,048 functions, 336 truncated, 178 Error bookmarks. Read the rest
+with `tools/sharcpcode.sql` against the run's sqlite dump. Mark unconfirmed
+forms unimplemented instead of guessing.
+
+How much p-code exists today: 80 constructors, 28 with a semantic body and 52
+empty. Ten of the 52 decoded forms emit any p-code, all of them control flow,
+so 19,622 of 1.16's 21,792 aligned instructions lift to nothing. Stage 4 below
+covers about 62% of the program by instruction count and stage 6 another 12%.
 
 1. Delay slots in the generator: CJUMP, the return and every delayed
    `8a`/`9a`/`9b` jump, and `11a`/`11c` with j=1 if they compile. The spike
@@ -169,18 +185,27 @@ unconfirmed forms unimplemented instead of guessing.
    - Remove any test install afterwards: `rm -rf
      /opt/homebrew/Cellar/ghidra/12.1.3/libexec/Ghidra/Processors/SHARC_SPIKE
      ~/ghidra-projects/spike-sharc*`.
+   - The probe `returns 2748` is this stage's target. `FUN_001c136a` returns
+     through the `9b_abs` at SW `0x1c1496` (`0x083f343f`, the I4/M6 idiom),
+     and 2748 = `0xabc` is loaded by the `17b` at `0x1c1498`, in its delay
+     slot. No decoder change can make that probe pass; this one can.
 2. Attach the ureg register names (SHARC+ Core Programming Reference, UREG
    class table: 0x00-0x0f R, 0x10 I, 0x20 M, 0x30 L, 0x40 B, 0x50 S, 0x60 and
    up system registers) and define the status and system registers (ASTAT,
    STKY, PCSTK, LPSTK, loop registers). The sleigh compiler already runs in
    `tests/test_sharc_pcode.py`.
-3. SW `0x1c13bc` in 1.16: our decoder and Ghidra both read an `8a_rel` jump
-   with reladdr `0x3e0030` (raw `00 07 3e 02 30 00`), a nonsensical target,
-   and `FUN_001c136a` stops there, so the probe "returns 2748" fails. Check
-   the bytes and the candidate forms against the manual
-   (`out/refs/sc58x-2158x-prm/`) and the unconfirmed forms in
-   `docs/sharc/SPEC-FINDINGS.md`. `tools/sharcspec/audit_bits.py` says
-   Type8a_rel drops seven PRM bits, which is where to start.
+3. Done in `78a4ee5`, with a correction. `Type8a_abs` and `Type8a_rel` now fix
+   bit 25 to zero, and `Type8p_undoc48` takes the 32 words across the two
+   images that have it set -- 30 of which point at something that is not an
+   address, including the nonsense `jump 0x3e0030` at 1.16 SW `0x1c13bc` and
+   1.11 SW `0x1c1366`, the same six bytes in both. 0 regressions, and
+   `FUN_001c136a` loses its `halt_baddata()`. But this handover was wrong that
+   the function stops there: it does not, and the probe is blocked on stage 1,
+   not on the decoder. Restoring the other six dropped PRM bits was measured
+   and rejected -- 225 aligned instructions lost in 1.16, 279 in 1.11 -- and
+   `RESTORE_PRM_GAP` in `build_table.py` records why, per bit. Still open: what
+   the `Type8p` words are (32 across two images, several byte-identical in
+   both, so shared code rather than misalignment).
 4. P-code for the move and memory forms (`17a`, `17b`, `14a`, `15a`, `15b`,
    `16a`, `3a`-`3c`, `5a`, `5b`, `19a`) and a calling convention (R4, R8,
    R12 in, R0 out, I7 stack, I6 frame).
@@ -407,6 +432,23 @@ TRIG1=25.
 - `tools/sharcspec/build_table.py` has no `if __name__` guard: importing it
   rewrites `decode_table.json`. Copy what you need from it, as
   `audit_bits.py` does.
+- The generated `tools/sharcspec/ghidra/SHARC_VISA/` tree is git-ignored and
+  nothing regenerates it on its own, so a decode-table edit leaves it stale
+  with no sign. That cost four measurements on 2026-09-16. The installed-
+  language check could not catch it: a stale slaspec compiles to the stale
+  `.sla` that is installed, the two agree, and the run proceeds. `measure` now
+  regenerates into a temp directory and refuses on drift, and records
+  `decode_table_sha256` in `lint.json`. When a change measures perfectly flat,
+  check that hash before believing it.
+- `tools/sharcfields.py` is the mirror of `audit_bits.py`: it tallies what
+  values the table's declared fields actually take in the firmware and flags
+  any field sitting on bits the classic grid fixes. It reads `classic_keys`,
+  which `build_table.py` now records per form.
+- A form merged from two classic tables has a real field wherever those tables
+  disagree, and reading only one of them makes that bit look like a conflict.
+  Guessing the classic table from the form name gets every split form wrong:
+  `Type8a_rel` guesses `Type 8a` where the merge used `Type 8a #2`. Both
+  mistakes were made and both produced confident false findings.
 
 ## Workflow
 
