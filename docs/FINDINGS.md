@@ -186,6 +186,12 @@ Three consequences:
 
 That found it in 3 of the 4 images checked, with no false positives.
 
+The floor is not a barrier to reinstalling Digitakt II 1.15C after 1.16. The
+BUILD string at container `+0x08` is `0071` for 1.15C and `0079` for 1.16, read
+from the two `.syx` files with `dt2/container.py`, and the floor is `"006/"`, so
+1.15C clears it by eleven builds. The bootstrap version gate above is a separate
+mechanism, and it is the one that does not allow going back. **[V]**
+
 ### It is per-product, and two products do not have it **[V]**
 
 Same validator slot, same six-entry error table (`No error`, `Checksum failed`
@@ -198,6 +204,15 @@ checked:
 | Digitone 1.43 | `0x401ce9f0` | `0x400a003c` | **`"0022"`, `"0025"`, `"0072"`** |
 | Digitone II 1.11 | `0x40208748` | `0x400dbc4c` | **none** |
 | Syntakt 1.41 | `0x40242c98` | `0x400a5ba8` | **none** |
+
+Only two of those four rows were re-checked here against image bytes. This repo
+has sections for Digitakt II 1.16 and Digitone II 1.11 but none for Digitone
+1.43 or Syntakt 1.41, so those two rows are **[D]**, carried from PR #15 and not
+independently verified. For Digitakt II the validator, the `"006/"` constant,
+the `cmp.l $10(a2),d1` and the error-table strings were read from the bytes. For
+Digitone II `FUN_400dbc4c` is 52 bytes, calls only a checksum and a trailer
+routine, and no path returns 6, so its `Unsupported downgrade` string is present
+but unreachable. **[V][C]**
 
 Digitone 1.43 selects between its three floors on bit 19 of a global at
 `0x402292f0`, almost certainly Digitone vs Digitone Keys -- the two variants
@@ -1151,6 +1166,18 @@ Ghidra or disassembly output and it was not re-checked.
   with `0x1c`. The counts are bytes: TX `0x802` (2050 bytes, 1025 frames)
   and RX `0xabc` (2748 bytes). Both buffers are in the 64 KB on-chip SRAM
   at `0x80000000`. **[V]**
+- "TX length" and "RX length" above are misleading: those are not two
+  independently sized directions. The eDMA word count of both the receive and
+  the transmit descriptor is set from one variable, written once at boot by a
+  function that returns `0xabc`, so the SPI transfer is a single fixed
+  2,748-byte full-duplex frame. The first argument -- `0x802` on Digitakt II,
+  `0xa80` on Digitone II -- is how many real payload words the driver copies
+  out of the caller's buffer; the rest of the frame is tag-only entries. The
+  third argument happens to equal the frame length, so the whole received
+  frame is copied back. Frame offsets such as the machine type at `0x94 + 2i`
+  are offsets into the payload, which maps one to one onto the frame's data
+  words, so they are unaffected. Found by `angellinares` on Digitone II 1.11
+  (PR #12) and checked here against `FUN_400cd2bc` on 1.16. **[V][C]**
 - Ghidra lists no callers for `FUN_400cf9c4` or for the SHARC boot routine
   `FUN_400cef6c`. The two `jsr` calls to `FUN_400cf9c4` (`0x4002d6ba`,
   `0x400d13d4`) are in code that Ghidra did not assign to a function,
