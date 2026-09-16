@@ -83,82 +83,113 @@ Replaces `HANDOVER-2026-09-15-sharc-side.md`. Results are in
   `docs/refs/netburner-coldfire/`,
   `docs/refs/dspi2-edma-blocker-and-register-sources.md`.
 
-## Start here: do machines reach the SHARC at all?
+## Start here: the machine type reaches the SHARC -- find its reader
 
-This is the fork in the road and it comes before every p-code stage below.
+Answered on 2026-09-16. The fork this section used to pose is closed, and the
+answer is the one that keeps stages 1-7 below on the critical path for
+Digitakt II as well as Digitone II.
 
-Em's goal is their own machines on Digitakt II and Digitone II. Rungs 1 and 2
-of the eighth-machine ladder are done -- PLACEHOLDER is listed and selectable,
-and the ColdFire side is no longer the blocker (FINDINGS, "The ColdFire machine
-dispatch"). What is not known is whether a machine is distinct DSP code at all.
+A track's machine type is sent to the DSP verbatim, per track, in every frame:
+the big-endian word at TX offset `0x94 + 2i` (FINDINGS, "The machine type
+reaches the SHARC, at TX frame offset `0x94 + 2i`"). Two independent methods
+agree. Statically, the handler loads the SRAM type byte into D7 at
+`0x4002eb4a` and stores it at `0x4002ebe0` (`move.w D7w,(0x94,A3)`). In the
+emulator, poking that SRAM byte moves frame byte `0x95` to 4, 5 and 6 in step,
+across three values and two passes.
 
-The evidence says maybe not. Nobody has found the machine type travelling to
-the SHARC: "no call to `FUN_4004fc02` or `FUN_400caf48`, and no read of
-`+0xa2`, was found in the handler or its frame loop" (FINDINGS, "The ColdFire
-tells the SHARC through a periodic DSPI2 frame"), and the same negative result
-holds on Digitone II 1.11. Two readings:
+Two reasons earlier passes missed it, both worth remembering:
 
-- the type reaches the DSP by a path nobody has traced, inside the per-track
-  tables the frame copies; or
-- there is no per-machine DSP algorithm on a sampler at all. SAMPLE, WERP,
-  STRETCH, REPITCH and SLICE are playback modes of one engine, and a machine is
-  a parameter mapping.
+- The handler never reads the machine-type field of a track object. It reads a
+  **copy** of that byte in SRAM, put there by `FUN_4002d438`. No xref query and
+  no `tools/refscan.py` sweep for `+0xa2` could have found it.
+- A first reading of the handler followed D7 to its `tst.b` at `0x4002eb68`,
+  concluded the type was reduced to a boolean, and stopped one instruction
+  before the store. The `tst.b` is a second, independent use of the register.
 
-If the second holds for Digitakt II, a new machine needs no assembler and no
-DSP semantics, and stages 1-7 below stop being on its critical path. Digitone
-II is unlikely to go the same way: FM TONE, WAVETONE and SWARMER are different
-synthesis algorithms, so a new one there probably is new DSP code. The stages
-below stay as written; they are the road for Digitone II and for rung 4.
+So a new machine is not a ColdFire-side concern only, and "a machine is just a
+parameter mapping" is not available as the easy answer on Digitakt II.
 
-**The experiment.** Capture the frame with one track set to machine A, then to
-machine B, and diff. Bytes that differ at a stable offset are the selector or
-the parameter encoding. Frames identical apart from parameter values say
-machines are mappings.
+**The next question, and it is now a sharp one: what does the SHARC do with
+the value at receive offset `0x94 + 2i`?** The DSP receives 2050 bytes. Find
+the code that reads offset `0x94 + 2i` of that buffer and see whether it
+branches on the value or merely stores it. If it only stores it, a new machine
+may still need no DSP code; if it indexes a table of routines with it, it does.
 
-Digitakt II 1.15C can run it today: `tools/framelink.py` has the profile,
-`snapshots/boot400M.snap` exists, the GUI runs, and `tools/sharcframe.py`
-captures a pass. The only gap is a way to set the machine --
-`tools/machinepatch.py` adds an eighth type, it does not select among the
-seven. Three options, cheapest first:
+That read needs compute semantics in the generated language, so it sits behind
+stage 4 below, and step 1 (the SPI2 trace, "Where the SHARC receives the
+ColdFire's frame") is the way in -- specifically its last bullet, following
+the receive buffer to its reader.
 
-- `sharcframe.py --poke ADDR=LONG` on the per-track machine field (`+0xa2` of
-  the track struct). Fastest, but a poke may never reach the derived per-track
-  tables the frame actually copies -- the MIDI case shows the commit
-  `FUN_40035e90` writing derived state -- so a null result here is ambiguous.
-- Call the machine setter `FUN_40050cd6` from a Unicorn hook.
-  `tools/sharcframe.py` already hooks the driver call; copy that shape. This is
-  the reliable one.
-- Drive the GUI with `--input` presses, as the 1.15C machine runs under "Still
-  open from 2026-09-14" do. Slowest: 12-23 minutes a run.
+Three things this work also produced:
 
-**Digitone II needs setup first.** `emu/` supports it properly -- Digitone
-addresses run through `emu/symbols.py`, `pit.py`, `esdhc.py`, `dspboot.py` and
-`device.py` -- but two things are missing:
+- **A per-track TX frame map** in FINDINGS: which SRAM byte lands at which
+  frame offset, for eleven per-track fields. This is the ColdFire-to-SHARC
+  interface, and it is what to match the DSP's receive path against.
+- **Corrections to the SRAM layout**, also in FINDINGS. The `0x9a`-stride
+  per-track table is at `0x80003cd0`, not `0x80003340`: the handler addresses
+  a row through a base register at `0x80003340 + i*0x9a` plus a `+0x990`
+  displacement. `tools/framelink.py`'s `TABLES` entry
+  `(0x80003340, 0x9a, 16, 'track_9a')` therefore names the wrong 2,464 bytes.
+  **Not yet fixed in the tool.**
+- **`tools/machineprofile.py`**, new: the machine-type anchors of Digitakt II
+  1.15C and 1.16 and Digitone II 1.11, keyed by MAIN OS SHA-256, with byte
+  preconditions at fixed addresses. 18 of 18 byte checks pass on the two
+  Digitakt images; the Digitone II profile carries no checks yet and reports
+  itself as unchecked rather than as passing. Run it with
+  `uv run python tools/machineprofile.py IMAGE --names`.
 
-- `tools/framelink.py` has no Digitone profile, so `sharcframe.py` and
-  `tools/dspmap.py` refuse the image outright. The addresses are partly known
-  (FINDINGS, "Digitone II 1.11: the same link and the same machine table
-  shape"): handler `FUN_40025e36`, driver call
-  `FUN_400cf7be(0xa80, 0x80005e60, 0xabc, 0x800053a4)`, TX 2,688 and RX 2,748,
-  16 per-track slots of `0x92` bytes copied from `0x800068e4 + i*0xca`. The
-  gate and pacing variables have not been located at all. Verify them
-  instruction by instruction, the way 1.16's were, before writing a profile.
-- Boot snapshots exist for Digitone II **1.10E** only
-  (`snapshots/Digitone_II_OS1.10E/boot*.snap`), not 1.11. Either build a 1.11
-  ladder with `emu.longrun.build` as 1.16's was built, or run the experiment on
-  1.10E -- a departure from the 1.16/1.11 rule that costs nothing here, since
-  the question is structural.
+Still open from the experiment: the type == 4 or 6 branch that sends slice
+boundaries to the frame was never reached, because it is gated on a slice
+count in the machine-set message and a stock boot has no sliced sample loaded.
+`0x800033a0` was never written in any run, patched or not. Testing that path
+needs a track carrying a sample with slices.
 
-**The static cross-check**, which needs no emulator and works on both devices:
-find what writes the per-track tables the frame reads (`0x800047fc + 4i`,
-`0x80003340 + i*0x9a`, `0x80005b50 + i*0x8e` on Digitakt). Only the MIDI flag's
-writer is known. `tools/refscan.py` cannot find these by construction -- they
-are reached as `base + i*stride` and its docstring says it misses computed
-addresses -- so use `tools/dspmap.py`, which pairs the Ghidra dump's data
-xrefs with a refscan sweep and already knows these regions. FINDINGS puts the
-writers "among functions that use file-browser strings (`ENTER DIR NAME`,
-`WRITE PROTECTED`), in about `0x4002c0fa`-`0x4002f000`. About 45 of them are
-called from elsewhere and they were not traced one by one."
+## The machine template, for both devices
+
+Em's goal is their own machines on Digitakt II and Digitone II.
+`tools/machinepatch.py` installs an eighth machine and works, but every
+address in it is a 1.15C address, so it runs on exactly one image.
+`tools/machineprofile.py` now holds the same anchors for three images. The
+remaining work, in order:
+
+1. Make `tools/machinepatch.py` take a profile instead of its module-level
+   constants. `plan_b(read, cave_b, parts, eighth, spec)` is already pure --
+   every byte comes from `read(addr, n)` or the spec -- so it can be driven
+   against a static image as well as live guest memory. Thread a profile
+   through it and delete the constants. `tests/test_machinepatch_plan.py`
+   pins the 18 writes the default spec produces on 1.15C, so the refactor has
+   a fixture: it must produce the same 18 writes.
+2. Generalise the count. The tool assumes seven stock machines and exactly one
+   new type numbered 7 in a dozen places: `ORIGINAL_TABLE`, `NAME_TABLE_ROWS`,
+   the `read(PERMIT_TABLE_SRC, 28)` and `read(PERTYPE_TABLE_SRC, 7)` widths,
+   `validate_spec`'s `range(7)`/`range(8)`, `MachineSpec`'s defaults of 6 and
+   7, and `run_b`'s `expected` dict. Digitone II has five. Take the count from
+   the profile.
+3. Digitone II's differences that break a shared template, from FINDINGS
+   ("Digitone II 1.11 has the same machine machinery, with five machines"):
+   the type byte is at `+0xde` not `+0xa2`; the name-table rows are
+   `{hint, name, abbrev}` not `{name, abbrev, hint}`; there is no list filter
+   table, no sort comparator (so the `rank` part -- the boot blocker on
+   Digitakt -- may have nothing to patch), and no per-type byte table. All
+   three parts must become optional rather than assumed.
+4. Digitone II's real cost is not the descriptor. Its machines are synthesis
+   engines with their own parameter pages (`MachineParameterPageView`,
+   `SrcMachineParamPageCopy`, `FilterMachineParamPageCopy`), which Digitakt
+   has no counterpart for. A sixth machine there needs a parameter page, not
+   just a descriptor and a name row.
+5. Only then, a patched image rather than patched guest memory: `plan_b`
+   against a static `section_3_MAIN_OS.bin`, `tools/patchimg.py` to apply it,
+   `tools/roundtrip.py` to prove the container rebuilds. That is the
+   "boot from a patched image" item under "Still open from 2026-09-14".
+   Note that `clone_of == 6` is the only case `plan_b` can compute statically:
+   the descriptor array is bss, so any other clone source needs `spec.fields`
+   passed in explicitly.
+
+One gotcha found the hard way while mapping these anchors: **both images load
+at `0x40000400`, not `0x40000000`.** An agent using the wrong base read a
+table 1,024 bytes downstream, reported it as consecutive small integers, and
+built a confident false finding on it. The same error looked like a capstone
+desync in a second place. Check the base before believing a raw byte read.
 
 ## How to run
 
