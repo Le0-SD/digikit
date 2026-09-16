@@ -134,6 +134,107 @@ garbage. Use Ghidra's `68000:BE:32:Coldfire` or `dt2/coldfire.py`.
 The later "VERSION CHECK" screen at `0x80001e52` is a milder equality check that
 the decompressed image declares the version its header claimed. **[V]**
 
+### MAIN OS has a second gate, and it reads the BUILD string **[V on 1.16]**
+
+The open question below -- *"never reads the container version string at an
+absolute address, so the comparison was not located"* -- is answered, and the
+reason it was not found is that **it does not read the version string at all,
+and the container is in a register.**
+
+Read on **Digitakt II 1.16**, not 1.15C, so the addresses are for 1.16 and the
+recipe for locating it on 1.15C is below.
+
+The MAIN OS upgrade receive state machine hands its validator `%fp@(32)` and
+switches on a return of 1..6; 6 is `Unsupported downgrade` / `Downgrade not
+possible`. On 1.16 the validator is `0x400d9e4c`:
+
+```
+400d9e54  jsr     0x40120a70         ; content checksum      -> 0 : return 3
+400d9e60  move.l  (a2), d0           ; stream length
+400d9e62  move.l  #$3030362F, d1     ; "006/"
+400d9e68  cmp.l   $10(a2), d1        ; the image's BUILD string, ELE3 +0x08
+400d9e6c  bcs.s   0x400d9e76         ; "006/" < build -> continue
+400d9e6e  moveq   #6, d0             ; else -> Unsupported downgrade
+400d9e76  jsr     0x400d0588         ; HMAC-SHA256 trailer   -> false : return 4
+400d9e88  moveq   #1, d0             ; pass
+```
+
+`'/'` is `0x2F`, one below `'0'`, so *"strictly greater than `006/`"* is how the
+compiler wrote **"build >= 0060"**.
+
+Three consequences:
+
+- **It is a hard-coded floor, not a comparison.** Nothing reads the running
+  firmware's version. This is the opposite of the bootstrap gate above, which
+  compares incoming against running. So MAIN OS does **not** reject a
+  same-version image -- `0079` over `0079` passes, and so does every build at or
+  above `0060` whatever is installed.
+- **It reads the build string at ELE3 `+0x08`, not the version string at
+  `+0x13`.** A search for the version string finds nothing.
+- **`%a2` is the 8-byte stream preamble, reached through a register**, which is
+  why no absolute reference to the container exists. The validator's argument is
+  `state + 32` where `state` is the SysEx decoder state: `%a2@` is the stream
+  length, `%a2@(8)` is the container, `%a2@(16)` is the build string. The
+  decoder state's address comes from a one-instruction accessor, so the whole
+  chain is register-relative.
+
+**To locate it on 1.15C**, or on any sibling: search MAIN OS for
+
+```
+22 3c ?? ?? ?? ?? b2 aa 00 10      # move.l #<4 ASCII bytes>,d1 ; cmp.l $10(a2),d1
+```
+
+That found it in 3 of the 4 images checked, with no false positives.
+
+### It is per-product, and two products do not have it **[V]**
+
+Same validator slot, same six-entry error table (`No error`, `Checksum failed`
+x3, `Power adapter must be connected`, `Unsupported downgrade`), in every image
+checked:
+
+| image | error table | validator | build floor |
+|---|---|---|---|
+| Digitakt II 1.16 | `0x4021f6fc` | `0x400d9e4c` | **`"006/"`** |
+| Digitone 1.43 | `0x401ce9f0` | `0x400a003c` | **`"0022"`, `"0025"`, `"0072"`** |
+| Digitone II 1.11 | `0x40208748` | `0x400dbc4c` | **none** |
+| Syntakt 1.41 | `0x40242c98` | `0x400a5ba8` | **none** |
+
+Digitone 1.43 selects between its three floors on bit 19 of a global at
+`0x402292f0`, almost certainly Digitone vs Digitone Keys -- the two variants
+sharing that firmware. Not chased. **[O]**
+
+Digitone II 1.11's validator is 52 bytes, does the checksum and the trailer and
+nothing else, and returns only 1, 3 or 4. Its `Unsupported downgrade` string is
+present and **unreachable**. Worth stating plainly because the string was read
+as evidence of the behaviour there first, and that was wrong: the error table is
+referenced from exactly one site and nothing writes 6.
+
+### `Incompatible OS` is a product check, not a version check **[V]**
+
+Adjacent, and a cheaper mistake to avoid. The SysEx packet parser rejects a
+header packet whose **byte 8** is not the product's own OS-stream id, and the
+message is `Incompatible OS`. Byte 8 is not the transport device id at byte 4:
+
+| product | byte 4 (transport id) | byte 8 (OS-stream id) |
+|---|---|---|
+| Digitakt II | `0x14` | `0x0f` |
+| Digitone II | `0x15` | `0x10` |
+| Syntakt | `0x16` | `0x11` |
+| Digitone 1 | `0x0d` | `0x08` |
+
+So `Incompatible OS` means "another machine's firmware", and never fires on a
+version.
+
+### The HMAC trailer is verified on the device **[V]**
+
+Worth recording next to "Integrity -- not a barrier to patching", which it does
+not contradict but does sharpen: the check is not only in the vendor's tooling.
+MAIN OS's validator calls it on every upgrade, and on Digitone II 1.11 -- where
+the key derivation was read end to end -- it derives key material from the
+string `"Multiplier"`, digests the container minus its last 32 bytes, and
+compares against those 32 bytes. A rebuild that does not carry a correct trailer
+is refused with `Checksum failed`, not with a distinct message.
+
 ## Recovery
 
 The bootstrap owns the STARTUP menu (`0x8000650d`), the factory test mode, and
@@ -2523,10 +2624,14 @@ hour; noted in `emu/harness.py`.
 
 ## Open questions
 
-- Does MAIN OS's USB upgrade path reject a same-version image? It carries
-  "Downgrade not possible" (error code 6, formatter at `0x400fb524`) but never
-  reads the container version string at an absolute address, so the comparison
-  was not located. **[O]**
+- ~~Does MAIN OS's USB upgrade path reject a same-version image?~~ **ANSWERED
+  -- no.** The comparison is a hard-coded **build-number floor**, not a
+  comparison against what is running, so a same-version image passes. It was not
+  found by searching for the version string because it reads the **build**
+  string at ELE3 `+0x08`, through a register rather than an absolute address.
+  Read on 1.16 (`0x400d9e4c`, floor `"006/"` = build >= 0060); see "MAIN OS has
+  a second gate" above, which includes a byte pattern for confirming it on
+  1.15C. **[V on 1.16, [O] on 1.15C]**
 - Is the bootstrap rewrite atomic once triggered? **[O]**
 - Sample/project/preset on-flash layout. `MmcFs`, `/factory`, and the manager
   classes are visible; the partition and directory format is not mapped. **[O]**
