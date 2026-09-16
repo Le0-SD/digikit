@@ -1,0 +1,406 @@
+"""Synthetic tests for the deliberately small SHARC delay tracer."""
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from importlib import import_module
+from unittest.mock import patch
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "tools"))
+T = import_module("sharc_trace")
+Instruction = import_module("sharc_disasm").Instruction
+
+
+def insn(name, fields, length=4, kind="confident"):
+    return Instruction(0, length, name, fields, kind=kind)
+
+
+class TraceTest(unittest.TestCase):
+    def run_one(self, state, record):
+        return T._execute(state, record)[0]
+
+    def test_17_signed_and_assembled(self):
+        s = self.run_one(
+            T.State(10), insn("17b", {"ureg[6:0]": 2, "data[15:0]": 0xFFFF})
+        )
+        self.assertEqual(s.uregs[2], T.Const(0xFFFFFFFF))
+        s = self.run_one(
+            T.State(10),
+            insn(
+                "17a", {"ureg[6:0]": 2, "data[31:16]": 0x1234, "data[15:0]": 0x5678}, 6
+            ),
+        )
+        self.assertEqual(s.uregs[2], T.Const(0x12345678))
+
+    def test_ureg_copy_and_compute_rejection(self):
+        f = {
+            "srcureghigh[4:0]": 4,
+            "srcureglow[1:1]": 1,
+            "srcureglow[0:0]": 0,
+            "dstureg[6:0]": 3,
+            "cond[4:0]": 31,
+        }
+        s = self.run_one(T.State(1, {18: T.Const(9)}), insn("5b_move", f))
+        self.assertEqual(s.uregs[3], T.Const(9))
+        f.update({"compute[22:16]": 1, "compute[15:0]": 0})
+        self.assertIn(
+            "unsupported full compute",
+            self.run_one(T.State(1), insn("5a_move", f, 6)).stopped,
+        )
+
+    def test_computes_and_old_value_parallel_move(self):
+        short = lambda opcode, rn, rx: {"compute[11:0]": (opcode << 8) | (rn << 4) | rx}
+        s = self.run_one(T.State(1, {3: T.Const(9)}), insn("2c", short(2, 1, 3), 2))
+        self.assertEqual(s.uregs[1], T.Const(9))
+        full = lambda cu, op, rn, rx, ry: {
+            "compute[22:16]": ((cu << 4) | (op >> 4)),
+            "compute[15:0]": ((op & 15) << 12) | (rn << 8) | (rx << 4) | ry,
+        }
+        s = self.run_one(
+            T.State(1, {1: T.Const(99), 4: T.Const(7)}),
+            insn(
+                "5a_move",
+                {
+                    "srcureghigh[4:0]": 0,
+                    "srcureglow[1:1]": 0,
+                    "srcureglow[0:0]": 1,
+                    "dstureg[6:0]": 4,
+                    "cond[4:0]": 31,
+                    **full(0, 0x02, 3, 4, 4),
+                },
+                6,
+            ),
+        )
+        self.assertEqual((s.uregs[3], s.uregs[4]), (T.Const(0), T.Const(99)))
+        s = self.run_one(
+            T.State(1, {5: T.Const(11)}),
+            insn(
+                "5a_move",
+                {
+                    "srcureghigh[4:0]": 0,
+                    "srcureglow[1:1]": 0,
+                    "srcureglow[0:0]": 0,
+                    "dstureg[6:0]": 6,
+                    "cond[4:0]": 31,
+                    **full(0, 0x21, 6, 5, 0),
+                },
+                6,
+            ),
+        )
+        self.assertEqual(s.uregs[6], T.Const(11))
+        s = self.run_one(
+            T.State(1, {1: T.Const(6), 2: T.Const(7)}),
+            insn(
+                "5a_move",
+                {
+                    "srcureghigh[4:0]": 0,
+                    "srcureglow[1:1]": 0,
+                    "srcureglow[0:0]": 0,
+                    "dstureg[6:0]": 3,
+                    "cond[4:0]": 31,
+                    **full(1, 0x70, 2, 1, 2),
+                },
+                6,
+            ),
+        )
+        self.assertEqual(s.uregs[2], T.Const(42))
+        self.assertEqual(s.trace[0]["action"], "compute")
+
+    def test_compute_unknown_and_unsupported_do_not_mutate(self):
+        s = self.run_one(T.State(1), insn("2c", {"compute[11:0]": 0x251}, 2))
+        self.assertIsInstance(s.uregs[5], T.Unknown)
+        s = self.run_one(
+            T.State(1, {1: T.Const(2)}), insn("2c", {"compute[11:0]": 0xF12}, 2)
+        )
+        self.assertIn("unsupported short compute", s.stopped)
+        self.assertEqual(s.uregs, {1: T.Const(2)})
+
+    def test_type4a_pre_post_and_type3c(self):
+        base = {
+            "i[2:0]": 1,
+            "g": 0,
+            "d": 0,
+            "cond[4:0]": 31,
+            "data[5:5]": 1,
+            "data[4:0]": 0x1F,
+            "dreg[3:0]": 2,
+            "compute[22:16]": 0,
+            "compute[15:0]": 0,
+        }
+        s = self.run_one(
+            T.State(1, {17: T.Const(0x100)}), insn("4a", {**base, "u": 0}, 6)
+        )
+        self.assertEqual(s.trace[0]["address"], 0xFF)
+        self.assertEqual(s.uregs[17], T.Const(0x100))
+        # The full compute reads R2 before this postmodify load overwrites it.
+        computed = {"compute[22:16]": 0x02, "compute[15:0]": 0x1320}
+        s = self.run_one(
+            T.State(1, {17: T.Const(0x100), 2: T.Const(4)}),
+            insn("4a", {**base, **computed, "u": 1}, 6),
+        )
+        self.assertEqual(s.uregs[3], T.Const(4))
+        s = self.run_one(
+            T.State(1, {17: T.Const(0x100), 2: T.Const(4)}),
+            insn("4a", {**base, "u": 1, "d": 1}, 6),
+        )
+        self.assertEqual(s.trace[0]["address"], 0x100)
+        self.assertEqual(s.trace[0]["value"], 4)
+        self.assertEqual(s.uregs[17], T.Const(0xFF))
+        self.assertEqual((T.UREG_CODES["I0"], T.UREG_CODES["M0"]), (16, 32))
+        s = self.run_one(
+            T.State(1, {16: T.Const(0x80), 32: T.Const(3)}),
+            insn("3c", {"dmi[2:0]": 0, "dmm[2:0]": 0, "d": 0, "dreg[3:0]": 3}, 2),
+        )
+        self.assertEqual(
+            (s.trace[0]["space"], s.trace[0]["address"], s.uregs[16]),
+            ("DM", 0x80, T.Const(0x83)),
+        )
+        # The Type3c call-slot case selects DAG1 I7 and M7 directly.
+        self.assertEqual((T.UREG_NAMES[23], T.UREG_NAMES[39]), ("I7", "M7"))
+        s = self.run_one(
+            T.State(1, {23: T.Const(0x90), 39: T.Const(4)}),
+            insn("3c", {"dmi[2:0]": 7, "dmm[2:0]": 7, "d": 0, "dreg[3:0]": 3}, 2),
+        )
+        self.assertEqual((s.trace[0]["address"], s.uregs[23]), (0x90, T.Const(0x94)))
+
+    def test_type16a_store_and_unknown_postmodify(self):
+        f = {
+            "i[2:0]": 2,
+            "m[2:0]": 3,
+            "g": 1,
+            "sl": 0,
+            "by": 0,
+            "data[31:16]": 0x1234,
+            "data[15:0]": 0x5678,
+        }
+        s = self.run_one(
+            T.State(1, {26: T.Const(0x90), 43: T.Const(4)}), insn("16a", f, 6)
+        )
+        self.assertEqual(
+            (s.trace[0]["space"], s.trace[0]["value"], s.uregs[26]),
+            ("PM", 0x12345678, T.Const(0x94)),
+        )
+        s = self.run_one(T.State(1), insn("16a", f, 6))
+        self.assertIsInstance(s.uregs[26], T.Unknown)
+
+    def test_synthetic_prefix_forms(self):
+        full_mul = {"compute[22:16]": 0x17, "compute[15:0]": 0x0212}
+        move = {
+            "srcureghigh[4:0]": 1,
+            "srcureglow[1:1]": 0,
+            "srcureglow[0:0]": 0,
+            "dstureg[6:0]": 13,
+            "cond[4:0]": 31,
+            "compute[22:16]": 0,
+            "compute[15:0]": 0,
+        }
+        records = [
+            insn("5a_move", move, 6),
+            insn(
+                "15b",
+                {"i[2:0]": 0, "g": 0, "d": 1, "l": 1, "ureg[6:0]": 4, "data[6:0]": 0},
+            ),
+            insn(
+                "15b",
+                {"i[2:0]": 0, "g": 0, "d": 0, "l": 1, "ureg[6:0]": 14, "data[6:0]": 0},
+            ),
+            insn("2c", {"compute[11:0]": 0x202}, 2),
+            insn("17b", {"ureg[6:0]": 7, "data[15:0]": 1}),
+            insn(
+                "4a",
+                {
+                    "i[2:0]": 1,
+                    "g": 0,
+                    "d": 0,
+                    "u": 0,
+                    "cond[4:0]": 31,
+                    "data[5:5]": 0,
+                    "data[4:0]": 0,
+                    "dreg[3:0]": 14,
+                    "compute[22:16]": 0,
+                    "compute[15:0]": 0,
+                },
+                6,
+            ),
+            insn(
+                "4a",
+                {
+                    "i[2:0]": 1,
+                    "g": 0,
+                    "d": 0,
+                    "u": 0,
+                    "cond[4:0]": 31,
+                    "data[5:5]": 0,
+                    "data[4:0]": 0,
+                    "dreg[3:0]": 4,
+                    "compute[22:16]": 0,
+                    "compute[15:0]": 0,
+                },
+                6,
+            ),
+            insn(
+                "5a_move",
+                {
+                    **move,
+                    "srcureghigh[4:0]": 3,
+                    "srcureglow[1:1]": 1,
+                    "srcureglow[0:0]": 0,
+                    "dstureg[6:0]": 4,
+                    **full_mul,
+                },
+                6,
+            ),
+        ]
+        s = T.State(
+            1,
+            {
+                4: T.Const(0x55),
+                1: T.Const(6),
+                2: T.Const(7),
+                16: T.Const(0),
+                17: T.Const(0),
+            },
+        )
+        for record in records:
+            s = self.run_one(s, record)
+        self.assertEqual(s.uregs[13], T.Const(0x55))
+        self.assertEqual(s.uregs[2], T.Const(42))
+        self.assertIsInstance(s.uregs[14], T.Unknown)
+        self.assertEqual(s.uregs[4], s.uregs[14])
+
+    def test_15b_concrete_symbolic_load_and_store(self):
+        f = {"i[2:0]": 1, "g": 0, "d": 0, "l": 1, "ureg[6:0]": 2, "data[6:0]": 0x7F}
+        s = self.run_one(T.State(1, {17: T.Const(0x100)}), insn("15b", f))
+        self.assertEqual(s.trace[0]["address"], 0xFF)
+        self.assertIsInstance(s.uregs[2], T.Unknown)
+        f["d"] = 1
+        s = self.run_one(T.State(1, {2: T.Const(5)}), insn("15b", f))
+        self.assertEqual(s.trace[0]["action"], "store")
+        self.assertEqual(s.trace[0]["expression"], "I1 + -1")
+
+    def test_19a_constant_and_unknown(self):
+        f = {
+            "g": 1,
+            "idis[2:0]": 2,
+            "is[2:0]": 1,
+            "data[31:16]": 0xFFFF,
+            "data[15:0]": 0xFFFE,
+        }
+        self.assertEqual(
+            self.run_one(T.State(1, {25: T.Const(7)}), insn("19a", f, 6)).uregs[26],
+            T.Const(5),
+        )
+        self.assertIsInstance(
+            self.run_one(T.State(1), insn("19a", f, 6)).uregs[26], T.Unknown
+        )
+
+    def test_delay_slots_variable_width_and_target(self):
+        branch = insn(
+            "8a_abs", {"b": 0, "cond[4:0]": 31, "addr[23:16]": 0, "addr[15:0]": 99}, 6
+        )
+        s = self.run_one(T.State(10), branch)
+        s = self.run_one(s, insn("17b", {"ureg[6:0]": 0, "data[15:0]": 1}, 4))
+        s = self.run_one(
+            s, insn("17a", {"ureg[6:0]": 1, "data[31:16]": 0, "data[15:0]": 2}, 6)
+        )
+        self.assertEqual(s.pc_sw, 99)
+        self.assertEqual([e["pc_sw"] for e in s.trace], [10, 13, 15])
+
+    def test_conditional_forks_have_independent_two_slot_delays(self):
+        branch = insn(
+            "8a_abs", {"b": 0, "cond[4:0]": 1, "addr[23:16]": 0, "addr[15:0]": 30}, 6
+        )
+        taken, not_taken = T._execute(T.State(10), branch)
+        self.assertEqual(taken.trace[-1]["action"], "branch")
+        self.assertEqual(not_taken.trace[-1]["action"], "branch-not-taken")
+        not_taken.trace[-1]["action"] = "changed-not-taken"
+        self.assertEqual(taken.trace[-1]["action"], "branch")
+
+        # The not-taken state retains its delay marker and rejects transfers
+        # in both delay slots.
+        self.assertEqual(
+            self.run_one(not_taken, branch).stopped, "nested delayed transfer"
+        )
+        _, not_taken = T._execute(T.State(10), branch)
+        not_taken = self.run_one(
+            not_taken, insn("17b", {"ureg[6:0]": 0, "data[15:0]": 1}, 4)
+        )
+        self.assertEqual(
+            self.run_one(not_taken, branch).stopped, "nested delayed transfer"
+        )
+
+        taken, not_taken = T._execute(T.State(10), branch)
+        slot32 = insn("17b", {"ureg[6:0]": 0, "data[15:0]": 1}, 4)
+        slot48 = insn("17a", {"ureg[6:0]": 1, "data[31:16]": 0, "data[15:0]": 2}, 6)
+        taken = self.run_one(self.run_one(taken, slot32), slot48)
+        not_taken = self.run_one(self.run_one(not_taken, slot32), slot48)
+        self.assertEqual(taken.pc_sw, 30)
+        self.assertEqual(not_taken.pc_sw, 18)
+        self.assertEqual([e["pc_sw"] for e in taken.trace], [10, 13, 15])
+        self.assertEqual([e["pc_sw"] for e in not_taken.trace], [10, 13, 15])
+
+    def test_delayed_call_returns_after_variable_width_slots(self):
+        call = insn("25a_direct", {"addr[23:16]": 0, "addr[15:0]": 99}, 4)
+        s = self.run_one(T.State(10), call)
+        s = self.run_one(s, insn("17b", {"ureg[6:0]": 0, "data[15:0]": 1}, 4))
+        s = self.run_one(
+            s, insn("17a", {"ureg[6:0]": 1, "data[31:16]": 0, "data[15:0]": 2}, 6)
+        )
+        self.assertEqual(s.stopped, "external-call")
+        self.assertEqual(s.trace[-1]["return_sw"], 17)
+        self.assertEqual(s.trace[-1]["target_sw"], 99)
+        self.assertEqual([e["pc_sw"] for e in s.trace[:-1]], [10, 12, 14])
+
+    def test_provisional_stop(self):
+        self.assertIn(
+            "uncertain",
+            self.run_one(T.State(1), insn("19p", {}, kind="uncertain")).stopped,
+        )
+
+    def test_event_values_are_json_safe(self):
+        type3c = {"dmi[2:0]": 0, "dmm[2:0]": 0, "d": 1, "dreg[3:0]": 3}
+        s = self.run_one(
+            T.State(1, {16: T.Const(0x80), 32: T.Const(3)}), insn("3c", type3c, 2)
+        )
+        self.assertEqual(s.trace[0]["value"], {"unknown": "uninitialized R3"})
+        encoded = json.dumps(s.trace)
+        self.assertIn('"unknown": "uninitialized R3"', encoded)
+        self.assertNotIn("b'", encoded)
+
+    def test_bounds_and_json_has_no_raw_bytes(self):
+        data = b"\x00\x00"
+        self.assertEqual(T.trace(data, 0, 0, max_steps=0)[0].stopped, "max-steps")
+        branch = insn(
+            "8a_abs", {"b": 0, "cond[4:0]": 1, "addr[23:16]": 0, "addr[15:0]": 20}, 6
+        )
+        with patch("sharc_trace.decode_at", return_value=branch):
+            self.assertIn(
+                "max-states", [s.stopped for s in T.trace(b"", 0, 0, max_states=1)]
+            )
+        with tempfile.NamedTemporaryFile("wb", delete=False) as f:
+            f.write(data)
+            path = f.name
+        try:
+            out = subprocess.check_output(
+                [
+                    sys.executable,
+                    "tools/sharc_trace.py",
+                    path,
+                    "--base-sw",
+                    "0",
+                    "--start",
+                    "0",
+                    "--json",
+                ]
+            )
+            self.assertNotIn("raw", out.decode())
+            json.loads(out)
+        finally:
+            os.unlink(path)
+
+
+if __name__ == "__main__":
+    unittest.main()
