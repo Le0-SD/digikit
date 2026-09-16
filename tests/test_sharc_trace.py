@@ -206,6 +206,38 @@ class TraceTest(unittest.TestCase):
         )
         self.assertEqual(affine.uregs[3], T.Affine(1, (("counter", 1),)))
 
+    def test_type2a_decrement_unconditional_and_affine(self):
+        def full(opcode, rn, rx, ry=0):
+            return {
+                "compute[22:16]": opcode >> 4,
+                "compute[15:0]": ((opcode & 0xF) << 12) | (rn << 8) | (rx << 4) | ry,
+            }
+
+        concrete = self.run_one(
+            T.State(10, {4: T.Const(0)}),
+            insn("2a", {"cond[4:0]": 0x1F, **full(0x2A, 3, 4)}, 6),
+        )
+        self.assertEqual(
+            (concrete.pc_sw, concrete.uregs[3]), (13, T.Const(0xFFFFFFFF))
+        )
+        self.assertEqual(
+            concrete.trace[-1],
+            {
+                "pc_sw": 10,
+                "form": "2a",
+                "action": "compute",
+                "operation": "decrement",
+                "result_register": "R3",
+                "condition": 0x1F,
+                "predicate_assumption": True,
+            },
+        )
+        affine = self.run_one(
+            T.State(10, {4: T.symbol("counter")}),
+            insn("2a", {"cond[4:0]": 0x1F, **full(0x2A, 3, 4)}, 6),
+        )
+        self.assertEqual(affine.uregs[3], T.Affine(-1, (("counter", 1),)))
+
     def test_type2a_unknown_predicate_forks_execute_and_skip(self):
         fields = {
             "cond[4:0]": 1,

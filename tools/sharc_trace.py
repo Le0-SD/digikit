@@ -359,6 +359,9 @@ def _compute(
         return rn, left, "pass"
     if cu == 0 and opcode == 0x29:
         return rn, _add(left, Const(1), "R%d + 1" % rx), "increment"
+    # PRM Table 18-5 and p. 19-9: ALUOP 00101010 is RN = RX - 1.
+    if cu == 0 and opcode == 0x2A:
+        return rn, _add(left, Const(-1), "R%d - 1" % rx), "decrement"
     if cu == 1 and opcode == 0x70:
         value = _multiply(left, right, "R%d * R%d" % (rx, ry))
         return rn, value, "multiply"
