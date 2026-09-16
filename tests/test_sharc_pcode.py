@@ -54,6 +54,17 @@ def branch(name, cond=None, b=None, target=None):
     return encode(name, extra)
 
 
+def immediate_move(name, ureg, data):
+    """-> bytes of a Type17 immediate move to UREG code `ureg`."""
+    extra = field(name, "ureg[6:0]", ureg)
+    if name == "17a":
+        extra |= field(name, "data[31:16]", data >> 16)
+        extra |= field(name, "data[15:0]", data)
+    else:
+        extra |= field(name, "data[15:0]", data)
+    return encode(name, extra)
+
+
 @unittest.skipUnless(have_pypcode(), "needs pypcode (pyproject.toml)")
 class GeneratedLanguage(unittest.TestCase):
     @classmethod
@@ -130,6 +141,38 @@ class GeneratedLanguage(unittest.TestCase):
         for encoded, register in ((0, "R0"), (15, "R15")):
             with self.subTest(encoded=encoded):
                 self.assertEqual(registers.split()[encoded], register)
+
+    def test_type17a_writes_full_32_bit_immediate_to_attached_ureg(self):
+        """Type17a combines both data halves before its explicit UREG write."""
+        for ureg, register in ((0x07, "R7"), (0x72, "MODE1")):
+            with self.subTest(register=register):
+                names, ops = self.lift(immediate_move("17a", ureg, 0x89ABCDEF))
+                self.assertTrue(names)
+                writes = [op for op in ops if op.output and op.output.getRegisterName()]
+                self.assertEqual(
+                    [op.output.getRegisterName() for op in writes], [register]
+                )
+                self.assertEqual(names, ["INT_ZEXT", "INT_LEFT", "INT_ZEXT", "INT_OR"])
+                self.assertEqual(ops[0].inputs[0].offset, 0x89AB)
+                self.assertEqual(ops[1].inputs[1].offset, 16)
+                self.assertEqual(ops[2].inputs[0].offset, 0xCDEF)
+
+    def test_type17b_sign_extends_without_simd_complementary_write(self):
+        """Type17b writes only the explicit UREG; SIMD CUREG is deferred."""
+        for data, expected in ((0x0ABC, 0x00000ABC), (0xFFFF, 0xFFFFFFFF)):
+            with self.subTest(data=f"0x{data:04x}"):
+                names, ops = self.lift(immediate_move("17b", 0x05, data))
+                self.assertTrue(names)
+                writes = [op for op in ops if op.output and op.output.getRegisterName()]
+                self.assertEqual([op.output.getRegisterName() for op in writes], ["R5"])
+                self.assertEqual(writes[0].opcode.name, "INT_SEXT")
+                source = writes[0].inputs[0]
+                self.assertEqual(source.offset, data)
+                self.assertEqual(writes[0].output.size, 4)
+                lifted_value = source.offset
+                if lifted_value & (1 << (source.size * 8 - 1)):
+                    lifted_value |= 0xFFFFFFFF << (source.size * 8)
+                self.assertEqual(lifted_value & 0xFFFFFFFF, expected)
 
     def test_ureg_attachment_uses_complete_manual_code_table(self):
         """Unsplit 7-bit UREG fields attach to all PRM UREG/SYSREG entries."""

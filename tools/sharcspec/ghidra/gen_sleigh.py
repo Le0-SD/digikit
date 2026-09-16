@@ -724,6 +724,40 @@ def gen_constructor(form):
                 alias = FIELDS.get(w, clo + nbits - 1, clo, "condtrue")
                 wt.setdefault(w, []).append(f"{alias}=0x{COND_TRUE:x}")
 
+            # Type17 models only the explicit SISD/PEx UREG write.  The manual's
+            # SIMD complementary CUREG write is deliberately deferred.
+            if name == "Type17a":
+                _base, _shift, high_chunks, _hi, _lo = field_info["data[31:16]"]
+                _base, _shift, low_chunks, _hi, _lo = field_info["data[15:0]"]
+                assert len(high_chunks) == len(low_chunks) == 1
+                _w, high, _clo, _nbits = high_chunks[0]
+                _w, low, _clo, _nbits = low_chunks[0]
+                _base, _shift, ureg_chunks, _hi, _lo = field_info["ureg[6:0]"]
+                assert len(ureg_chunks) == 1
+                _w, ureg, _clo, _nbits = ureg_chunks[0]
+                semantic.extend(
+                    [
+                        f"local high16:2 = {high};",
+                        f"local low16:2 = {low};",
+                        "local imm:4 = (zext(high16) << 16) | zext(low16);",
+                        f"{ureg} = imm;",
+                    ]
+                )
+            elif name == "Type17b":
+                _base, _shift, data_chunks, _hi, _lo = field_info["data[15:0]"]
+                assert len(data_chunks) == 1
+                _w, data, _clo, _nbits = data_chunks[0]
+                _base, _shift, ureg_chunks, _hi, _lo = field_info["ureg[6:0]"]
+                assert len(ureg_chunks) == 1
+                _w, ureg, _clo, _nbits = ureg_chunks[0]
+                semantic.extend(
+                    [
+                        f"local imm16:2 = {data};",
+                        "local imm:4 = sext(imm16);",
+                        f"{ureg} = imm;",
+                    ]
+                )
+
             if branch_cfg:
                 # A bare subtable reference in the pattern links the LOCAL symbol
                 # to the GLOBAL table symbol of the same name (sec 7.4.3), so the
