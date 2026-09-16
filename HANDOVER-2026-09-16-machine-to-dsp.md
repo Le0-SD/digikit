@@ -1,21 +1,39 @@
-# Handover 2026-09-16: SHARC+ semantics in the generated Ghidra language
+# Handover 2026-09-16: the machine type reaches the SHARC, and the language
 
 Replaces `HANDOVER-2026-09-15-sharc-side.md`. Results are in
 `docs/FINDINGS.md`; this file holds state and next steps only.
 
+Two strands run in parallel now. The machine work is the one with a clear next
+move, and "Start here" below gives the order. The SHARC+ language work under
+"Next steps, in order" is the road both strands eventually need.
+
 ## State
 
-- Branch `sharc-pcode`, from `main` after PR #13 (`machine-engine-link`,
-  merged). Commits: `ad2ec98` CJUMP as a call; `14f85fc` conditional jumps,
-  calls and returns keep a fall-through, plus `tools/sharcpcode.py`;
-  `c8b7990` a sqlite dump per measurement run and `tools/sharcpcode.sql`;
-  `bd153a3` Type21a is the all-zero word, not a prefix; `eed409d` Type22a is
-  idle and neither image contains one, plus `tools/sharcspec/audit_bits.py`;
-  `534f73b` the previous handover; `78a4ee5` three older manuals, two more
-  provisional forms, and the stale-language hole below. **`78a4ee5` and this
-  handover are not pushed.** Only the untracked files listed below are
-  uncommitted.
-- Tests: 209 passed, 5 skipped.
+- **Everything is merged to `main` and pushed.** The `sharc-pcode` branch
+  landed as PR #17, and six more PRs landed on 2026-09-16 after it: #4, #16,
+  #15, #12 and #3 from the external contributor `angellinares`, then #18, our
+  follow-up corrections. Nothing is uncommitted except the untracked files
+  listed below.
+- **`main` is protected: a direct push is rejected, and changes must go through
+  a pull request.** `gh pr merge <N> --merge` works and needs no approving
+  review. Commit on a branch from the start rather than on `main`.
+- Tests: 209 passed, 5 skipped, 24 subtests passed.
+- **`emu/symbols.py`'s `mainloop` signature was broken on both analysis
+  targets** until PR #16 landed on 2026-09-16. It resolved to zero matches on
+  Digitakt II 1.16 and Digitone II 1.11 alike, because byte +15 of its
+  signature is a `moveq` immediate that changed, and that silently made
+  `tools/bootcheck.py` report `PARTIAL_MAIN_OS` / `MISSING: mainloop entered`
+  on runs where the OS was in fact running. **Any bootcheck verdict recorded
+  for 1.16 or 1.11 before 2026-09-16 is suspect and should be re-run.** It now
+  resolves to `0x40033d00` and `0x4002f178`.
+- **PR #11 is open and waiting on its author, not on us.** It is a SHARC+ VISA
+  encoding cross-check whose load-bearing claim the author retracted in his own
+  comments. He was asked to revise it down to what survived, and for the 31
+  classes and 577 codes he extracted from the Core Programming Reference's
+  chapter 27, which would serve stage 2 below. `angellinares` is an active
+  external contributor who self-corrects unprompted and twice found real bugs
+  independently: read his PRs properly rather than merging or closing on the
+  title.
 - The language installed in Ghidra is current: 80 constructors, slaspec
   `ca2362aa`, installed by `tools/ghidra/install-sharc.sh` on 2026-09-16. The
   programs in `~/ghidra-projects/elektron-sharc` were imported under two older
@@ -80,8 +98,17 @@ Replaces `HANDOVER-2026-09-15-sharc-side.md`. Results are in
   `imm-periph-dt2-{1.16,1.15C}.json` (code immediates) and
   `words-periph-dt2-{1.16,1.15C}.json` (loader-block words).
 - Untracked and not for committing: `maybe.md`, `scratch/`,
-  `docs/refs/netburner-coldfire/`,
-  `docs/refs/dspi2-edma-blocker-and-register-sources.md`.
+  `docs/refs/dspi2-edma-blocker-and-register-sources.md`. Stage by explicit
+  path only, never `git add -A`. (`docs/refs/netburner-coldfire/` is listed in
+  earlier handovers but no longer exists.)
+- New and tracked on `main` since the merges:
+  - `tools/machineprofile.py`: the machine-type anchors of three images.
+  - `docs/SHARC-ADDRESS-MAP.md`: the exec-to-load map and which regions of the
+    Digitone II blob are code. Its L1 and L2 labels were the wrong way round
+    when merged and were corrected in #18; `0x28xxxxxx` is L1 and
+    `0x20000000` is L2.
+  - `docs/refs/dn2-dspi2-cross-check-2026-09-16.md`: an independent read of the
+    DSPI2 frame on Digitone II 1.11.
 
 ## Start here: the machine type reaches the SHARC -- find its reader
 
@@ -143,6 +170,58 @@ boundaries to the frame was never reached, because it is gated on a slice
 count in the machine-set message and a stock boot has no sliced sample loaded.
 `0x800033a0` was never written in any run, patched or not. Testing that path
 needs a track carrying a sample with slices.
+
+### The order to work in
+
+Agreed with Em on 2026-09-16. Steps 1a and 2 are unblocked and static; start
+there.
+
+| | | blocked by |
+|---|---|---|
+| 0 | Port the emulator literals to 1.16, so a UI-driven run works at all | -- |
+| 1a | Static: does the machine-commit path actually reach `FUN_4002d438`? | -- |
+| 1b | Headless: hook it, then call it with a changed type | 1a |
+| 2 | The SHARC's reader of receive offset `0x94 + 2i` | -- |
+| 3 | Decide on type substitution | 1 |
+| 4 | Port `tools/machinepatch.py` onto `tools/machineprofile.py` | -- |
+| 5 | Patched image, then hardware | 4, and the bootstrap decision |
+
+**0** is the real blocker for anything that needs a machine to be *selected*
+rather than simulated. Section 5 below lists the 1.15C literals still in
+`emu/longrun.py`, `emu/edma.py`, `emu/panel.py`, `emu/screen.py`, `emu/hle.py`,
+`emu/serial.py`, `emu/uiprobe.py` and `emu/gui.py`, and
+`out/vt/check-dt2-1.15C_to_dt2-1.16.json` gives the 1.16 counterpart for most
+of them. It does not gate 1a, 1b or 2, so run it alongside rather than in
+front.
+
+**1a** matters because the chain has a verified back half and an assumed front
+half. The handler forwarding the byte is proven. `FUN_4002d438` populating the
+SRAM row *from a machine commit* is not. Its known callers on 1.16 are
+`FUN_4002d9c4` and the handler itself, and `FUN_4002d9c4`'s own callers look
+like pattern and track **load** sites, so the row may only refresh on pattern
+load rather than on a commit. Answerable from the 1.16 dump with no emulator.
+
+**1b** needs no GUI. Hook `FUN_4002d438` on a plain resume from
+`out/snapshots/dt2-1.16/boot400M.snap` to see whether it fires at all and with
+what arguments, which yields a real source-object pointer; then use
+`emu/harness.py`'s `call(machine, func, args)` to invoke it with a changed type
+byte and watch both the SRAM row and the captured frame.
+
+**3, type substitution**, is the design that falls out of the finding: keep the
+new type number for the ColdFire UI and its parameters, but write a stock type
+into the SRAM byte the frame reads, so the DSP and the slice path see a
+known-good engine. That makes a new Digitakt machine sonically identical to its
+clone source by construction rather than by hope, and it removes the question
+of what the DSP does with an unknown type. Decide it only after 1 says what is
+being sent today: the `permit` part of `tools/machinepatch.py` raises the bound
+in `FUN_400da3b0`, which is the same function that gates the SRAM copy, so the
+existing PLACEHOLDER build may already be sending type 7 to the DSP.
+
+**5** collides with the 1.16-only rule, because hardware means installing 1.16
+and upgrading the bootstrap irreversibly. That is Em's decision, not a task.
+Note that the MAIN OS build floor is **not** a second obstacle: Digitakt II
+1.15C's BUILD string is `0071` against a `"006/"` floor, so it clears
+(FINDINGS, "MAIN OS has a second gate, and it reads the BUILD string").
 
 ## The machine template, for both devices
 
