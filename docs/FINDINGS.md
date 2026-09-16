@@ -1068,6 +1068,11 @@ Ghidra or disassembly output and it was not re-checked.
   parser `FUN_400cd594` on `ENTER TEST MODE` and by `FUN_400cef6c`.
   `EXIT TEST MODE` calls `FUN_4002d5c4`, which reinstalls `0x4002d652`.
   **[D]**
+- **Superseded on the machine-type question by "The machine type reaches
+    the SHARC, at TX frame offset `0x94 + 2i`" below.** The negative result in
+    the next bullet is correct as stated -- the handler does not read `+0xa2`
+    -- but it does read a copy of that byte in SRAM, and the type does reach
+    the frame. **[C]**
 - Machine type: no call to `FUN_4004fc02` or `FUN_400caf48`, and no read
   of `+0xa2`, was found in the handler or its frame loop. The one link
   found is in the commit `FUN_40035e90`: when the new type is 5 (MIDI) it
@@ -1412,6 +1417,170 @@ tempo) is not traced, and a second single-track tick on Digitone II 1.11
   handlers in both. The 1.11 handler is 7582 bytes against 5796, and its
   driver compares the TX length with `0xaf0` where 1.15C uses `0xbc0`.
   **[V]**
+
+### The machine type reaches the SHARC, at TX frame offset `0x94 + 2i` **[V][C]**
+
+This corrects "The ColdFire tells the SHARC through a periodic DSPI2 frame"
+above, which recorded that no link from a track's machine type into the frame
+could be found. The link exists. Earlier searches missed it because the frame
+handler never reads the machine-type field of a track object: it reads a
+**copy** of that byte in on-chip SRAM. No xref query and no `tools/refscan.py`
+sweep for `+0xa2` could have found it. **[C]**
+
+Addresses are Digitakt II 1.16.
+
+- `FUN_4002d438(src, track)` reads the machine type at `src + 0xa2`, asks
+  `FUN_400da3b0` whether it is permitted, and on yes memcpys `0x9a` bytes
+  **starting at that same byte** into SRAM at `0x80003cd0 + track*0x9a`. Byte
+  0 of each SRAM row is therefore the track's machine type. **[V]**
+
+  ```
+  4002d458  712a 00a2       mvs.b (0xa2,A2),D0      ; the type byte
+  4002d45e  4eb9 400d a3b0  jsr FUN_400da3b0.l      ; permitted?
+  4002d4aa  486a 00a2       pea (0xa2,A2)           ; source = the type byte
+  4002d4b8  0680 8000 3cd0  addi.l #-0x7fffc330,D0  ; dest = 0x80003cd0 + track*0x9a
+  4002d4c0  4e93            jsr (A3)                ; memcpy, 0x9a bytes
+  ```
+
+- The vector-191 handler `0x4002dd0c` loads that byte into D7 and stores it,
+  sign-extended to a word, into the TX frame: **[V]**
+
+  ```
+  4002eb4a  1e28 0990       move.b (0x990,A0),D7b   ; A0 = 0x80003340 + i*0x9a,
+                                                    ; so +0x990 is 0x80003cd0 + i*0x9a
+  4002eb80  4887            ext.w D7w
+  4002ebe0  3747 0094       move.w D7w,(0x94,A3)    ; A3 = 0x80005348, the TX buffer
+  ```
+
+  Nothing between `0x4002eb80` and `0x4002ebe0` writes D7: the four
+  `FUN_401360ac` copies in between take stack arguments and do not touch it.
+  The `tst.b D7b` at `0x4002eb68` is a second, independent use of the same
+  register, not its only one. Reading only that first use is what made an
+  earlier pass conclude the type was reduced to a boolean. **[C]**
+
+- Measured, not only read. `tools/sharcframe.py` on
+  `out/snapshots/dt2-1.16/boot400M.snap` with `--open-gate --passes 3`, poking
+  track 0's type byte at `0x80003cd0` and diffing the captured 2050-byte frame
+  against a type-0 baseline, changes exactly two bytes -- reproducibly across
+  passes 1 and 2, and across three values: **[V]**
+
+  | poked type | frame `0x95` | frame `0x73d` |
+  |---|---|---|
+  | 4 | `00` -> `04` | `00` -> `01` |
+  | 5 | `00` -> `05` | `00` -> `01` |
+  | 6 | `00` -> `06` | `00` -> `01` |
+
+  `0x95` is the low byte of the big-endian word at `0x94 + 2i`: the type
+  verbatim. `0x73d` is the low byte of the word at `0x73c + 2i`, a derived
+  flag. The static read and the measurement were made by different agents from
+  different evidence and agree exactly.
+
+- So a new machine is not a ColdFire-side concern only. The DSP is told, per
+  track and every frame, which of the seven types a track is. What the SHARC
+  does with the value is the open question, and it is now a sharp one: find
+  the reader of receive-buffer offset `0x94 + 2i` in the DSP program. **[O]**
+
+#### The per-track TX frame map **[D]**
+
+The frame is 2050 bytes at `0x80005348`, sent by
+`FUN_400cd2bc(0x802, 0x80005348, 0xabc, 0x8000488c)`. Sixteen tracks; each
+field is a big-endian word at `offset + 2i`. Traced from the handler's
+disassembly. Only `0x94` and `0x73c` are confirmed by measurement.
+
+| TX offset | source |
+|---|---|
+| `0x02` | low word of `*(long *)(0x800047fc + 4i) >> 8` |
+| `0x34` | word at `0x800047dc + 2i` |
+| `0x54` | sign-extended byte at `0x80003cd0 + i*0x9a + 2` |
+| `0x74` | word at `0x80005b50 + 2i` |
+| `0x94` | sign-extended byte at `0x80003cd0 + i*0x9a + 0` -- **the machine type** **[V]** |
+| `0xb4` | sign-extended byte at `0x80003cd0 + i*0x9a + 1` |
+| `0x73c` | `0` if the type is 0 and the word at `src + 0x60` is 0, else `1` **[V]** |
+| `0x75c` | constant `0` |
+| `0x77c` | low word of `*(long *)(0x47db41d0 + i*0x14 + 8)` |
+| `0x79c` | high word of the same long |
+| `0x7bc` | word at `0x47db41d0 + i*0x14 + 0x12` |
+
+There is also a per-track `0x60`-stride sub-block: when the type is 6, slice
+boundaries go to `0xee`, `0xf0`, `0xf2`, `0xf4`, `0xf6` and `0xf8`, each
+`+ i*0x60`. That type-6 test is at `0x4002ec18` (`moveq #6,D1`) and reads the
+same SRAM byte. **[D]**
+
+The single `FUN_400cd2bc` call is at `0x4002dd74`, at the **top** of the
+handler, before the per-track loop that fills the buffer. Each firing sends
+the frame built by the previous firing and then rebuilds it: a
+one-cycle-delayed double buffer, not build-then-send. **[D]**
+
+#### Corrections to the SRAM layout **[C][O]**
+
+- The `0x9a`-stride per-track table is at **`0x80003cd0`**, not `0x80003340`.
+  The handler addresses a row as `0x80003340 + i*0x9a` plus a `+0x990`
+  displacement, and `0x80003340 + 0x990 = 0x80003cd0`; the base register, not
+  the table, sits at `0x80003340`. `tools/framelink.py`'s `TABLES` entry
+  `(0x80003340, 0x9a, 16, 'track_9a')` therefore names the wrong 2,464 bytes:
+  the rows run `0x80003cd0`-`0x80004670`. Not yet corrected in the tool.
+  **[C][O]**
+- `FUN_4002d438`'s `0x8e`-byte copy goes to `0x80003362 + track*0x8e`, from
+  `src + 0x14`. Whether that is the same structure as the
+  `0x80003340 + i*0x8e` rows `FUN_400d92a2` reads -- the two bases are `0x22`
+  apart with equal stride -- is unresolved. **[O]**
+- `FUN_400d92a2` has two loops, and only the second writes
+  `0x80005b50 + i*0x8e`: a verbatim copy of three longs from
+  `0x80003340 + i*0x8e`, at `+0x2a`, `+0x3a` and `+0x4a`. The EMAC-saturating
+  loop reads `0x8000dd40` and writes the adjacent `0x80005b4c`, a different
+  region. **[D][C]**
+- The type == 4 or 6 compare that gates `FUN_400d907e` is at `0x4002e5f8`, not
+  at `0x4002eb4a`. Both read the same byte; `0x4002eb4a` feeds the `0x94` and
+  `0x73c` frame fields. **[C]**
+- That branch is gated on `*(long *)(local_68 + 0x64) > 0` (`ble.b` at
+  `0x4002e5e4`), a slice count carried in the machine-set message. On a stock
+  boot with no sliced sample the branch is never taken: confirmed in the
+  emulator, where `0x800033a0` was never written in any run, patched or not.
+  Testing it needs a track carrying a sample with slices. **[V][O]**
+- The permission mask table is 7 longs of which only the high word is read
+  (`mvz.w (0,A0,D0*4),D0`), and every high word is `0xffff`: `0x401fbda6` on
+  1.15C and `0x4020ecbe` on 1.16, byte-for-byte identical. An earlier reading
+  of that table as consecutive small integers came from using load base
+  `0x40000000` instead of `0x40000400`, and is withdrawn. Both images load at
+  `0x40000400`. **[V][C]**
+
+### Digitone II 1.11 has the same machine machinery, with five machines **[D]**
+
+Every anchor of the Digitakt II machine machinery has a Digitone II 1.11
+counterpart of the same shape with different data. The addresses for all three
+mapped images are in `tools/machineprofile.py`.
+
+- Five machine types, not seven: `0 FM Tone`/`FMT`, `1 WaveTone`/`WVT`,
+  `2 FM Drum`/`FMD`, `3 Swarmer`/`SWM`, `4 MIDI`/`MIDI`. The display-name
+  table is at `0x401f77f0`, the same 12-byte rows of three `char *` as
+  Digitakt's, with the hint column null on every row. **[D]**
+- The descriptor dispatch is `FUN_400c248e`: bound 4, stride `0x2c` -- **the
+  same 44-byte descriptor as Digitakt** -- array base `0x42432b24`. Its
+  out-of-range fallback `0x42432bd4` is MIDI's own descriptor, which is also
+  what index 4 computes to, so MIDI is not special-cased. Rows 0-3 are
+  confirmed by the registration function `FUN_400c2aea`, which `pea`s each
+  machine-name string next to the matching row address. **[D]**
+- The type byte is at `+0xde` of the per-track object, not `+0xa2`. The setter
+  `FUN_4004cc08` reaches the object the same way, through the slot's vtable
+  `+0x28`. **[D]**
+- The permission check `FUN_400dc19a` has the same shape and its mask table
+  `0x401f7932` is five entries of `0xffff`. The grouping helper `FUN_40059274`
+  has the same shape too: synthesis types to group 1, MIDI to group 2,
+  anything else to 0. **[D]**
+- Two of the three name accessors, at `0x400dc358` and `0x400dc37e`, are not
+  Ghidra functions at all -- they sit in the gap after `FUN_400dc332`. The
+  same is true of the two Digitakt ones. Disassemble the gaps. **[D]**
+- Three things Digitakt has were not found: the six-long list filter table,
+  the sort comparator with its function-local `std::map` (there is no
+  `stable_sort` anywhere in the image, and with five static entries in a fixed
+  source order there may be no runtime sort to break), and the per-type byte
+  table. A patch template must treat all three as optional. **[O]**
+- Digitone II has a per-machine parameter-page layer Digitakt has no
+  counterpart for: `MachineParameterPageView`, `SrcMachineParamPageCopy`,
+  `FilterMachineParamPageCopy`. Its machines are synthesis engines with their
+  own parameter pages, so a sixth machine there is a materially bigger job
+  than an eighth on Digitakt -- a descriptor and a name row will not be
+  enough. **[O]**
 
 ### The frame link on Digitakt II 1.16 **[V][O]**
 
@@ -1815,7 +1984,7 @@ tempo) is not traced, and a second single-track tick on Digitone II 1.11
   `0x401` or `0x55e`. The `0x802` in the `4a` at SW `0x1cb423` is part of
   its compute field, not a value. **[V]**
 
-### The DSP programs of Digitakt II 1.16 and Digitone II 1.11 in Ghidra **[D][O]**
+### The DSP programs of Digitakt II 1.16 and Digitone II 1.11 in Ghidra **[V][C][O]**
 
 - Digitone II 1.11's section 7 is a boot stream of 95 blocks. Its main
   program starts at SW `0x1c12e2` and is 105,016 bytes (`tools/sharcldr.py
@@ -1824,42 +1993,478 @@ tempo) is not traced, and a second single-track tick on Digitone II 1.11
   `0x8045a6c8`. `tools/sharc_import.py --seed-calls --analyze` imports it as
   `/dn2-1.11_SHARC` in `~/ghidra-projects/elektron-sharc`, with 257
   functions. **[D]**
-- In a software call the `16a` pushes, through I7/M7, its own short-word
-  address + 2. Argument loads (`17a`, `17b`) can sit between the store and
-  the goto. `tools/sharcflow.py` counts an aligned `25a_direct` as a call
-  when such a store lies within the three instructions before it, with no
-  control transfer between: 145 calls in 1.16 (43 of them the strict triple
-  `3c`, `16a`, goto) and 113 in Digitone II 1.11 (23). Without the address
-  check, 4 more matches in 1.16 are `16a` instructions that store
-  constants, such as `0xbf800000`. **[D]**
-- `tools/sharcflow.py --cover --analyze --save` sets FlowOverride.CALL on
-  those gotos, disassembles every aligned instruction Ghidra has not
-  reached, starts a function after each return pair and at each run of code
-  that no function holds, and re-runs analysis. It was applied to
-  `/dt2-1.16_SHARC` and `/dn2-1.11_SHARC`; copies from before the pass are
-  in `~/ghidra-projects/backup-2026-09-15-sharc`. **[D]**
+- A software call is CJUMP followed by its two delay slots, not a push and
+  store before a goto. `25a` is CJUMP, a call that "should always use the
+  DB modifier" and does `R2=I6, I6=I7` (SHARC+ Core Programming Reference,
+  Type 25a, p.416); a delayed branch executes the two instructions after it
+  before the target, and a delayed call returns to "the seventh address
+  after the branch instruction" (pp.121-122). The classic SHARC Programming
+  Reference Rev 2.4 (p.238) gives the compiler's call as `CJUMP (DB);
+  DM(I7,M0)=R2; DM(I7,M0)=PC` (the PC store holds the return address - 1).
+  In the images, every aligned `25a_direct` is followed by a push of R2
+  through I7/M7 and a `16a` through I7/M7 that stores its own short-word
+  address + 2, so the return lands after the store: 589 of 589 in Digitakt
+  II 1.16 (490 with `3c` raw `0x9ff2`, 99 with a 48-bit `3a`) and 551 of 551
+  in Digitone II 1.11 (479 and 72). An indirect call moves I6 to R2 and I7 to
+  I6, then jumps through `9b_abs` with M5 (DB) with the same push and store:
+  12 sites in each image. **[V]**
+- This corrects the call triple above (`3c`, `16a`, `25a_direct`, "stores
+  the goto's short-word address minus 1"): the push and store belong to the
+  CJUMP before them. The triple looked right because calls often follow each
+  other. **[C]**
+- A return is the delayed `9b_abs` jump through I4/M6 (raw `0x083f343f`); its
+  two delay slots hold `25c_rframe` and one epilogue instruction, mostly `15b`
+  then `25c_rframe`: 390 of 391 returns in 1.16 and 276 of 277 in 1.11
+  contain `25c_rframe` in the slots. **[D]**
+- `tools/sharcspec/ghidra/gen_sleigh.py` now emits Type25a as `call`. Its
+  delay slots are not modelled: they follow the call in the listing.
+  `tools/sharcflow.py` lists the calls, indirect calls and returns with their
+  delay slots; with `--cover --analyze --save` it sets FlowOverride.CALL on
+  the indirect calls, disassembles every aligned instruction Ghidra has not
+  reached, starts a function after each return's delay slots and at each run
+  of code no function holds, and re-runs analysis. Both programs were
+  re-imported with the new language and the pass applied; copies from before
+  any pass are in `~/ghidra-projects/backup-2026-09-15-sharc`. **[D]**
 
   | | DT2 1.16 | DN2 1.11 |
   |---|---|---|
   | aligned instructions (our decoder) | 21,270 | 20,805 |
-  | main-program instructions in Ghidra, before / after | 4,684 / 20,844 | 4,594 / 20,839 |
-  | ... inside a function, after | 20,820 | 20,514 |
-  | aligned instructions that clash with Ghidra's instructions or data | 31 | 53 |
-  | main-program functions, before / after | 234 / 2,319 | 154 / 2,134 |
-  | call references, before / after | 114 / 732 | 78 / 686 |
+  | main-program instructions after import / after the pass | 6,575 / 20,468 | 6,191 / 20,234 |
+  | ... inside a function, after the pass | 20,443 | 19,994 |
+  | aligned instructions that clash with Ghidra's instructions or data | 36 | 60 |
+  | main-program functions after import / after the pass | 234 / 1,875 | 154 / 1,666 |
+  | call references after import / after the pass | 287 / 914 | 225 / 866 |
 
-- After the pass Ghidra lists `0x1c7bd4` with caller `0x1c80a2`,
-  `0x1c9fd5` with callers `0x1c7c14` and `0x1c7dae`, `0x1c7e02` with six
-  callers, and the function at `0x1ca17a` (which loads the SPI2 entry) with
-  caller `0x1ca077`, which the scan for direct gotos did not find. **[D]**
-- Function boundaries are too fine. The run rule made 1,708 functions in
-  1.16 and 1,627 in 1.11 and stopped at its limit of 16 rounds; 24
-  instructions in 1.16 and 325 in 1.11 are in no function. The RPC
-  dispatcher body `0x1c3bf6` ends at `0x1c3c20`, while its calls continue to
-  `0x1c3f46`. A likely cause is gotos that the call rule misses, which
-  analysis then treats as tail calls: before the pass, `0x1c3c5f` had its
-  store four instructions back, `0x1c3cf9` had an `8a_abs` between, and
-  `0x1c3d9f` and `0x1c3f46` had no store in reach. Not checked. **[O]**
+- Function boundaries are still too fine: in 1.16, 168 main-program
+  functions have one instruction and 806 have two to five. Two causes are
+  seen, and no-return marks are not one (clearing them and recomputing the
+  bodies changes nothing). The delay slots after a return become their own
+  function, such as `0x1c1498` (`17b` R0=`0xabc`, `25c_rframe`). Code reached
+  only through an indirect jump becomes separate functions: the RPC
+  dispatcher's first piece `0x1c3bef`-`0x1c3c3e` ends in a `9b` jump at
+  `0x1c3c3c`, which the language models as a return, and its cases, such as
+  `0x1c3c4f`, `0x1c3d34` and `0x1c3f16`, jump back to `0x1c3c1d`. Both need
+  the language: delay slots and indirect jump targets. **[D][O]**
+
+### Delay slots as one Ghidra instruction **[D][O]**
+
+- A throwaway copy of the generated SHARC+ language, installed as
+  `SHARC_SPIKE`, models a delayed branch and its two delay-slot instructions
+  as one instruction: two identical slot subtables, each a copy of every
+  constructor with an empty body, follow the branch pattern, and the body
+  builds both before its `call`, `return` or `goto`. It was applied to
+  CJUMP, delayed `9a_abs` and `9b_abs` jumps, and delayed `8a_abs` jumps. On
+  the 1.16 main program, SW `0x1c80a2` is one 14-byte instruction (CJUMP,
+  `3c`, `16a`) with p-code `CALL` to `0x1c7bd4` and fall-through
+  `0x1c80a9`; `0x1c2c9a` is 18 bytes (CJUMP, `3a`, `16a`); and the return at
+  `0x1c1496` is 10 bytes (`9b_abs`, `17b` R0=`0xabc`, `25c_rframe`) with
+  p-code `RETURN`. **[D]**
+- SLEIGH limits met: one subtable cannot appear twice in a pattern; a
+  subtable must be defined before it is used; bare mnemonic words in
+  subtable constructors must be quoted; a field cannot be both displayed and
+  constrained in one constructor. `delayslot(n)` counts bytes, so it cannot
+  express two SHARC+ instructions of varying length. **[D]**
+- Not yet in the generator, and function boundaries were not measured: the
+  test program was seeded only from the entry and the CJUMP targets. Its
+  `FUN_001c136a` stops at SW `0x1c13bc`, where our decoder and Ghidra both
+  read an `8a_rel` jump to a nonsensical target (raw `00 07 3e 02 30 00`),
+  with the current language as well. **[O]**
+
+### Conditional jumps, calls and returns in the generated language **[D][O]**
+
+- The generated language lifted every jump, call and return that has a
+  `cond` field as unconditional: with cond EQ, an `8a_abs` jump was a `goto`
+  with no fall-through. In the 1.16 main program 499 such instructions have a
+  cond other than TRUE (`8a_rel` 404, `11a` 37, `8a_abs` 22, `9a_abs` 15,
+  `9a_rel` 15, `11c` 5, `9b_rel` 1); in Digitone II 1.11, 478. **[D]**
+- `tools/sharcspec/ghidra/gen_sleigh.py` now gives each of these forms two
+  constructors: cond TRUE keeps the old p-code, and any other cond tests
+  `condition(cond)`, a user-defined p-code op, and falls through when it
+  does not hold. `tools/sharcpcode.py` measured the old and new language back
+  to back, each in a throwaway project (`sharc_import.py --seed-calls
+  --analyze`, then `sharcflow.py --cover --analyze`):
+
+| | DT2 1.16 old / new | DN2 1.11 old / new |
+|---|---|---|
+| main-program functions after the pass | 1,875 / 1,211 | 1,666 / 1,084 |
+| ... with one instruction | 168 / 114 | 124 / 94 |
+| ... with two to five | 806 / 496 | 691 / 448 |
+| functions the decompiler truncates at bad instruction data | 309 / 280 | 346 / 335 |
+| Error bookmarks, whole program | 106 / 165 | 113 / 172 |
+
+- The new Error bookmarks are Bad Instruction bookmarks at addresses that had
+  none before, outside the main program (Ghidra shows `0012058c`, `001208fa`),
+  reached through the new fall-throughs. The decompiler's "Instruction
+  overlaps" warning in 1.16 went from 5 to 70. Neither is examined yet. **[O]**
+- `FUN_001c136a` now has 55 instructions (38 before) and still stops at the
+  `8a_rel` decode at SW `0x1c13bc`. **[O]**
+
+### Where the new Error bookmarks and overlap warnings come from **[D][O]**
+
+- `tools/sharcpcode.py measure --ghidra` writes `OUT/<image>.sqlite`: our
+  decoder at every decodable offset of the main program (form, fields, depth,
+  aligned, computed target, the pypcode lift) and Ghidra's instructions,
+  references, bookmarks, functions, decompiled C and decompiler warnings. Two
+  runs compare with sqlite's `ATTACH`; the queries below are
+  `tools/sharcpcode.sql`. **[D]**
+- The conditional-flow change does not create the new Error bookmarks. Ghidra
+  reaches more code, and that code meets decode problems the old language
+  never walked into. Of the 53 new bookmarks inside the 1.16 main program: 23
+  flow into memory the image does not load (17 are CJUMP calls to SW
+  `0xb8xxxx`, which `FUN_001c136a` makes as well; 3 are `8a_abs` calls; 3 are
+  `8a_rel` jumps whose target comes out negative), 24 are "unable to resolve
+  constructor" on the fall-through of a three-word instruction (mostly `21a`,
+  `1a`, `2a`), where our own linear sweep stops too, and 6 are branch targets
+  inside an existing instruction. Digitone II 1.11 has 52 in the same
+  proportions. **[D]**
+- 65 of the 70 "overlaps instruction" warnings in 1.16 are `8a_rel` or
+  `9a_rel` targets one or two words inside an aligned instruction. By the form
+  they land inside: `21a` 62 (54 two words in, 8 one word in), `2a` 14,
+  `6a_mem` 11; in 1.11, `21a` 70, `2a` 12, `6a_mem` 8. **[D]**
+- Of the 552 aligned `8a_rel` instructions in 1.16 whose target is inside the
+  main program, 434 land on an instruction start; 104 of the 118 misses land
+  inside one. `25a_direct` lands on a start 314 times of 318. **[D]**
+- Open: `21a` decodes as a 48-bit nop matching any first word `0x0000` to
+  `0x007f`, 904 of them in 1.16, and the instructions those targets land
+  inside carry nonzero later words (`0010 9b52 aa01`, `0069 4dfe 0e3f`). If
+  those words are shorter instructions, `21a` swallows the one or two that
+  follow, which would explain both the mid-instruction targets and the
+  fall-throughs that do not decode. Check Type21a and the `21a`/`22c`
+  crossing resolver in `tools/sharcspec/ghidra/gen_sleigh.py` against the PRM.
+  Not checked. **[O]**
+
+### Type21a was swallowing the two words after it **[C][D][O]**
+
+- Corrects the open item above. `Type21a` matched any first word `0x0000` to
+  `0x007f` and constrained nothing in the other two words, so it absorbed the
+  short instructions that followed: 904 matches in 1.16, only 44 of them the
+  all-zero word the PRM draws (1.11: 31 of 898). `tools/sharcspec/build_table.py`
+  now takes every bit from the figure for Type21a and Type21c, and the
+  left-over first words are the provisional 16-bit `Type21p_undoc16`
+  (`docs/sharc/SPEC-FINDINGS.md` 3.7). **[D]**
+- Measured with `tools/sharcpcode.py measure --ghidra` before and after, both
+  images, same machine: **[D]**
+
+| | DT2 1.16 | DN2 1.11 |
+|---|---|---|
+| `8a_rel` branches landing on an instruction start | 434/552 -> 520/590 | 533/649 -> 625/695 |
+| decompiler "overlaps instruction" warnings | 70 -> 46 | 66 -> 48 |
+| "call to offcut address" warnings | 13 -> 9 | not recorded |
+| aligned instructions our decoder finds | 21,270 -> 21,792 | 20,805 -> 21,361 |
+| main-program functions | 1,211 -> 1,170 | 1,084 -> 1,049 |
+| ... with one instruction | 114 -> 95 | not recorded |
+| functions the decompiler truncates at bad data | 280 -> 296 | 335 -> 343 |
+| import and analysis / the sharcflow pass, seconds | 4.2 -> 6.0 / 7.5 -> 10.0 | 4.3 -> 5.9 / 8.2 -> 11.1 |
+
+- Aligned counts in 1.16: `21a` 904 -> 49, `21c` 336 -> 175, `23p_undoc16`
+  366 -> 407, and 883 of the new `21p_undoc16`. The branch targets that landed
+  two words inside a `21a` are gone; what is left lands inside `2a`, `6a_mem`,
+  `14a` and `4a`, in counts of three to ten. **[D]**
+- Open: Digitone II's `25a_direct` landing fell, 239/269 -> 217/276, with no
+  explanation yet. Both images decode more bytes, so Ghidra meets more bad
+  instruction data and analysis takes about 35% longer. 1.16 keeps 165 Error
+  bookmarks but 53 of them are different ones; 1.11 goes 172 -> 182. Twelve of
+  the twenty worst mid-instruction branch targets are still unexplained: their
+  container decodes cleanly and the chain still misses the target, so a
+  neighbouring form is wrong too. **[O]**
+
+### Type22a is idle, and neither image contains one **[D][O]**
+
+- The same merge rule over every other form, audited with the new
+  `tools/sharcspec/audit_bits.py`: Type22a (idle/emuidle) and Type26a (`sync`)
+  print every bit in their figures but matched on a nine- and sixteen-bit
+  prefix, taking 220 and 2 instructions across the two images, while their
+  strict words appear in neither. Both are tightened; the words they took are
+  now the provisional `Type22p_undoc48` and `Type26p_undoc48`
+  (`docs/sharc/SPEC-FINDINGS.md` 3.8). **[D]**
+- This buys a correct name, not a better decode: measured before and after on
+  both images, every flow metric is identical -- 1.16 keeps 296 functions
+  truncated at bad instruction data, 165 Error bookmarks, 1,170 main-program
+  functions, the same branch-target landing and the same form counts, and both
+  probes keep their earlier verdicts. **[D]**
+- A 16-bit reading of the same words was measured and rejected: it split the
+  RPC dispatcher at SW `0x1c3c2e`, added 33 truncated functions in 1.16 and
+  shifted the alignment sweep enough to change unrelated forms' counts. **[D]**
+- Restoring the dropped bits on the compute forms destroys real matches
+  (Type2a: every one of its 1,089 instances in 1.16, and 22% of all aligned
+  instructions), so the merge rule stands for them. Type3d, Type4d and Type20a
+  are neutral. **[D]**
+- Open: what the Type22p and Type26p words do. 220 instructions in two images
+  are decoded at a length that has never been checked against anything but
+  their neighbours' alignment. **[O]**
+
+### Instruction Types 23 and 24, and why the modern manuals skip them **[D]**
+
+- The SHARC+ Core Programming Reference Rev 1.5 and the classic SHARC Processor
+  Programming Reference Rev 2.4 both number straight from Type 22 to Type 25
+  with no note explaining the gap, so `docs/sharc/SPEC-FINDINGS.md` 3.6 recorded
+  Types 23 and 24 as undocumented. Three older ADI manuals, fetched into
+  `docs/refs/` on 2026-09-16, close it. **[D]**
+- ADSP-2106x SHARC Processor User's Manual Rev 2.1 (March 2004) and ADSP-21065L
+  SHARC DSP Technical Reference Rev 2.0 (July 2003) each document **Type 23 =
+  `IDLE16`** and **Type 24 = `CJUMP`/`RFRAME`** in full -- syntax, prose and
+  opcode bit maps (2106x Appendix A-53 and A-54; 21065L pages 99 and 101). **[D]**
+- ADSP-21160 SHARC DSP Instruction Set Reference Rev 2.1 (April 2013) records
+  the renumbering that made them vanish. Table 1-21 prints
+  `Type 23: Idle16 -- Not supported on ADSP-21160`,
+  `Type 24: creg<->ureg -- Not documented on ADSP-21160` and
+  `Type 25: Cjump/Rframe  0001 1000 0000 0100 0000 0`
+  (`out/refs/ADSP-21160_isr_rev2.1/all.txt` 2390-2401). **[D]**
+- So the gap is a renumbering, not an omission. CJUMP/RFRAME moved from Type 24
+  to Type 25 and kept its encoding: the classic Type 24 direct-branch word
+  `0001 1000 0000 0100` is bit-for-bit the `Type25a_direct` the table already
+  carries. Type numbers are ADI's labels, not a field, so the vacated number
+  says nothing about encoding space and there is no hole to search. **[D]**
+- `IDLE16` is an ordinary 48-bit instruction. The 16 is the clock divisor --
+  "the internal clock continues to run at 1/16th the rate of CLKIN"
+  (`out/refs/3789835185494138226006565l_book_tr/all.txt` 3826-3830) -- not a
+  16-bit encoding, so it is not a candidate for the provisional 16-bit forms.
+  Its word is `000 00000 1 01` where Type 22 `idle` is `000 00000 1`, which puts
+  it inside the nine-bit prefix `Type22p_undoc48` now covers. Whether any of
+  those 220 words is an `IDLE16` has not been checked. **[O]**
+- `creg<->ureg` is an instruction ADI acknowledges and declines to document.
+  The same manual's glossary defines `creg` as "One of 32 cache entries, an
+  entry consisting of a CH, CL, & CA" (`all.txt` 1423), so it moves between an
+  instruction-cache entry and a universal register -- systems code, not
+  something to expect hundreds of times in an audio program. Its Table 1-21 row
+  carries no opcode bits at all. **[O]**
+
+### A third opcode source: Type 7a confirmed, Type 19a's bit 39 settled **[D][C]**
+
+- `tools/sharcspec/compare_sources.py` diffs two sources, the PRM figures and
+  the classic PGR grid. The three manuals added on 2026-09-16 give a third for
+  every form the classic core had, which is enough to break the ties the two-way
+  diff left open in `docs/sharc/SPEC-FINDINGS.md` 3.2 and 3.3. **[D]**
+- Type 7a: the PRM figure shades nine fixed bits, `000001001`, for Type 7a and
+  Type 7d alike, which is why the two are indistinguishable there. Both new
+  manuals print `000 00100` over bits 47-40 and make bit 39 the `G` field,
+  "Selects DAG1 or DAG2" (`out/refs/3789835185494138226006565l_book_tr/all.txt`
+  2414-2454; `out/refs/ADSP-21160_isr_rev2.1/all.txt` 3712-3745). Eight fixed
+  bits, not nine. **[D]**
+- `decode_table.json` already has this right: `Type7a` is `mask
+  0xff0000000000`, `fixed_bits 8`, bit 39 unconstrained, because
+  `tools/sharcspec/build_table.py` 273-275 declines to fix a bit the PRM shades
+  where the PGR leaves a blank. The third source confirms that merge rule rather
+  than correcting it. Type 7a decodes 311 times in 1.16 and 369 in 1.11. **[D]**
+- Type 19a: bit 39 is the bit-reverse flag, `0` for `MODIFY` and `1` for
+  `BITREV`, printed explicitly as a `0`/`1` pair in both new manuals
+  (`out/refs/ADSP-21160_isr_rev2.1/all.txt` 5723-5745;
+  `out/refs/3789835185494138226006565l_book_tr/all.txt` 3617-3670). Bits 41-39
+  are `100` without bit-reverse and `101` with. That is the PGR value the PRM
+  figure contradicts with `000`, so 3.2's open item closes in the PGR's favour.
+  **[C][D]**
+
+### Type19a's mask is two bits short, and 757 instructions live in the gap **[V][O]**
+
+- `tools/sharcfields.py`, new here, is the mirror of
+  `tools/sharcspec/audit_bits.py`: where that lists bits a PRM figure prints
+  that the table does not fix, this tallies what values the fields the table
+  *declares* actually take across the aligned instructions of both images, and
+  flags any field sitting on bits the classic PGR grid fixes. Three fields
+  qualify. One is large. **[D]**
+- `Type19a` fixes six bits, `000101`, where its neighbours in the opcode space
+  fix eight or nine: `Type18a` `00010100`, `Type19a_bitrev` `000101101`,
+  `Type20a` `00010111`. The PRM's Figure 17-2 shades only six and declares bits
+  41-40 a SHARC+ field `sc[1:0]` and bit 39 a field `w`, while the classic grid
+  and all three older manuals fix bits 44-40 at `10110`
+  (`tools/sharcspec/classic.json` "Type 19a", pattern `000101100...`). **[D]**
+- So `Type19a` claims the whole `000101` block and, by longest-leading-prefix,
+  keeps whatever its tighter neighbours leave: its own `10110` with `w=0`, and
+  the whole of `10101`. Of its 1,935 matches across the two images, 1,178 are
+  `10110 0`, the documented `MODIFY`; **748 are `10101 1` and 9 are
+  `10101 0`**. **[V]**
+- Bits 44-40 = `10101` is documented by nothing. The sequence runs Type 18
+  `10100` (system register bit manipulation), the gap, Type 19 `10110`, Type 20
+  `10111` -- in the PGR Rev 2.4 (`all.txt` 19877-19942), the ADSP-21160 ISR Rev
+  2.1 (`all.txt` 5637-5741 and Table 1-19 at 2280-2321), the 21065L and the
+  2106x alike. Four manual generations, no instruction at `10101`. **[D]**
+- Checked against the bytes by a second agent that used no project decoder: in
+  1.16, SW `0x1c14a0` is `87 15 ff ff fc ff`, frame `0x1587fffffffc`, bits 47-39
+  `000101011`; in 1.11, SW `0x1c1445` is `87 15 ff ff ee ff`, frame
+  `0x1587ffffffee`. A naive scan of every even offset finds 851 frames with
+  `10101 1` across the two images, of which the aligned sweep takes 748 -- a
+  subset, as it must be. **[V]**
+- Read through `Type19a`'s field layout, those two frames give `g=DAG1,
+  idis=0, is=I7, data=-4` and `data=-18`: an index register and a small negative
+  immediate, the shape of a `MODIFY`. The words are structurally a sibling of
+  Type 19, not noise, and they sit in the aligned sweep without disturbing it.
+  **[D]**
+- Two readings, disagreeing about the table rather than the bytes. Either
+  SHARC+ really did widen Type 19 with a two-bit `sc` selector, as its own
+  figure says, and `sc=01` is a new variant; or `10101` is a separate
+  instruction `Type19a` is swallowing. Against the first: within `sc=01`, bit 39
+  is `1` in 748 of 757, so if `w` were still the bit-reverse flag then almost
+  every one of them would be a `BITREV`, while the documented bit-reverse form
+  occurs 8 times in both images combined. **[O]**
+- (`figures.json`'s `Type19a_bitrev` pattern `000101000` is not a new problem:
+  bits 41-39 = `000` is exactly the PRM erratum `docs/sharc/SPEC-FINDINGS.md`
+  3.2 already records, and `build_table.py` already takes the PGR value.) **[D]**
+- Done, and it holds. `Type19a` now fixes the nine bits the classic grid fixes,
+  `000101100` (`mask 0xff8000000000`), with its `sc[1:0]` and `w` field
+  declarations removed through a new `DROP_FIELDS` table in
+  `tools/sharcspec/build_table.py` -- an override there, not an edit to
+  `figures.json`, which `extract_figures.py` regenerates. The provisional 48-bit
+  `Type19p_undoc48` (`00010101`, eight fixed bits) takes the gap. **[V]**
+- `tools/sharcpcode.py compare out/sharcpcode/t23 out/sharcpcode/t24` reports
+  **0 regressions**. Aligned and decoded counts identical (1.16 21,792 of
+  21,792; 1.11 21,361 of 21,361); 1,170 and 1,049 main-program functions with
+  the same size histogram; 296 and 343 functions truncated at bad instruction
+  data; both probes keeping their earlier verdicts; and every Error and warning
+  bookmark count byte-identical -- "Bad instruction - Truncating control flow
+  here" 337, "Control flow encountered bad instruction data" 296, overlapping
+  instructions 46, offcut calls 9. The only movement is timing noise of a few
+  per cent in both directions. **[V]**
+- Only the per-form split moved, and both sums are exact: 1.16 `19a` 969 ->
+  559 plus `19p_undoc48` 410; 1.11 `19a` 966 -> 619 plus 347. That is 757 words
+  across the two images, the same 757 `tools/sharcfields.py` found. `18a`,
+  `20a` and `19a_bitrev` are untouched, `19p_undoc48` has no undecoded words and
+  no length mismatches, `tools/sharccompare.py` still has both decoders agreeing
+  on every offset of 1.16, and `sharcfields` no longer flags Type19a. **[V]**
+- So 757 words keep their length, their neighbours and every flow metric, and
+  only stop being called Type 19. That is the strongest evidence available short
+  of a manual that the split is right, and it says nothing about what they
+  do. **[D]**
+- Still open: what `10101` is, and what bit 39 selects within it -- 748 of the
+  757 have it set. Two of the mid-instruction branch targets the handover counts
+  as unexplained still land inside a `19a` (1.16 SW `0x1c866b` inside
+  `0x1c866a`, and `0x1c87a0` inside `0x1c879e`), so a neighbouring form is wrong
+  as well. **[O]**
+
+### The decode table now records which classic tables it merged **[V][C]**
+
+- `tools/sharcfields.py` guessed a form's classic.json table from its name, and
+  the guess is wrong for every split form: `Type8a_rel` resolves to `Type 8a`
+  where the merge really used `Type 8a #2`. `build_table.py` knew the answer and
+  threw it away, so every emitted form now carries `classic_keys`, and
+  `sharcfields` reads it instead of guessing. **[V]**
+- It also now mirrors the merge rule: a bit counts as fixed only where every
+  merged variant prints the same digit. That corrects two false positives this
+  tool reported on its first run. `Type11a` merges both `Type 11a` (`00001010`)
+  and `Type 11a #2` (`00001011`), whose patterns differ at bit 40 -- so bit 40
+  is the digit that picks between the two tables, `build_table.py` is right to
+  leave it free, and the PRM is right to call it the field `x`. Its `lr` at bit
+  24 is a second such selector. Neither was a conflict; the count of fields
+  sitting on bits the classic grid fixes goes 3 to 0. **[V][C]**
+- No form's decode changed: masks, values, widths and fields are identical, and
+  `tools/sharccompare.py` still has both decoders agreeing on all 22,886
+  offsets of 1.16. **[V]**
+
+### The Type 8a branch forms were taking words that are not branches **[V][C]**
+
+- `audit_bits.py` reports `Type8a_abs` and `Type8a_rel` dropping seven PRM bits
+  (32-27 and 25), which the handover named as where to start on the `8a_rel`
+  with the nonsensical target. Restoring all of them is wrong, and measurably:
+  it costs 225 aligned instructions in 1.16 and 279 in 1.11, and takes
+  `Type8a_abs` from 29 matches to 6. **[V]**
+- Measured per bit over both images instead, only one bit is a real
+  discriminator. Bit 25 is set in 13 of `8a_rel`'s 1,382 instructions and 19 of
+  `8a_abs`'s 54, and 30 of those 32 carry a target that is not a plausible
+  address. The other six gap bits are each set in 7 to 20 instances, and bit 23
+  -- which the wholesale fill would also have fixed, on `Type9a` -- is set in 18
+  of `Type9a_abs`'s 98 and 14 of `Type9a_rel`'s 34. Those are fields in use, not
+  zeros, so the PRM's digits in the branch figures' gaps are the same stale
+  template values as on the compute forms (`docs/sharc/SPEC-FINDINGS.md` 3.8).
+  **[V]**
+- Fixing bit 25 to zero and leaving the words homeless still regressed: decoded
+  instructions fell 50 in 1.16 and 71 in 1.11 and `halt_baddata` went 296 to
+  298, because an undecoded word strands the alignment sweep. Giving them a
+  48-bit home instead is flat. **`Type8p_undoc48`** takes bits 47-41 = `0000011`
+  with bit 25 set -- one prefix for both halves, since bit 40 is Type8a's own
+  abs/rel selector, kept as the field `r` -- and holds 16 instructions per
+  image. **[V]**
+- Measured: `compare` reports **0 regressions** against both `out/sharcpcode/t24`
+  and `out/sharcpcode/t23`. Aligned counts are identical to baseline (21,792 and
+  21,361), and `8a_rel` + `8a_abs` + `8p_undoc48` sums exactly to the old
+  `8a_rel` + `8a_abs`: 636 + 19 + 16 = 671 in 1.16, 733 + 16 + 16 = 765 in 1.11.
+  The nonsense `jump 0x3e0030` at 1.16 SW `0x1c13bc` and 1.11 SW `0x1c1366` --
+  the same six bytes `00 07 3e 02 30 00` in both images -- is gone from the
+  listing. **[V]**
+- **Corrects the handover.** The probe `returns 2748` does not fail because of
+  that word, and `FUN_001c136a` does not stop there: it decompiles to the same
+  57 instructions before and after, and removing the bogus branch leaves the
+  probe exactly as it was. 2748 is `0xabc`, loaded by the `17b` at SW
+  `0x1c1498`, which sits in the delay slot of the `9b_abs` return at
+  `0x1c1496` (`0x083f343f`, the I4/M6 idiom). The probe cannot pass until the
+  language models delay slots. It is blocked on stage 1, not on the decoder.
+  **[V][C]**
+- Open: what the `Type8p` words are. 32 across two images, several of them
+  byte-identical in both (`0x062207100000`, `0x062207300000`, `0x06220f8e0002`,
+  `0x07110f840003`), so they are real shared code, not misalignment. **[O]**
+
+### A generated subtable with no user **[V]**
+
+- Adding a fixed bit to a split branch form made `sleighc` warn "Unreferenced
+  table `target_pcrel_6b_w0`", and `tests/test_sharc_pcode.py` caught it.
+  `gen_sleigh.py` calls `get_target_subtable()` once per branch form before it
+  knows whether that form's constructors will need an `extra_by_word` variant
+  instead; when every sharer of a shape takes a variant, the plain one is left
+  with no user and nothing prunes it. The generator now emits only the
+  subtables its constructors reference, matching on whole identifiers because
+  `target_pcrel_6b_w0` is a substring of `target_pcrel_6b_w0_v2`. **[V]**
+
+### The two decoders disagreed on one word, past the end of the file **[V]**
+
+- `tools/sharccompare.py` had them agreeing on all 22,886 offsets of 1.16 but
+  differing by one on Digitone II 1.11: `unknown only in ours 1`. It is the last
+  word of the image. `out/sharc/dn2-1.11-main.bin` is 105,016 bytes and ends on
+  an all-zero word at byte offset `0x19a36`, where only two of the six bytes a
+  48-bit instruction needs exist. **[V]**
+- Both decoders zero-pad the missing words before matching, and an all-zero
+  frame trivially satisfies `Type21a`, whose figure fixes every one of its 48
+  bits. `tools/sharc_disasm.py` 108 checks the matched form's width against how
+  many real words were read and refuses; `tools/sharcspec/sharc_decode.py`'s
+  `linear()` had no such check and reported a phantom 48-bit instruction sitting
+  on four bytes that are not in the file. It now makes the same check. **[V]**
+- It predates today's work: the same single offset and form reproduce with
+  HEAD's committed `decode_table.json` in a scratch tree, so none of
+  `Type8a_abs`, `Type8a_rel`, `Type8p_undoc48`, `Type19a` or `Type19p_undoc48`
+  is involved. 1.16 never showed it because its image does not end that way.
+  **[V]**
+
+### Every measurement here was of a stale language until it wasn't **[V][C]**
+
+- `tools/sharcpcode.py measure` compiles the slaspec sitting in
+  `tools/sharcspec/ghidra/SHARC_VISA/data/languages/` (`sharcpcode.py` 66,
+  215-235). Nothing regenerates it, and it is git-ignored (`.gitignore` 34), so
+  editing `decode_table.json` leaves it behind with no sign. **[V]**
+- The guard that exists cannot catch this. `sharcpcode.py` 791-796 compares the
+  compiled `.sla` against the one installed in Ghidra -- but a stale slaspec
+  compiles to the stale `.sla` that is installed, so the two agree and the run
+  proceeds. Runs `t24`, `t25`, `t26` and `t27` all recorded
+  `slaspec_sha256 93c238502b…`, written at 11:17:10, before `Type19p_undoc48`
+  and `Type8p_undoc48` existed. Their Ghidra numbers -- function counts,
+  bookmarks, decompiler warnings, probe verdicts -- are of a language without
+  those forms. **[C]**
+- Their decoder numbers are unaffected: `aligned`, the per-form counts,
+  `tools/sharcfields.py` and `tools/sharccompare.py` all read
+  `decode_table.json` directly. Lengths agreed by luck -- the stale `Type19a`
+  and `Type8a_rel` are 48 bits wide, like the forms that replaced them -- which
+  is why nothing tripped. **[V]**
+- `tests/test_sharc_pcode.py` 56-67 regenerates into a temp directory on every
+  run, excluding the `SHARC_VISA` output tree from its copy. That is why the
+  test caught the unreferenced-table warning and four measurements did not.
+  **[V]**
+- Measured properly, after `tools/ghidra/install-sharc.sh` and a fresh
+  generation (slaspec `ca2362aa…`, 80 constructors), against the session's
+  starting point `out/sharcpcode/t23`: **0 regressions**, and the flow metrics
+  improve. **[V]**
+
+| | DT2 1.16 | DN2 1.11 |
+|---|---|---|
+| "Bad instruction - Truncating control flow here" | 337 -> 323 | 414 -> 399 |
+| functions truncated at bad instruction data | 296 -> 289 | 343 -> 336 |
+| Error bookmarks | 165 -> 160 | 182 -> 178 |
+| main-program functions | 1,170 -> 1,169 | 1,049 -> 1,048 |
+
+- `FUN_001c136a` loses its `halt_baddata()` call and both warning comments, so
+  removing the bogus branch did repair that function -- it still cannot satisfy
+  the `returns 2748` probe, which needs the delay slot. `8p_undoc48` now emits
+  no p-code where those same words used to emit `goto`/`call` as `8a_rel`.
+  **[V]**
+- `measure` now regenerates into a temp directory and refuses when the slaspec
+  on disk is not what `gen_sleigh.py` produces from the current table, and
+  records `decode_table_sha256` in `lint.json` so a past run can be audited.
+  **[V]**
 
 ## Emulation
 
