@@ -73,8 +73,40 @@ uv run python tools/ghidraq.py /section_3_MAIN_OS.bin callers 0xADDRESS \
 | `tools/steptrace.py` | Explain the instruction accounting of repeated emulator `spin` calls. |
 | `tools/panelsweep.py` | Map front-panel code through recorded queue events. |
 | `tools/inputlag.py` | Measure latency from a panel event to firmware response. |
-| `tools/guirun.py` | Reproduce the GUI worker configuration without opening the GUI. |
+| `tools/guirun.py` | Reproduce the GUI worker configuration without opening the GUI; `--panel-raw-at` saves an existing latched panel frame and `--block-profile` is explicitly perturbing. |
+| `tools/experiment.py` | Run a fresh, exact repeated baseline versus one button gesture and save endpoint/diff reports. |
 | `tools/uidrive.py` | Watch for and optionally drive the experimental machine-list UI path. |
+
+A Phase 1 recipe is a deliberately narrow JSON experiment, not a general framework.
+It requires a hash-consistent `DT2_SECTIONS`/`DT2_SYX` pair and never reuses a
+run ID; all firmware-derived logs, endpoints, and RAM diffs go under ignored
+`out/experiments/`. The requested save count is a lower bound: reports record
+both requested and actual saved instruction counts, and compare cases only at
+the same deterministic actual endpoint at or after that bound. A manipulated
+run is successful only when both paced input batches (press and release) were
+actually delivered before the endpoint:
+
+```sh
+uv run python tools/experiment.py experiments/phase1-button.json --run-id YYYYMMDD-button
+```
+
+`experiments/a1-func-src.json` is the narrow FUNC/SRC raw-feed A1 recipe. It
+runs quarantined state and profile lanes: state snapshots/panel frames are the
+state evidence, while the profile lane's UiTrace and **perturbing** basic-block
+entry profile are only scoped dynamic call/view and block-entry evidence, not
+instruction coverage or state claims. Invoke it the same way:
+
+```sh
+uv run python tools/experiment.py experiments/a1-func-src.json --run-id YYYYMMDD-a1
+```
+
+The A1 panel latch time is the live timer clock relative to the resumed run,
+so it can be compared with that run's observation save.  The manipulated
+profile gate follows the documented low-backlog trajectory: SRC chord press,
+MachineSelectionView activation, suppressed SRC release/repeat and no view
+close, then FUNC release.  Exact delivery of the raw SRC-up feed is checked
+separately.  Profile JSON must repeat byte-for-byte within a case; text logs
+need not, because they contain wall-clock rates.
 
 ## Machine and frame-link tools
 

@@ -813,6 +813,50 @@ five machine patches; instruction counts start at 0 there.
   `0x401e36f8` → typeinfo `0x401e36b4` → `"20MachineSelectionView"`.
   **[V]**
 
+### A1 FUNC+SRC A/B is repeatable across state and profile lanes **[V]**
+
+`experiments/a1-func-src.json` was run from `snapshots/postintro.snap` against
+1.15C (`62d588456e47194bd56dfee9568fb9dd4521c4ff1e8b5427eb461355532e8c6c`)
+as `out/experiments/a1-func-src/a1-real-002/`.  It delivered the raw FUNC/SRC
+sequence `2201`, `2002`, `2000`, `2200`, requested an observation while the
+chord was held at 14.4M, and ended at 40M.  Two fresh repeats of each
+baseline/manipulated case passed in both the non-perturbing state lane and the
+separately perturbing profile lane.  Every child returned zero, touched zero
+fault pages, saved at the same actual boundaries (14,664,427 and 40,388,243),
+and repeated its case's snapshot, panel, UiTrace and block-profile bytes.
+
+- The four manipulated feeds landed repeatably at 624,018, 8,736,192,
+  20,592,235 and 28,704,264 instructions.  UiTrace then shows a queue-send of
+  `SRC(2) 0x03`, activation of `MachineSelectionView`, no subsequent SRC
+  release/repeat or MachineSelectionView close, and a later queue-send of
+  `FUNC(17) 0x00`.  This is the low-backlog behaviour described above: the
+  raw `2000` proves SRC-up delivery, while the firmware suppresses its queued
+  `0x12` release after the view activates.
+- At observation, the state panels are repeatable 1,024-byte buffers and 772
+  bytes differ across cases.  The baseline is the normal track page; the
+  manipulated frame is the open `MACHINE SEL > TRACK 1` list.  The latest
+  untorn-frame latches were 14,554,643 (baseline) and 9,048,263
+  (manipulated), both before the 14,664,427 observation save.
+- The configured on-chip SRAM range `0x80000000..0x80010000` differs by zero
+  bytes at both observation and final endpoint.  A provenance-bound sweep of
+  every mapped snapshot page instead finds 4,487 changed bytes on 13 of 134
+  pages at observation and 4,413 bytes on 13 pages at the endpoint; see
+  `mapped-page-diff.json` in the run directory.  These broader differences
+  are state-lane evidence, but are not yet producer ownership.
+- The perturbing profile lane has 16 baseline versus 57 manipulated UiTrace
+  events.  Its address-sorted basic-block-entry profiles contain 11,749 versus
+  12,351 `(address, hit-count)` tuples, with 1,416 baseline-only and 2,018
+  manipulated-only tuples.  This is scoped dynamic call/view and block-entry
+  evidence, not instruction coverage or a complete call graph.
+
+The earlier `a1-real-001` artifacts are diagnostic only: their state/profile
+bytes were already repeatable, but the report rejected every panel because it
+compared an absolute restored timer clock with run-relative save counts.
+`guirun.py` now records the live hook-time clock relative to the resumed run's
+timer origin; `a1-real-002` is the accepted run.  The report and the raw
+snapshot, panel and profile bytes were checked independently before this was
+marked verified.
+
 ### Raising the timer rate after boot drains the UI queue **[V][O][C][D]**
 
 `tools/guirun.py --ips-at WHEN:N` changes the timers' instructions per
@@ -1645,8 +1689,8 @@ one-cycle-delayed double buffer, not build-then-send. **[D]**
   The handler addresses a row as `0x80003340 + i*0x9a` plus a `+0x990`
   displacement, and `0x80003340 + 0x990 = 0x80003cd0`; the base register, not
   the table, sits at `0x80003340`. `tools/framelink.py`'s `TABLES` entry
-  `(0x80003340, 0x9a, 16, 'track_9a')` therefore names the wrong 2,464 bytes:
-  the rows run `0x80003cd0`-`0x80004670`. Not yet corrected in the tool.
+  `(0x80003340, 0x9a, 16, 'track_9a')` therefore named the wrong 2,464 bytes:
+  the rows run `0x80003cd0`-`0x80004670`; the tool now uses the corrected base.
   **[C][O]**
 - `FUN_4002d438`'s `0x8e`-byte copy goes to `0x80003362 + track*0x8e`, from
   `src + 0x14`. Whether that is the same structure as the

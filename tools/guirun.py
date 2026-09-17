@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pyright: reportMissingImports=false
 """Headless reproduction of emu/gui.py's worker configuration.
 
 emu/gui.py imports tkinter at module top and cannot run without a display.
@@ -54,10 +55,12 @@ saved memory, so do not pass --patch-machine again when resuming.
 """
 import argparse
 import collections
+import json
 import os
 import struct
 import sys
 import time
+from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.join(
@@ -69,7 +72,7 @@ from emu.dtim import Dtims, Timers
 from emu import config, panel, symbols, taskprof, uitrace
 from emu import device as devices, panelin
 from emu.pit import INSTR_PER_SEC, Pits, intro_running
-from unicorn import UC_HOOK_MEM_WRITE
+from unicorn import UC_HOOK_BLOCK, UC_HOOK_MEM_WRITE
 from unicorn.m68k_const import UC_M68K_REG_A7, UC_M68K_REG_PC
 from machinepatch import patch_b, DEFAULT_CAVE_B, spec_from_arg, DEFAULT_SPEC
 
@@ -117,7 +120,10 @@ def parse_args(argv):
     p.add_argument('--input', action='append', default=[])
     p.add_argument('--feed', action='append', default=[])
     p.add_argument('--png-at', action='append', default=[])
+    p.add_argument('--panel-raw-at', action='append', default=[])
     p.add_argument('--save-at', action='append', default=[])
+    p.add_argument('--block-profile', help='PERTURBING block-entry JSON output')
+    p.add_argument('--trace-ui-json')
     # same as emu/gui.py's PANEL_DWELL_CHUNKS
     p.add_argument('--panel-dwell', type=int, default=16)
     return p.parse_args(argv)
@@ -127,6 +133,24 @@ def parse_when(s):
     if s and s[-1] in ('M', 'm'):
         return int(float(s[:-1]) * 1_000_000)
     return int(s, 0)
+
+
+def restore_or_construct_timers(ev, construct, requested_ips=None):
+    """Restore checkpoint cadence rather than constructing over it."""
+    timers = ev['restore_checkpoint_timers']()
+    if timers is not None:
+        if requested_ips is not None and any(
+                source.ips != requested_ips for source in timers.sources):
+            raise RuntimeError('--ips conflicts with checkpoint timer rate')
+        return timers, True
+    timers = construct()
+    ev['checkpoint_components']['timers'] = timers
+    return timers, False
+
+
+def run_timer_clock(timers, origin):
+    """Return live timer time relative to the start of this resumed run."""
+    return timers.now - origin
 
 
 def parse_input(spec):
@@ -155,6 +179,24 @@ def parse_png_at(spec):
 def parse_save_at(spec):
     when_str, path = spec.split(':', 1)
     return parse_when(when_str), path
+
+
+def parse_panel_raw_at(spec):
+    when_str, path = spec.split(':', 1)
+    return parse_when(when_str), path
+
+
+def write_block_profile(path, entries):
+    """Write an explicitly perturbing, address-sorted block-entry profile."""
+    with open(path, 'w') as f:
+        json.dump({
+            'perturbing': True,
+            'kind': 'basic-block entries',
+            'entries': [
+                {'address': address, 'hits': entries[address]}
+                for address in sorted(entries)
+            ],
+        }, f, sort_keys=True)
 
 
 def parse_patch_machine(value):
@@ -244,7 +286,8 @@ def main():
         print('[guirun] idle-yield %d' % args.idle_yield)
     m, ev, st, pc, inq, at = build(args.snapshot, unblock=True, softfloat=True,
                                     bitmap=True, dsp=True, on_pixel=None,
-                                    weakptr=args.weakptr, slc=args.slc, **extra)
+                                    weakptr=args.weakptr, slc=args.slc,
+                                    deferred_components=('timers',), **extra)
 
     if args.patch_machine is not None:
         parts, eighth = parse_patch_machine(args.patch_machine)
@@ -263,6 +306,7 @@ def main():
     main_img = open(config.main_image(), 'rb').read()
     profile = symbols.resolve(main_img)
 
+    device = None
     if args.input:
         try:
             device, _fw = devices.identify(config.firmware(args.syx))
@@ -300,12 +344,19 @@ def main():
         print('[guirun] ips %d' % args.ips)
 
     intro = intro_running(m, profile.intro_pit3_isr)
-    if args.ips is not None:
-        pits = Timers(Pits(m, hold=intro, instr_per_sec=args.ips),
-                      Dtims(m, channels=(3,), hold=intro, instr_per_sec=args.ips))
-    else:
-        pits = Timers(Pits(m, hold=intro), Dtims(m, channels=(3,), hold=intro))
-    post_intro_ips = (args.post_intro_ips
+
+    def construct_timers():
+        if args.ips is not None:
+            return Timers(Pits(m, hold=intro, instr_per_sec=args.ips),
+                          Dtims(m, channels=(3,), hold=intro,
+                                instr_per_sec=args.ips))
+        return Timers(Pits(m, hold=intro),
+                      Dtims(m, channels=(3,), hold=intro))
+
+    pits, restored_timers = restore_or_construct_timers(
+        ev, construct_timers, args.ips)
+    timer_origin = pits.now
+    post_intro_ips = (0 if restored_timers else args.post_intro_ips
                       if args.ips is None and not args.ips_at else 0)
     held_at_start = pits.held
     print('[guirun] timer rate %d, after intro %s'
@@ -343,6 +394,7 @@ def main():
         nonlocal chunks_since_delivery, delivered_before
         if held is None:
             return pc
+        assert device is not None
         paced = args.panel_dwell > 0
         if paced and delivered_before and (
                 chunks_since_delivery < args.panel_dwell):
@@ -386,7 +438,7 @@ def main():
         print('[guirun] input ~%.1fM: %s' % (state['instrs'] / 1e6, bytes(out).hex()))
         return new_pc
 
-    latched = {'buf': None}
+    latched: dict[str, Any] = {'buf': None, 'clock': None}
     if profile.panel_diff is not None and profile.fb_front is not None:
         # Matches the GUI's panel_diff hook, and feeds --png-at: this stores
         # the untorn frame instead of discarding it.
@@ -394,9 +446,13 @@ def main():
             buf = panel.read(m, profile.fb_front)
             if buf is not None:
                 latched['buf'] = buf
+                # Live in-spin timer time, normalized to this resumed run.
+                latched['clock'] = run_timer_clock(pits, timer_origin)
         at(profile.panel_diff, latch_frame)
 
     pending_pngs = [parse_png_at(spec) for spec in args.png_at]
+    pending_raw_panels = [parse_panel_raw_at(spec)
+                          for spec in args.panel_raw_at]
     pending_saves = [parse_save_at(spec) for spec in args.save_at]
     pending_feeds = [parse_feed(s) for s in args.feed]
 
@@ -516,14 +572,26 @@ def main():
         button_names[code] = name
         return name
 
-    if args.trace_ui or args.trace_ui_verbose:
-        trace = uitrace.UiTrace(m, at, profile, clock,
+    ui_events = []
+
+    def ui_out(line):
+        ui_events.append(line)
+        print(line)
+
+    if args.trace_ui or args.trace_ui_verbose or args.trace_ui_json:
+        trace = uitrace.UiTrace(m, at, profile, clock, out=ui_out,
                                  verbose=args.trace_ui_verbose,
                                  button_name=button_name)
         if trace.missing:
             print(trace.summary())
     else:
         trace = None
+
+    block_entries = collections.Counter()
+    if args.block_profile:
+        m.uc.hook_add(
+            UC_HOOK_BLOCK,
+            lambda uc, address, size, data: block_entries.update([address]))
 
     task_prof = taskprof.TaskProfile(
         m, at, profile, clock, ev['tasks'], spins=ev.get('idle_spins')
@@ -573,6 +641,18 @@ def main():
             else:
                 panel.write_png(latched['buf'], path)
                 print('[guirun] png ~%dM -> %s' % (when // 1_000_000, path))
+        due, pending_raw_panels[:] = (
+            [e for e in pending_raw_panels if e[0] <= state['instrs']],
+            [e for e in pending_raw_panels if e[0] > state['instrs']])
+        for when, path in due:
+            if latched['buf'] is None:
+                print('[guirun] panel raw asked %d: no latched frame '%
+                      when + '(%s not written)' % path, flush=True)
+            else:
+                with open(path, 'wb') as raw:
+                    raw.write(latched['buf'])
+                print('[guirun] panel raw asked %d latched %d -> %s'
+                      % (when, latched['clock'], path), flush=True)
         due, pending_saves[:] = ([e for e in pending_saves if e[0] <= state['instrs']],
                                  [e for e in pending_saves if e[0] > state['instrs']])
         for when, path in due:
@@ -627,6 +707,14 @@ def main():
         for ret, n in ev['satisfied_by'].most_common(15):
             print('  ret=0x%08x  %d' % (ret, n))
     print('[guirun] faults: %d distinct pages touched' % len(m.fault_pages))
+    if args.trace_ui_json:
+        with open(args.trace_ui_json, 'w') as f:
+            json.dump({
+                'kind': 'scoped dynamic call/view evidence',
+                'events': ui_events,
+            }, f, sort_keys=True)
+    if args.block_profile:
+        write_block_profile(args.block_profile, block_entries)
 
     if at_targets or args.dump_at or watch_targets:
         for addr, name in at_targets:
