@@ -147,6 +147,24 @@ class GuirunTimerCheckpointTest(unittest.TestCase):
         timers = SimpleNamespace(now=74_936_800)
         self.assertEqual(guirun.run_timer_clock(timers, 60_272_373), 14_664_427)
 
+    def test_intro_handover_restores_channels_from_checkpoint_topology(self):
+        pit = SimpleNamespace(channels=(3,))
+        timers = SimpleNamespace(sources=(pit,), release=mock.Mock())
+
+        guirun.release_intro_timers(timers)
+
+        self.assertEqual(pit.channels, (3, 2, 0))
+        timers.release.assert_called_once_with()
+
+    def test_intro_handover_preserves_complete_channels(self):
+        pit = SimpleNamespace(channels=(3, 2, 0))
+        timers = SimpleNamespace(sources=(pit,), release=mock.Mock())
+
+        guirun.release_intro_timers(timers)
+
+        self.assertEqual(pit.channels, (3, 2, 0))
+        timers.release.assert_called_once_with()
+
     def test_pit3_intro_constructs_only_pit3_and_holds_dtims(self):
         args = SimpleNamespace(intro_timers="pit3", ips=4_680_000)
         with (

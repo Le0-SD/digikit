@@ -175,6 +175,14 @@ def run_timer_clock(timers, origin):
     return timers.now - origin
 
 
+def release_intro_timers(timers):
+    """Release intro holds and restore the complete post-intro PIT topology."""
+    pit_source = timers.sources[0]
+    if tuple(pit_source.channels) == (3,):
+        pit_source.channels = (3, 2, 0)
+    timers.release()
+
+
 def construct_timers(machine, args, intro):
     """Construct the requested pre/post-intro timer topology."""
     pit_channels = ((3,) if intro and args.intro_timers == 'pit3'
@@ -416,11 +424,10 @@ def main():
         print('[guirun] intro timers %s' % args.intro_timers)
     if intro and profile.intro_done is not None:
         def handover(uc, a, s_, d):
-            if args.intro_timers == 'pit3':
-                # PIT3 owns vector 208 during the intro.  Once firmware
-                # switches it off, resume the normal complete PIT model.
-                pits.sources[0].channels = (3, 2, 0)
-            pits.release()
+            # A restored PIT3-only checkpoint retains channels=(3,) even if
+            # this invocation uses the default CLI mode. Derive handover from
+            # live checkpoint topology, not from today's command line.
+            release_intro_timers(pits)
             print('[guirun] intro handover at %dM' % (state['instrs'] // 1_000_000))
             if post_intro_ips:
                 # Applied by the main loop at the next chunk boundary, the
