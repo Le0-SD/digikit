@@ -813,6 +813,50 @@ five machine patches; instruction counts start at 0 there.
   `0x401e36f8` → typeinfo `0x401e36b4` → `"20MachineSelectionView"`.
   **[V]**
 
+### A1 FUNC+SRC A/B is repeatable across state and profile lanes **[V]**
+
+`experiments/a1-func-src.json` was run from `snapshots/postintro.snap` against
+1.15C (`62d588456e47194bd56dfee9568fb9dd4521c4ff1e8b5427eb461355532e8c6c`)
+as `out/experiments/a1-func-src/a1-real-002/`.  It delivered the raw FUNC/SRC
+sequence `2201`, `2002`, `2000`, `2200`, requested an observation while the
+chord was held at 14.4M, and ended at 40M.  Two fresh repeats of each
+baseline/manipulated case passed in both the non-perturbing state lane and the
+separately perturbing profile lane.  Every child returned zero, touched zero
+fault pages, saved at the same actual boundaries (14,664,427 and 40,388,243),
+and repeated its case's snapshot, panel, UiTrace and block-profile bytes.
+
+- The four manipulated feeds landed repeatably at 624,018, 8,736,192,
+  20,592,235 and 28,704,264 instructions.  UiTrace then shows a queue-send of
+  `SRC(2) 0x03`, activation of `MachineSelectionView`, no subsequent SRC
+  release/repeat or MachineSelectionView close, and a later queue-send of
+  `FUNC(17) 0x00`.  This is the low-backlog behaviour described above: the
+  raw `2000` proves SRC-up delivery, while the firmware suppresses its queued
+  `0x12` release after the view activates.
+- At observation, the state panels are repeatable 1,024-byte buffers and 772
+  bytes differ across cases.  The baseline is the normal track page; the
+  manipulated frame is the open `MACHINE SEL > TRACK 1` list.  The latest
+  untorn-frame latches were 14,554,643 (baseline) and 9,048,263
+  (manipulated), both before the 14,664,427 observation save.
+- The configured on-chip SRAM range `0x80000000..0x80010000` differs by zero
+  bytes at both observation and final endpoint.  A provenance-bound sweep of
+  every mapped snapshot page instead finds 4,487 changed bytes on 13 of 134
+  pages at observation and 4,413 bytes on 13 pages at the endpoint; see
+  `mapped-page-diff.json` in the run directory.  These broader differences
+  are state-lane evidence, but are not yet producer ownership.
+- The perturbing profile lane has 16 baseline versus 57 manipulated UiTrace
+  events.  Its address-sorted basic-block-entry profiles contain 11,749 versus
+  12,351 `(address, hit-count)` tuples, with 1,416 baseline-only and 2,018
+  manipulated-only tuples.  This is scoped dynamic call/view and block-entry
+  evidence, not instruction coverage or a complete call graph.
+
+The earlier `a1-real-001` artifacts are diagnostic only: their state/profile
+bytes were already repeatable, but the report rejected every panel because it
+compared an absolute restored timer clock with run-relative save counts.
+`guirun.py` now records the live hook-time clock relative to the resumed run's
+timer origin; `a1-real-002` is the accepted run.  The report and the raw
+snapshot, panel and profile bytes were checked independently before this was
+marked verified.
+
 ### Raising the timer rate after boot drains the UI queue **[V][O][C][D]**
 
 `tools/guirun.py --ips-at WHEN:N` changes the timers' instructions per
@@ -1155,10 +1199,19 @@ Ghidra or disassembly output and it was not re-checked.
   When the counter at `0x4028ac90` is zero, it calls
   `FUN_400cf9c4(0x802, 0x80005348, 0xabc, 0x8000488c)` at `0x4002d6ba`.
   **[V]**
-- Channel 50 is SSI0 transmit, and the RM lists INTC1 source 63 as not
-  used. No instruction reloads `0x4028ac90` by a literal address. What
-  raises source 63, and how many exchanges run per second, is not known.
-  **[D][O]**
+- **Correction: the vector-191 producer is now identified.** Channel 50 is
+  SSI0 transmit, but its major-loop completion is INTC1 source 42/vector 170,
+  not source 63. The RM lists source 63 as unused hardware and documents bit
+  31 of `INTFRCH1` (`0xFC04C010`) as its software-force bit. On 1.16,
+  initialization arms TCD48/TCD50, writes SERQ 48 and 50, and initially
+  installs the generic vector-170 handler `0x400d2f98`. It also retains
+  `0x4002d322` as the later channel-50 ISR. That ISR writes 50 to
+  `EDMA_CINT` at `0x4002d35a`, then sets `INTFRCH1` bit 31 at `0x4002d360`.
+  Vector 191 enters `0x4002dd0c` and clears the force bit at `0x4002dd30`.
+  The same chain is present at relocated addresses in 1.15C. Thus the real
+  cadence is SSI0-paced eDMA50 completion -> vector 170 -> software-forced
+  vector 191. No instruction reloads the frame gate counter by its literal
+  address, so the exchange cadence and counter reload remain open. **[V][C][O]**
 - `FUN_400cf9c4` is a DSPI2 (`0xEC038000`) send and receive driver using
   eDMA channels 28 and 29. `FUN_400cf67c` sets CTAR0 to `0xFA010000`
   (16-bit frames). Each PUSHR entry is `0x8001xxxx` (CONT, PCS0). The last
@@ -1215,10 +1268,49 @@ Ghidra or disassembly output and it was not re-checked.
   they were not traced one by one. So "stock engine and own parameters" for
   a new sample machine is still open. No engine id has been found in the
   frame. **[D][O]**
-- The handler cannot run in the emulator today. Vector 191 is never
-  raised. DSPI2, SSI0 and eDMA channels 28, 29 and 50 are not modelled:
-  `emu/edma.py` handles channel 35 only, and `0xEC03802C` is a constant.
-  **[V]**
+- The 1.16 post-gesture checkpoint's SSI0 configuration is externally
+  clocked: `MISCCR=0`, `CDRH=0`, `TCR=0x82` (FIFO0 enabled, external bit
+  clock and frame sync), `RCR=0x482`, and `CCR=0x16f00` (24-bit words,
+  16 words per frame). `TMASK=RMASK=0xffff0000`; `FCSR=0x88` sets the FIFO0
+  receive and transmit watermarks to eight words. TCD48/50 minor loops are
+  32 bytes, so one DMA request accounts for eight serial words and a 64-minor
+  major loop accounts for 512 words. The external `SSI_CLKIN`/frame frequency
+  is not captured, so there is no defensible numeric request-rate default;
+  for a continuous stream the request rate is external bit clock / (24*8),
+  or twice the frame rate with all 16 slots active. **[D][O]**
+- The same checkpoint has no `0x007fffff` row head among the 32 entries in
+  any of `0x4fe57100`, `0x4fe57900`, `0x4fe58100`, or `0x4fe58900`; all are
+  zero. The generic vector-170 handler at `0x400d2f98` acknowledges CINT50,
+  scans the currently completed RX bank for that marker, increments
+  `0x43153a20` only when the marker is at index zero, and installs the pending
+  `0x43153a28` callback into vector slot `0x400002a8` only after that counter
+  exceeds 63. At this checkpoint the counter is zero, the pending callback is
+  `0x4002d322`, and the slot still contains the generic handler. This is the
+  missing external RX synchronization/handover, not merely a missing TX DMA
+  tick. A second agent checked the marker scan, threshold, row heads, globals,
+  and vector slot against the 1.16 bytes/restored pages. **[V][O]**
+- `emu/ssi.py` now supplies an opt-in, exact-deadline event source for only
+  TCD48/TCD50. It models the observed 32-byte minors, 64-minor completion,
+  scatter/gather reload and vector 170; preserves RX destination bytes rather
+  than inventing peer data; lets the guest CINT50/`INTFRCH1[31]` ISR run; and
+  hands vector 191 over only at that ISR's image-resolved RTE boundary. Its
+  request rate is mandatory, its checkpoint component is separate from the
+  version-1 PIT/DTIM layout, and adding it to a legacy checkpoint requires an
+  explicit upgrade. **[D]**
+- At the explicitly exploratory 48,000-request/s profile,
+  `out/experiments/ssi0-dma/control-001/` reaches the generic vector-170
+  handler 16 times in 400,140 exact instructions with zero fault pages. A
+  clean and narrow-traced run produce byte-identical endpoint snapshots
+  (`11f81e1c...`). They correctly do not reach `0x4002d322` or vector 191,
+  because no external RX marker was supplied. The separate
+  `vector-chain-control-001` host-patches only the vector-170 slot and, at a
+  separate 1,000-request/s exploration rate, records two each of the normal
+  vector-170 ISR and vector 191, proving the model's
+  CINT/force handoff as calibration, not natural behavioral provenance. No RX
+  or SHARC payload was synthesized. **[D][O]**
+- DSPI2 and eDMA channels 28/29 remain outside a general peripheral model:
+  `emu/edma.py` handles UART8 channel 35, `emu/ssi.py` narrowly handles SSI0
+  channels 48/50, and `0xEC03802C` is still a constant. **[V][O]**
 - Ruled out as the control link **[D]**:
   - FlexBus `0x8C000000` (`FUN_400cfd40`, callers `FUN_40146148`,
     `FUN_4014653c`, `FUN_401465a4`) carries sample pages and slot headers
@@ -1645,8 +1737,8 @@ one-cycle-delayed double buffer, not build-then-send. **[D]**
   The handler addresses a row as `0x80003340 + i*0x9a` plus a `+0x990`
   displacement, and `0x80003340 + 0x990 = 0x80003cd0`; the base register, not
   the table, sits at `0x80003340`. `tools/framelink.py`'s `TABLES` entry
-  `(0x80003340, 0x9a, 16, 'track_9a')` therefore names the wrong 2,464 bytes:
-  the rows run `0x80003cd0`-`0x80004670`. Not yet corrected in the tool.
+  `(0x80003340, 0x9a, 16, 'track_9a')` therefore named the wrong 2,464 bytes:
+  the rows run `0x80003cd0`-`0x80004670`; the tool now uses the corrected base.
   **[C][O]**
 - `FUN_4002d438`'s `0x8e`-byte copy goes to `0x80003362 + track*0x8e`, from
   `src + 0x14`. Whether that is the same structure as the
@@ -1932,13 +2024,146 @@ boot, the handler's outer `while` never executes, and nothing downstream of it
 can run however the cache slot is set. A sweep-based reading of the handler
 would have called this run a clean negative result. **[C]**
 
-The next test follows from the producer rather than the consumer: poke a type
-byte into a source object, call `FUN_4011fe12` through `emu/harness.py`'s
+#### The smallest qualified 1.15C panel gesture commits STRETCH **[V]**
+
+`out/experiments/panel-machine-commit/qualify-1.15c-001/report.json` records
+two clean and two narrowly traced repetitions of the same raw panel sequence:
+FUNC+SRC opens Machine Selection, one DOWN tap selects the next entry, and YES
+commits it. FUNC uses button channel 2 (`22xx`); DOWN and YES use channel 1
+(`21xx`). Requested feed counts are deterministic lower bounds serviced at the
+next 400,000-instruction loop boundary, not exact delivery counts. **[V]**
+
+All four runs exited zero, touched no fault page, and produced the same
+1024-byte panel (`8ba3d66b…`) and endpoint snapshot (`b467d62f…`). Each traced
+run entered the commit setter `0x40035e90` exactly once with track 0 and type
+2, then wrote `0x4263b1a2` from PC `0x40050d62`, `00 -> 02`. The final panel
+highlights `STRETCH`. This qualifies the gesture and its real UART8/eDMA panel
+path on 1.15C. It does not complete behavioral A2: these runs used the
+historical global-unblock mode, and the target setter/back half is the
+relocated 1.16 build. **[V]**
+
+#### Faithful 1.16 panel input reaches the relocated setter, not refresh **[V]**
+
+`out/experiments/panel-machine-commit/qualify-1.16-001/report.json` repeats
+the same FUNC+SRC, DOWN, YES sequence twice clean and twice with narrow hooks
+from one immutable 1.16 user-screen snapshot. Its retained command provenance
+uses `--exact --no-unblock`, never enables `--weakptr`, and the source snapshot
+has a wholly counted three-stage lineage from `boot400M.snap` through
+`explore-1.16-pit3-004`, `-005`, and `-013`. All lineage stages and all four
+qualification runs touched zero fault pages. **[V]**
+
+The port required three hardware/model corrections rather than generic wait
+satisfaction: the image-resolved UART8 TX state is `0x40964d74`; PIT3 alone
+runs during the intro while DTIM remains held; and eSDHC CMD18/CMD25 transfers
+now complete channel 59, post its resolved completion semaphore, and preserve
+the card's sparse write overlay in checkpoints. The final user screen is
+therefore reached with `unblock=False` and `weakptr=False`. **[V]**
+
+All four qualification runs delivered the same eight feeds at the same actual
+lower bounds, latched the panel at `53,047,610`, and saved at `80,004,410`.
+Their 1024-byte panel hash is `8ba3d66b…`, and their endpoint snapshot hash is
+`4327aebe…`; clean and traced endpoints are byte-identical. Each traced run
+entered commit `0x40036798` and setter `0x40051712` exactly once, with track 0
+and type 2, then wrote `0x4265338e`, `00 -> 02`, at PC `0x4005179e`. The raw
+1.16 image bytes independently place the commit call into the setter and the
+byte write at those addresses. **[V]**
+
+The equivalent shorter qualification at
+`out/experiments/panel-machine-commit/qualify-1.16-fast-001/report.json`
+keeps the opening and DOWN timings but asks for YES at 46.4M rather than
+52.4M and ends at 64M rather than 80M. Two clean and two traced exact runs
+again have byte-identical endpoints, the same `8ba3d66b…` panel hash, zero
+fault pages, and one type-2 commit/setter pair in each traced run. The panel
+latched 5,616,000 instructions earlier and the actual final save was
+15,849,359 instructions earlier. This is the preferred repeat recipe; it
+shortens the scenario rather than increasing per-instruction emulator speed.
+**[V]**
+
+`FUN_4002d438` was reached zero times in both traced runs. Thus this closes the
+real-panel provenance only through the setter; it does not connect the
+setter's indirect notification to invalidation, the SRAM row, or the frame.
+Behavioral A2 remains open. **[O]**
+
+One follow-up control narrows the next missing event. From the committed 1.16
+snapshot, a real TRIG 1 press/release in
+`out/experiments/panel-machine-commit/explore-1.16-pit3-012/` reaches
+`FUN_4011fe12` once and the record producer/enqueue pair twice, but still hits
+`FUN_4002d438` zero times. At the time of that run SSI0-paced eDMA48/50,
+vector 170, and `INTFRCH1` software-force delivery were unmodelled. The new
+narrow model closes those mechanics, but without external RX data it remains
+in the generic vector-170 synchronization handler and still does not provide
+a natural refresh. This run identifies only the queue side dynamically.
+**[C][D][O]**
+
+An earlier proposed front-half control was to poke a type byte into a source
+object and call `FUN_4011fe12` through
+`emu/harness.py`'s
 `call()` with a sixth argument below `0x80` so the record carries `[0x10]`
 directly, then raise vector 191 and read the row and the frame. Confirm what
 `0x4291377a + idx*0x450` actually is first -- the base is odd-aligned, which
 is not the shape of a `0x450`-stride object array, so it may be a decompiler
-artifact rather than a real address. **[O]**
+artifact rather than a real address. The real TRIG path now reaches the
+producer, so this is optional calibration, not the next behavioral-A2 test.
+**[C][O]**
+
+#### Direct-refresh control establishes source byte -> SRAM row -> TX frame **[V]**
+
+`tools/machinecommit.py` now tests the narrow back half directly on Digitakt
+II 1.16. It does **not** pretend that the unresolved setter notification fired:
+each condition starts from a fresh restore, optionally changes the live source
+object's type byte, optionally calls `FUN_4002d438(src, track)` through
+`emu/harness.py`, then enters vector 191 three times. The final accepted report
+is `out/experiments/a2-machine-provenance/a2-real-005/report.json`. **[V]**
+
+This is calibration/control evidence for behavioral A2, not completion of A2.
+The run used track 0 and source object `0x426532ec`; the selected addresses were
+`src + 0xa2`, row `0x80003cd0`, and cache slot `0x8000470c`. Its immutable
+inputs were: **[V]**
+
+- SysEx SHA-256 `278541e466edcd77d6b3e018a91fb90185932d3c7de224dd3e68294dddf3a9ec`,
+  equal to `out/sections/dt2-1.16/.source-sha256`;
+- MAIN OS SHA-256 `57bb4dfa8df07d846adc72fdb4fb0d3cd3c5680c524bf498338460207e008e7d`;
+- snapshot SHA-256 `c23b733dfb11eb0239e44b517102c9719d966e5cd344fa3363c9a16af920a9b2`.
+
+The build contract was `unblock=False`, `weakptr=False`, no GUI fast mode,
+and state-only `softfloat=True`, `bitmap=True`, `dsp=True`. Four conditions
+were each repeated clean and with the bounded refresh-entry/full-row-write
+observers. Every handler entry returned, every captured frame was 2050 bytes,
+and clean/instrumented state, row hashes, frame hashes and stop reasons were
+identical in all four pairs. **[V]**
+
+| condition | source type after poke | direct refresh | row type after | frame type words |
+|---|---:|---:|---:|---|
+| baseline | 0 | no | 0 | `0, 0, 0` |
+| source only | 5 | no | 0 | `0, 0, 0` |
+| unchanged refresh | 0 | yes | 0 | `0, 0, 0` |
+| changed refresh | 5 | yes | 5 | `0, 5, 5` |
+
+In each instrumented refresh condition the entry hook fired exactly once at
+`0x4002d438`, with stacked arguments `[0x426532ec, 0]`. The row observer saw
+40 writes; it retained the first 32 by design and reported truncation rather
+than silently losing the count. The complete row after-images provide the
+discriminator: changed refresh versus unchanged refresh differs at exactly
+row offset 0, `00 -> 05`. The corresponding complete-frame comparison differs
+nowhere in pass 0 and, in passes 1 and 2, at exactly `0x95: 00 -> 05` and
+`0x73d: 00 -> 01`. Thus the big-endian word at `0x94` becomes `0x0005`; the
+`0,5,5` sequence is a measured one-cycle delay, not a claim about local static
+send/rebuild ordering. **[V]**
+
+The unchanged-refresh control also corrects an over-strong first acceptance
+gate. A wholesale refresh legitimately changes other stale row bytes, so its
+whole frame need not equal a no-refresh baseline. The discriminating A/B is
+changed refresh versus unchanged refresh: those conditions execute the same
+copy and differ in only `src + 0xa2`. `a2-real-001` was rejected solely by the
+old whole-frame-equality gate; `a2-real-005` uses the corrected controlled
+comparison and fails closed on duplicate/missing conditions, address drift,
+input-state drift, inactive hooks or clean/instrumented disagreement. **[V]**
+
+This establishes only the direct 1.16 chain
+`source + 0xa2 -> FUN_4002d438 -> row byte 0 -> TX 0x94`. It does not establish
+that `FUN_40051712`'s indirect notify vfunc invalidates the cache or schedules
+that refresh, and it does not replace a future faithful 1.16 UI commit trace.
+That front-half link remains open. **[O]**
 
 ### Digitone II 1.11 has the same machine machinery, with five machines **[D]**
 

@@ -25,6 +25,10 @@ not be committed.
 - [x] Machine type is present at frame offset `0x94 + 2 * track`.
 - [x] Digitakt II 1.15C and 1.16 section hashes match their source `.syx` files.
 - [x] A bounded performance baseline has been measured.
+- [x] A bounded DT2 1.16 track-0 direct-refresh experiment connects source
+  `+0xa2`, SRAM row byte 0, and TX word `0x94` with active controls.
+- [x] Exact DT2 1.16 panel replay reaches the relocated machine setter with
+  `unblock=False`, `weakptr=False`, and clean/traced endpoint equivalence.
 - [ ] Repeated experiments reuse one configured machine efficiently.
 - [ ] Producer-side reads and writes have narrow, reproducible traces.
 - [ ] Captured frames can be supplied as concrete input to the SHARC tracer.
@@ -125,7 +129,7 @@ separately.
 **Purpose:** prove the producer-side data path without a global instruction
 trace.
 
-- [ ] Restore the Digitakt II 1.16 `boot400M.snap` with the frame gate open.
+- [x] Restore the Digitakt II 1.16 `boot400M.snap` with the frame gate open.
 - [ ] Add range-scoped memory hooks for the selected track's:
   - source object machine-type byte,
   - DSP mirror row,
@@ -134,9 +138,9 @@ trace.
 - [ ] At each relevant access, record PC, direction, size, value, SP, and a
   small bounded stack window.
 - [ ] Hook the frame handler and DSPI2 driver entry/return points.
-- [ ] Capture baseline and one-variable machine-type changes from fresh state.
+- [x] Capture baseline and one-variable machine-type changes from fresh state.
 - [ ] Repeat for at least two track indices to confirm the `2 * track` term.
-- [ ] Separate direct frame construction from cache invalidation/row refresh;
+- [x] Separate direct frame construction from cache invalidation/row refresh;
   an inactive control must not be treated as evidence.
 - [ ] Resolve each observed PC back to the image and preserve raw instruction
   bytes in the uncommitted report.
@@ -147,6 +151,31 @@ address range or code endpoint and answer a stated provenance question.
 **Exit criterion:** a report under `out/` shows the exact ColdFire read/write
 chain from track state through the mirror row to the transmitted frame, with
 an active control demonstrating that the experiment can observe a change.
+
+The track-0 direct-refresh back half is calibrated in
+`out/experiments/a2-machine-provenance/a2-real-005/report.json`: the changed
+versus unchanged direct-refresh comparison differs only at row offset 0 and,
+after the observed one-cycle delay, at TX `0x95` plus the derived flag at
+`0x73d`. This does **not** meet the phase exit criterion by itself: the direct
+call bypasses the panel-driven setter-notification/cache path. The unchecked
+items remain required follow-up, including input-driven provenance and the
+`2 * track` term on a second track.
+
+`out/experiments/panel-machine-commit/qualify-1.16-001/report.json` closes the
+input side through `FUN_40051712`: four repeatable runs write track 0 type 2
+from the real panel path, but hit `FUN_4002d438` zero times. The next missing
+event is not another UI gesture. The producer is now identified as
+SSI0-paced eDMA channel 50 completion -> INTC1 source 42/vector 170 -> the
+firmware's `INTFRCH1` bit-31 software force -> source 63/vector 191. SSI0,
+eDMA48/50 scatter/gather, and safe interrupt-force delivery now have a narrow,
+opt-in exact event source. With no fabricated RX data it repeatedly reaches
+the generic vector-170 handler, which is waiting for an external
+`0x007fffff` sync marker before it installs the pending normal channel-50
+callback. The board's external SSI request cadence is also unresolved, so the
+CLI deliberately requires an explicit exploratory rate. A host-patched vector
+slot proves the downstream guest CINT/force/vector-191 chain only as
+calibration. Do not replace the missing RX handover with that control or a
+direct function call and call the phase complete.
 
 ## Phase 3 — Build concrete differential frame fixtures
 
