@@ -16,18 +16,87 @@ import guirun
 
 
 class GuirunTimerCheckpointTest(unittest.TestCase):
+    def test_intro_timer_mode_defaults_to_historical_hold(self):
+        self.assertEqual(guirun.parse_args([]).intro_timers, "held")
+
+    def test_intro_timer_mode_accepts_real_pit3(self):
+        self.assertEqual(
+            guirun.parse_args(["checkpoint.snap", "--intro-timers", "pit3"])
+            .intro_timers,
+            "pit3",
+        )
+
     def test_main_requests_deferred_timer_restore(self):
         class StopAfterBuild(Exception):
             pass
 
         def fake_build(*args, **kwargs):
             self.assertEqual(kwargs["deferred_components"], ("timers",))
+            self.assertTrue(kwargs["unblock"])
+            self.assertIsNone(kwargs["ssi0_request_hz"])
+            self.assertFalse(kwargs["ssi0_legacy_upgrade"])
             raise StopAfterBuild
 
         with (
             mock.patch.object(sys, "argv", ["guirun.py", "checkpoint.snap"]),
             mock.patch.object(guirun, "build", side_effect=fake_build),
             self.assertRaises(StopAfterBuild),
+        ):
+            guirun.main()
+
+    def test_main_accepts_no_unblock(self):
+        class StopAfterBuild(Exception):
+            pass
+
+        def fake_build(*args, **kwargs):
+            self.assertFalse(kwargs["unblock"])
+            raise StopAfterBuild
+
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                ["guirun.py", "checkpoint.snap", "--no-unblock"],
+            ),
+            mock.patch.object(guirun, "build", side_effect=fake_build),
+            self.assertRaises(StopAfterBuild),
+        ):
+            guirun.main()
+
+    def test_main_forwards_explicit_ssi0_upgrade(self):
+        class StopAfterBuild(Exception):
+            pass
+
+        def fake_build(*args, **kwargs):
+            self.assertEqual(kwargs["ssi0_request_hz"], 96000)
+            self.assertTrue(kwargs["ssi0_legacy_upgrade"])
+            raise StopAfterBuild
+
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "guirun.py",
+                    "checkpoint.snap",
+                    "--ssi0-request-hz",
+                    "96000",
+                    "--ssi0-upgrade-legacy",
+                ],
+            ),
+            mock.patch.object(guirun, "build", side_effect=fake_build),
+            self.assertRaises(StopAfterBuild),
+        ):
+            guirun.main()
+
+    def test_ssi0_upgrade_requires_explicit_rate(self):
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                ["guirun.py", "checkpoint.snap", "--ssi0-upgrade-legacy"],
+            ),
+            self.assertRaisesRegex(SystemExit, "requires --ssi0-request-hz"),
         ):
             guirun.main()
 
@@ -77,6 +146,23 @@ class GuirunTimerCheckpointTest(unittest.TestCase):
     def test_run_timer_clock_removes_restored_checkpoint_origin(self):
         timers = SimpleNamespace(now=74_936_800)
         self.assertEqual(guirun.run_timer_clock(timers, 60_272_373), 14_664_427)
+
+    def test_pit3_intro_constructs_only_pit3_and_holds_dtims(self):
+        args = SimpleNamespace(intro_timers="pit3", ips=4_680_000)
+        with (
+            mock.patch.object(guirun, "Pits", autospec=True) as pits,
+            mock.patch.object(guirun, "Dtims", autospec=True) as dtims,
+            mock.patch.object(guirun, "Timers", autospec=True) as timers,
+        ):
+            guirun.construct_timers("machine", args, intro=True)
+
+        pits.assert_called_once_with(
+            "machine", channels=(3,), hold=False, instr_per_sec=4_680_000
+        )
+        dtims.assert_called_once_with(
+            "machine", channels=(3,), hold=True, instr_per_sec=4_680_000
+        )
+        timers.assert_called_once_with(pits.return_value, dtims.return_value)
 
     def test_block_profile_is_sorted_and_labelled_perturbing(self):
         with tempfile.TemporaryDirectory() as tmp:

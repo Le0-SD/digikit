@@ -72,7 +72,7 @@ complete.
 | --- | --- | --- |
 | Snapshots/checkpoints and bounded ColdFire runs support controlled comparisons. | Static/hardware delivery is incomplete; each run needs image identity and bounded endpoint. | `docs/TOOLS.md`; boundary plan |
 | Focused RAM and frame diffs can isolate a one-variable change. | — | findings: row refresh and frame map |
-| The byte-checked static producer and wire chain into TX `0x94 + 2*track` is established. | A dynamic queue trace is optional secondary corroboration of event timing/provenance, not a gate for A2–A5. | findings; boundary plan |
+| The byte-checked static chain and bounded direct-refresh experiment establish source `+0xa2` -> SRAM row -> TX `0x94 + 2*track` on DT2 1.16. | The indirect setter-notification/cache-invalidating front half and faithful 1.16 UI replay remain open; neither is evidence for the other. | findings; `a2-real-005`; boundary plan |
 | Encountered MCF5441x peripherals have a documentation-backed contract and Ghidra labels. | This is encountered-peripheral coverage, not a complete chip model. | `docs/TOOLS.md`; findings |
 | Frame fields are verified, including per-track machine type at TX `0x94 + 2i`. | ColdFire transmission does not prove the SHARC consumer or unknown-type behaviour. | findings; handover |
 | The SHARC loader, decoder, mapped memory view, and bounded affine tracer exist. | The tracer lacks the concrete input/predicate support required for the receive proof. | `docs/TOOLS.md`; boundary plan |
@@ -88,10 +88,12 @@ constraints in the feasibility matrix.
 copy, validate, dispatch on, or transform it—and does that require type
 substitution or DSP modification for a new machine?
 
-ColdFire producer/wire evidence is established. The next primary work is a
-controlled emulator laboratory: repeated fresh-snapshot UI A/B experiments
-make the dynamic ColdFire state transition, RAM/frame/coverage/call diffs, and
-narrow read/write watchpoints defensible before a static SHARC handoff.
+ColdFire producer/wire evidence is established. A0/A1 established the
+controlled emulator laboratory on 1.15C, and a hash-gated 1.16 direct-refresh
+control established the narrow source-object -> SRAM row -> frame back half.
+A2 remains open until the real panel gesture drives that path on 1.16. This is
+deliberately compositional: A1's menu-open gesture and a direct function call
+are controls, not substitutes for an input-driven machine commit.
 
 ### Gates A0–A5
 
@@ -99,7 +101,7 @@ narrow read/write watchpoints defensible before a static SHARC handoff.
 | --- | --- | --- |
 | **A0 — deterministic runner (Phase 1 complete)** | Use one exact JSON recipe to repeat a fresh baseline and one press/release gesture from the same snapshot, saving endpoints and an explicit RAM diff. | Hash-match the selected sections and firmware; failed/missing endpoints are failures, not repeatability. Do not generalize this thin runner. |
 | **A1 — dynamic ColdFire A/B (complete)** | Choose one UI gesture and establish its repeatable RAM, panel-frame, coverage, and call differences against the baseline. | `a1-real-002` validates the FUNC+SRC experiment in quarantined state/profile lanes; observations remain separate from ownership inference. |
-| **A2 — narrow provenance** | Add only read/write watchpoints or hooks selected by A1's diff to connect the UI state change to a ColdFire producer/frame field. | Watch a bounded address/range; stop if the observation does not discriminate competing paths. |
+| **A2 — narrow provenance** | Replay the qualified real-panel machine commit on DT2 1.16 and trace setter/notification/invalidation, `FUN_4002d438`, the mirror row and TX `0x94`. | `a2-real-005` is the direct-refresh calibration/control. Acceptance requires input-driven source mutation and row/frame propagation without host pokes or direct calls, with clean/traced endpoint equivalence. |
 | **A3 — static-to-SHARC handoff** | Use the dynamic frame/provenance result to justify the earliest SHARC receive-buffer seed and complete relevant caller state. | Follow SPI2 receive evidence, loader map, and byte-checked instruction starts. Do not seed an arbitrary nearby routine. |
 | **A4 — tracer and exact read** | Add only concrete-memory/predicate support needed to preserve the dynamically justified `receive + 0x94 + 2*track` address and prove immediate use. | Synthetic tests and independent loader-byte checks; stop if receive or track provenance is lost. |
 | **A5 — design decision** | Classify the use as copied, validated, dispatched, transformed, or another evidenced operation; then choose unknown-type handling, stock-type substitution, or DSP modification. | No decision before A4. “SHARC consumer solved” is not currently valid. |
@@ -241,9 +243,14 @@ product-specific behaviour.
    hash-consistent repeated validation run and explicit SRAM diff.
 2. **A1 (complete):** `a1-real-002` establishes repeatable mapped-memory,
    panel-frame, block-entry and scoped UI-call differences for FUNC+SRC.
-3. **A2 (next):** add a narrow read or write watchpoint only at an A1-selected seam to
-   establish dynamic ColdFire provenance.
-4. **A3/A4:** hand the dynamic frame/provenance result to the static SHARC
+3. **A2 (current):** faithful 1.16 panel input now reaches the relocated setter.
+   Connect its notification/invalidation front half to the calibrated
+   row/frame back half. `a2-real-005` is a control, not completion of this gate;
+   its producer is statically recovered as SSI0/eDMA50 vector 170 followed by
+   an `INTFRCH1` software force. The narrow opt-in event source now reaches
+   the generic vector-170 handler, but external SSI cadence and RX sync-marker
+   data are still unknown, so the natural callback handover does not occur.
+4. **A3/A4:** hand the input-driven frame/provenance result to the static SHARC
    receive seed, then prove the exact read and immediate use with byte checks.
 5. **A5:** decide copied/validated/dispatch/transformed and then the
    substitution-versus-DSP path.
@@ -264,18 +271,35 @@ selected-range RAM diff. It requires the sections source hash to match the
 chosen firmware before every real run and preserves raw logs, snapshots, and
 diffs only under ignored `out/experiments/`.
 
-The exact next phase is A2: select one narrow producer seam from A1's
-repeatable mapped-memory/panel/profile differences and use a bounded read or
-write watchpoint to establish ownership. The SHARC receive seed remains
-blocked until that dynamic ColdFire-to-static handoff exists.
+The direct-refresh calibration is complete in
+`out/experiments/a2-machine-provenance/a2-real-005/`: for DT2 1.16 track 0,
+the controlled source-type byte is the sole changed row byte and reaches TX
+`0x94` after one observed frame cycle. Faithful 1.16 panel execution and setter
+mutation are now qualified in
+`out/experiments/panel-machine-commit/qualify-1.16-001/`; the equivalent,
+shorter preferred schedule is
+`out/experiments/panel-machine-commit/qualify-1.16-fast-001/`. Independent
+exact runs scale through eight workers on the current host without changing
+endpoint hashes (`out/benchmarks/exact-workers-1.16-001/report.json`). The
+exact next work remains A2: obtain the external SSI cadence and RX
+`0x007fffff` synchronization provenance needed for the generic vector-170
+handler to install the normal eDMA50 callback, then trace
+notification/invalidation through the now-calibrated CINT/force machinery
+into the refresh/row/frame back half. A host-patched callback control proves
+normal vector 170 -> software-forced vector 191 but is not behavioral proof.
+A3 remains blocked until this input-driven provenance exists.
 
 ## 12. New-session handoff prompt
 
-> Work on the highest-value unsatisfied gate in this roadmap, currently the
-> completed deterministic emulator **A0** runner and accepted **A1** FUNC+SRC
-> A/B experiment, then continue with one narrow **A2** provenance watchpoint.
-> Do not start the SHARC receive seed until the dynamic ColdFire
-> handoff is recorded. Read `HANDOVER-2026-09-16-machine-to-dsp.md`, current headings in
+> With the deterministic emulator **A0** runner, accepted **A1** FUNC+SRC
+> A/B experiment, faithful DT2 1.16 panel -> setter qualification, and direct
+> source -> row -> frame calibration complete, continue **A2** by recovering
+> the external SSI cadence and RX synchronization needed for the new narrow
+> eDMA48/50 model's generic vector-170 handler to install the normal callback.
+> Then trace the natural setter -> notification/invalidation -> refresh ->
+> row -> frame path. Do not start A3
+> until that input-driven provenance is recorded. Read
+> `HANDOVER-2026-09-16-machine-to-dsp.md`, current headings in
 > `docs/FINDINGS.md`, `docs/TOOLS.md`, and
 > `docs/plans/EMULATOR-SHARC-BOUNDARY.md` before consulting stale plans.
 > The mission is safe DT2/DN2 modification surfaces, not wholesale
