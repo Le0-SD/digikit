@@ -165,6 +165,11 @@ the model correctly does not invent the external `0x007fffff` sync word. The
 separate `vector-chain-control-001` host-patches only the vector slot and is
 calibration evidence, not behavioral evidence.
 
+`tools/guirun.py --poke ADDR=LONG` applies a repeatable big-endian 32-bit
+guest-memory write after snapshot restore and before execution. The run log
+labels every such write as a host calibration. Use it only for controls: a
+poke is never firmware or panel provenance.
+
 ### Exact-run throughput
 
 Use immutable snapshots and parallel processes for independent repetitions.

@@ -27,6 +27,9 @@ arguments.
 
 `--dump-at ADDR:ARG:LEN[=NAME]` dumps LEN bytes from the pointer in stack
 argument ARG (1, 2 or 3) on every hit.
+`--poke ADDR=LONG` writes one big-endian 32-bit value after restoring the
+snapshot and before execution. It is an explicit host-state calibration;
+repeat the option for multiple writes.
 `--watch ADDR:LEN[=NAME]` and `--watch-max N` install a memory write watch
 over LEN bytes at ADDR, printing up to N hits with a stack scan each.
 `--ips N` overrides the emulator's instructions-per-second timer rate
@@ -75,7 +78,7 @@ from emu.dtim import Dtims, Timers
 from emu import config, panel, symbols, taskprof, uitrace
 from emu import device as devices, panelin
 from emu.pit import INSTR_PER_SEC, Pits, intro_running
-from unicorn import UC_HOOK_BLOCK, UC_HOOK_MEM_WRITE
+from unicorn import UC_HOOK_BLOCK, UC_HOOK_MEM_WRITE, UcError
 from unicorn.m68k_const import UC_M68K_REG_A7, UC_M68K_REG_PC
 from machinepatch import patch_b, DEFAULT_CAVE_B, spec_from_arg, DEFAULT_SPEC
 
@@ -117,6 +120,8 @@ def parse_args(argv):
                     type=lambda s: int(s, 0))
     p.add_argument('--stack-depth', type=int, default=128)
     p.add_argument('--dump-at', action='append', default=[], type=parse_dump_at)
+    p.add_argument('--poke', action='append', default=[], type=parse_poke,
+                   metavar='ADDR=LONG')
     p.add_argument('--watch', action='append', default=[], type=parse_watch)
     p.add_argument('--watch-max', type=int, default=16)
     p.add_argument('--ips', type=parse_when, default=None)
@@ -293,6 +298,23 @@ def parse_dump_at(spec):
     return addr, arg, length, name
 
 
+def parse_poke(spec):
+    addr_str, sep, value_str = spec.partition('=')
+    if not sep:
+        raise argparse.ArgumentTypeError(
+            '--poke expects ADDR=LONG, got %r' % spec)
+    try:
+        addr = int(addr_str, 0)
+        value = int(value_str, 0)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            '--poke expects ADDR=LONG, got %r' % spec) from exc
+    if not 0 <= addr <= 0xffffffff or not 0 <= value <= 0xffffffff:
+        raise argparse.ArgumentTypeError(
+            '--poke ADDR and LONG must fit unsigned 32 bits')
+    return addr, struct.pack('>I', value)
+
+
 def parse_watch(spec):
     if '=' in spec:
         rest, name = spec.split('=', 1)
@@ -343,6 +365,17 @@ def main():
                                     ssi0_request_hz=args.ssi0_request_hz,
                                     ssi0_legacy_upgrade=args.ssi0_upgrade_legacy,
                                     **extra)
+
+    for addr, data in args.poke:
+        try:
+            m.uc.mem_write(addr, data)
+        except UcError as exc:
+            print('[guirun] host poke 0x%08x failed: %s' % (addr, exc),
+                  file=sys.stderr)
+            m.close()
+            raise SystemExit(2) from exc
+        print('[guirun] host poke 0x%08x = %s (calibration)'
+              % (addr, data.hex()))
 
     if args.patch_machine is not None:
         parts, eighth = parse_patch_machine(args.patch_machine)

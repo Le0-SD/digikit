@@ -1393,6 +1393,24 @@ Ghidra or disassembly output and it was not re-checked.
   vector-170 ISR and vector 191, proving the model's
   CINT/force handoff as calibration, not natural behavioral provenance. No RX
   or SHARC payload was synthesized. **[D][O]**
+- A marker-only host calibration now separates synchronization from useful RX
+  payload. `out/experiments/a2-marker-calibration/report.json` records four
+  explicit `0x007fffff` row-head pokes. At the deliberately exploratory
+  1,000-request/s rate, the guest increments the handover counter 64 times,
+  replaces vector 170 with `0x4002d322`, and subsequently takes vector 191.
+  Replaying the accepted real-panel machine-selection recipe *after* that
+  handover still gives one commit/setter, eight invalidations, 54 normal
+  vector-170 entries and 54 vector-191 entries, but zero `FUN_4002d438` hits
+  and zero track-0 row writes. The marker is therefore sufficient for the
+  guest handover control but not for useful queue work: the missing
+  firmware-backed RX payload/queue producer remains independently blocking.
+  This is host-state calibration, not behavioral A2 evidence, and 1,000 Hz is
+  not a recovered cadence. **[D][O]**
+- The corresponding 48,000-request/s host-marker stress control takes 2,565
+  normal vector-170 and 1,807 vector-191 entries while the panel window records
+  no main-loop pass or commit. That profile is unsuitable for the panel
+  experiment on this emulator; it does not measure or disprove the board
+  cadence. **[D][O]**
 - DSPI2 and eDMA channels 28/29 remain outside a general peripheral model:
   `emu/edma.py` handles UART8 channel 35, `emu/ssi.py` narrowly handles SSI0
   channels 48/50, and `0xEC03802C` is still a constant. **[V][O]**
