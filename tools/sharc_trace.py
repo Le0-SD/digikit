@@ -466,6 +466,41 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             state, insn, "ureg-write", ureg=UREG_NAMES[code], value=value & 0xFFFFFFFF
         )
         return _advance(state, insn)
+    if name == "14a":
+        # Forced long-word Type 14a accesses use a neighboring data-register
+        # pair.  Do not report them as a single-UREG transfer until the tracer
+        # models that pair explicitly.
+        if _field(f, "l"):
+            return [_stop(state, insn, "unsupported Type14a long-word access")]
+        address = _wide(f, "addr")
+        rendered = _render(Const(address))
+        code = _field(f, "ureg")
+        space = "PM" if _field(f, "g") else "DM"
+        if _field(f, "d"):
+            _event(
+                state,
+                insn,
+                "store",
+                space=space,
+                ureg=UREG_NAMES[code],
+                value=_ureg(state.uregs, code),
+                address=address,
+                expression=rendered,
+                simd_companion_possible=True,
+            )
+        else:
+            state.uregs[code] = Unknown("memory-address " + rendered)
+            _event(
+                state,
+                insn,
+                "load",
+                space=space,
+                ureg=UREG_NAMES[code],
+                address=address,
+                expression=rendered,
+                simd_companion_possible=True,
+            )
+        return _advance(state, insn)
     if name in ("5a_move", "5b_move"):
         if _field(f, "cond") != 0x1F:
             return [_stop(state, insn, "unsupported predicate")]

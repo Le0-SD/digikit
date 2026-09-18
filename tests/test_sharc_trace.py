@@ -52,6 +52,54 @@ class TraceTest(unittest.TestCase):
         )
         self.assertEqual(s.uregs[2], T.Const(0x12345678))
 
+    def test_type14a_direct_load_and_store(self):
+        fields = {
+            "addr[31:16]": 0x310C,
+            "addr[15:0]": 0x90C0,
+            "g": 0,
+            "d": 1,
+            "l": 0,
+            "ureg[6:0]": 16,
+        }
+        stored = self.run_one(
+            T.State(10, {16: T.Const(0x3DEF7B9C)}),
+            insn("14a", fields, 6),
+        )
+        self.assertEqual(
+            stored.trace[0],
+            {
+                "pc_sw": 10,
+                "form": "14a",
+                "action": "store",
+                "space": "DM",
+                "ureg": "I0",
+                "value": 0x3DEF7B9C,
+                "address": 0x310C90C0,
+                "expression": "0x310c90c0",
+                "simd_companion_possible": True,
+            },
+        )
+
+        loaded = self.run_one(
+            T.State(10, {16: T.Const(7)}),
+            insn("14a", {**fields, "g": 1, "d": 0}, 6),
+        )
+        self.assertEqual(
+            (loaded.trace[0]["space"], loaded.trace[0]["simd_companion_possible"]),
+            ("PM", True),
+        )
+        self.assertEqual(loaded.trace[0]["address"], 0x310C90C0)
+        self.assertEqual(
+            loaded.uregs[16], T.Unknown("memory-address 0x310c90c0")
+        )
+
+        long_word = self.run_one(
+            T.State(10, {0: T.Const(1), 1: T.Const(2)}),
+            insn("14a", {**fields, "ureg[6:0]": 0, "l": 1}, 6),
+        )
+        self.assertEqual(long_word.stopped, "unsupported Type14a long-word access")
+        self.assertEqual(long_word.trace[0]["action"], "stop")
+
     def test_ureg_copy_and_compute_rejection(self):
         f = {
             "srcureghigh[4:0]": 4,

@@ -1278,6 +1278,44 @@ Ghidra or disassembly output and it was not re-checked.
   is not captured, so there is no defensible numeric request-rate default;
   for a continuous stream the request rate is external bit clock / (24*8),
   or twice the frame rate with all 16 slots active. **[D][O]**
+- The SHARC-side three-wire output candidate is now narrowed to DAI1 SPORT4A.
+  The direct DAI setup is identical in 1.15C and 1.16 apart from its relocated
+  instruction address. On 1.16, the stores at `0x1cb2dd`-`0x1cb31a` set
+  `DAI1_CLK0=0x3def7b9c`, `DAI1_CLK4=0x3def7bce`,
+  `DAI1_FS0=0x3def7b9c`, `DAI1_PBEN0=0x00001041`, and
+  `DAI1_PIN0=0x0fc51d38`. The public selector tables decode those values as:
+  SPORT4A and SPORT4B take clock and frame sync from PCG C; DAI1 pins 1-3
+  are enabled outputs carrying PCG C clock, PCG C frame sync, and SPORT4A
+  primary data. Pin 4's selector is LOW, but its output buffer is disabled,
+  so this does not establish an electrical low on the pin.
+  `DAI1_CLK4.IN0=0x0e` also makes the cross-DAI0 pin-3 clock available as
+  PCG C's external input; it does not prove PCG C selects that source. This
+  is the firmware-configured SHARC-side candidate for ColdFire SSI0, but the
+  DAI mux alone does not prove board wiring or runtime signal activity.
+  **[V][O]**
+- The loader's immutable SPORT instance table pairs SPORT4A control base
+  `0x31002400` with DMA10 base `0x31023000`, and SPORT4B base
+  `0x31002480` with DMA11 base `0x31023080`. The public MMR table identifies
+  those DMA bases as SPORT4 half A/B. This establishes the peripheral/DMA
+  association, not the runtime descriptor contents or application buffer
+  addresses. No direct immediate store to SPORT4, DMA10/11, or PCG C control
+  registers was found in the main SHARC code; those remain behind the driver
+  path. **[D][O]**
+- The DAI result does not yet supply a numeric request cadence. PCG C's
+  `CTLC0/CTLC1` divisors and source-select bits have not been recovered, and
+  the frequency presented at the possible external source on DAI0 pin 3 is
+  unknown. Therefore 48,000 requests/s remains an exploration profile, not a
+  firmware-derived default. **[O]**
+- No decoded immediate or loaded 32-bit word equal to `0x007fffff` was found
+  in the available 1.16 SHARC main image/loader data. Decoded immediates equal
+  to `0x7fffffff` do occur, including `0x1c4eb3`, but no path from any such
+  value to SPORT4A/DMA10 has been established. The nearby
+  `DAI1_PIN4/PADS0` setup value `0x000fffff` is a routing/pad configuration
+  value, not the ColdFire RX synchronization marker. RX replay must therefore
+  remain disabled until the runtime SPORT DMA producer or an equivalent
+  firmware-derived buffer is identified. **[D][O]**
+  The reproducible command list, input hashes, store table and open items are
+  recorded under `out/experiments/sharc-ssi-peer/static-001/report.json`.
 - The same checkpoint has no `0x007fffff` row head among the 32 entries in
   any of `0x4fe57100`, `0x4fe57900`, `0x4fe58100`, or `0x4fe58900`; all are
   zero. The generic vector-170 handler at `0x400d2f98` acknowledges CINT50,
@@ -1881,7 +1919,7 @@ times in a loop over keys 0-15 (`0x40044ad6`-`0x40044b50`), and `FUN_40044e28`
 references `0x40042fe2` twice more. It is installed deliberately, alongside a
 dispatcher already known to be live. **[V]**
 
-#### What this means for a new machine, and the one open link **[O]**
+#### The real panel setter reaches the unconditional invalidate **[V]**
 
 `FUN_40051712` is the in-place machine-type setter. It writes the new value to
 `+0xa2` of the track object through the accessor at vtable `+0x28` and, on a
@@ -1897,29 +1935,47 @@ change, constructs a `SoundParamChangedInfo` and calls the notify vfunc at
 400517be  jsr (a0)             ; vfunc(obj, 0)
 ```
 
-The constructed object's address in `d0` is discarded, and the vfunc is passed
-a literal `0`. Everything turns on what that `0` has become by the time the
-dispatcher at `0x40042fe2` runs: **[O]**
+The concrete class and the fate of that literal are now resolved from the
+qualified 1.16 runtime object and real panel replay. In the immutable parent
+checkpoint, setter object `0x44fb9da0` has vtable `0x401f53d4`; slot `+0x10`
+is `0x401aa95c`,
+`ValueWithMirror<Digisharc::sound_struct,...>::vfunc_4`. Its mirror callback
+slot `+0x44` is `0x40051aa4`, `Sound::updateMirror`, and its base
+`Value<...>::vfunc_4` observer record names callback `0x40042fe2`. The literal
+zero remains the callback's third argument. The null test at `0x40042ff8`
+therefore takes `LAB_400431d0` and calls the unconditional per-track
+invalidate `FUN_4002da38` at `0x400431d4`. **[V]**
 
-- if it arrives as the dispatcher's third argument, the null test at
-  `0x40042ff8` sends it straight to the unconditional invalidate at
-  `0x400431d4`, the next frame re-runs `FUN_4002d438`, and a machine change
-  reaches the DSP with no reload;
-- if the notify substitutes the `SoundParamChangedInfo` it just built, the
-  dispatcher takes check 2, which never invalidates, and the DSP keeps being
-  sent the old type until a kit or pattern load swaps the track object.
+The exact qualification is
+`out/experiments/a2-notification-invalidation/qualify-001/report.json`. Two
+clean and two narrow-traced runs restore the same checkpoint, use the same
+64M-instruction real-panel gesture with `--exact --no-unblock`, touch no fault
+pages, and finish with byte-identical panel and snapshot hashes. Each traced
+run records one commit, one setter and the following live sequence:
 
-The vfunc is indirect and its concrete class is unresolved, so reading further
-will not settle it. **[O]**
+```
+0x40051712  setter, object 0x44fb9da0, new type 2
+0x401aa95c  ValueWithMirror notify, info 0
+0x40051aa4  Sound::updateMirror, info 0
+0x40042fe2  registered dispatcher, source 0x426532ec, info 0
+0x4002da38  unconditional invalidate, track 0
+```
 
-The decisive test is cheap and headless: resume
-`out/snapshots/dt2-1.16/boot400M.snap`, watch `0x8000470c + track*4`, hook
-`0x4002da38` and `0x4002d438`, then drive a type change through `FUN_40051712`
-with `emu/harness.py`'s `call(machine, func, args)`. If `0x4002da38` fires, the
-chain closes. That is step 1b of the handover, and because it needs no GUI it
-does not wait on the 1.16 emulator literals.
+The parent snapshot contains `0x426532ec` at cache slot `0x8000470c`; the
+panel run writes source byte `0x4265338e` from 0 to 2 and leaves that slot
+zero. An independent check re-read the instruction bytes from MAIN OS using
+its correct `0x40000400` load base and decoded the parent snapshot page before
+this result was marked verified. **[V]**
 
-Either answer already constrains the design. The DSP row is refreshed only
+The one setter invocation occurs in a burst with eight downstream
+notify/update/dispatch/invalidate hits. That count is observer activity, not
+eight setters or eight panel events. The bounded run still records zero hits
+at `FUN_4002d438` and zero writes to row byte `0x80003cd0`: invalidation is
+now proven, but invalidation alone does not make the queue-draining vector-191
+handler refresh a row. Natural vector-191 delivery remains blocked on the
+external SSI RX synchronization and cadence described below. **[V][O]**
+
+This constrains the design. The DSP row is refreshed only
 wholesale, only from `src + 0xa2`, and only on a cache miss or an invalidate;
 nothing incremental writes it. So type substitution (handover step 3) has
 exactly one place to act: `FUN_4002d438`'s copy, or the byte that copy
