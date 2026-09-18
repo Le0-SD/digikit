@@ -93,6 +93,13 @@ BFLAGS = {
 }
 FILL_BIT = BFLAGS["FILL"]
 SW_ALIAS_BASE = 0x28000000
+# The boot stream's contiguous service/runtime image uses the processor's L2
+# byte window, while direct VISA calls name the same code through this
+# short-word execution window.  Prefer the ordinary SW alias and use this
+# mapping only when that address is absent from the loaded image.
+L2_BYTE_BASE = 0x20000000
+L2_BYTE_LIMIT = 0x20020000
+L2_SW_BASE = 0x00B80000
 
 # block_code bits 24-31, per Table 40-27: which core the block is for.
 HDRSIGN = {0xAD: 0, 0xAC: 1, 0xAB: 2}
@@ -266,7 +273,13 @@ class LoadedMemory:
         """Read from a VISA short-word PC using loader byte addressing."""
         if not isinstance(pc_sw, int) or isinstance(pc_sw, bool) or pc_sw < 0:
             raise ValueError("pc_sw must be a nonnegative integer")
-        return self.read(sw_to_byte(pc_sw), size)
+        primary = self.read(sw_to_byte(pc_sw), size)
+        if primary is not None or pc_sw < L2_SW_BASE:
+            return primary
+        fallback = L2_BYTE_BASE + 2 * (pc_sw - L2_SW_BASE)
+        if fallback < L2_BYTE_BASE or fallback + size > L2_BYTE_LIMIT:
+            return None
+        return self.read(fallback, size)
 
     def source_block(self, address):
         """Return the stream-order index of the final block covering address."""

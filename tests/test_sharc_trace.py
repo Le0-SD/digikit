@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "too
 T = import_module("sharc_trace")
 Instruction = import_module("sharc_disasm").Instruction
 L = import_module("sharcldr")
+encode = import_module("test_sharc_disasm").encode
 
 
 def loader_block(code, address, count, arg=0, payload=b""):
@@ -52,6 +53,58 @@ class TraceTest(unittest.TestCase):
         )
         self.assertEqual(s.uregs[2], T.Const(0x12345678))
 
+    def test_type7a_modify_is_explicitly_unknown_and_type3a_moves_one_word(self):
+        modified = self.run_one(
+            T.State(1, {23: T.Const(0x100), 1: T.Const(4), 2: T.Const(5)}),
+            insn(
+                "7a",
+                {
+                    "g": 0,
+                    "cond[4:0]": 31,
+                    "is[2:2]": 1,
+                    "is[1:0]": 3,
+                    "breg": 1,
+                    "toby": 1,
+                    "idis[2:0]": 0,
+                    "compute[22:16]": 0x28,
+                    "compute[15:0]": 0x8310,
+                },
+                6,
+            ),
+        )
+        self.assertEqual(modified.trace[0]["action"], "i-modify")
+        self.assertEqual(modified.trace[0]["source"], "I7")
+        self.assertIsInstance(modified.uregs[23], T.Unknown)
+        self.assertEqual(modified.uregs[3], T.Const(29))
+
+        memory = loader_memory(loader_block(1, 0x80, 4, payload=b"\0" * 4))
+        moved = self.run_one(
+            T.State(
+                1,
+                {16: T.Const(0x80), 32: T.Const(4), 2: T.Const(0xAABBCCDD)},
+                concrete=memory,
+                assume_nw32=True,
+            ),
+            insn(
+                "3a",
+                {
+                    "u": 1,
+                    "i": 0,
+                    "m": 0,
+                    "cond": 31,
+                    "g": 0,
+                    "d": 1,
+                    "l": 0,
+                    "ureg": 2,
+                    "compute": 0,
+                },
+                6,
+            ),
+        )
+        self.assertTrue(moved.trace[0]["concrete_write"])
+        self.assertEqual(T._dm_read(moved, 0x80, 4), T.Const(0xAABBCCDD))
+        self.assertEqual(moved.uregs[16], T.Const(0x84))
+
     def test_type14a_direct_load_and_store(self):
         fields = {
             "addr[31:16]": 0x310C,
@@ -89,9 +142,7 @@ class TraceTest(unittest.TestCase):
             ("PM", True),
         )
         self.assertEqual(loaded.trace[0]["address"], 0x310C90C0)
-        self.assertEqual(
-            loaded.uregs[16], T.Unknown("memory-address 0x310c90c0")
-        )
+        self.assertEqual(loaded.uregs[16], T.Unknown("memory-address 0x310c90c0"))
 
         long_word = self.run_one(
             T.State(10, {0: T.Const(1), 1: T.Const(2)}),
@@ -115,6 +166,23 @@ class TraceTest(unittest.TestCase):
             "unsupported full compute",
             self.run_one(T.State(1), insn("5a_move", f, 6)).stopped,
         )
+
+    def test_ureg_move_unknown_predicate_forks_copy_and_skip(self):
+        fields = {
+            "cond[4:0]": 1,
+            "srcureghigh[4:0]": 0,
+            "srcureglow[1:1]": 0,
+            "srcureglow[0:0]": 1,
+            "dstureg[6:0]": 2,
+        }
+        executed, skipped = T._execute(
+            T.State(10, {1: T.Const(0x1234), 2: T.Const(7)}),
+            insn("5b_move", fields),
+        )
+        self.assertEqual(executed.uregs[2], T.Const(0x1234))
+        self.assertEqual(skipped.uregs[2], T.Const(7))
+        self.assertEqual(executed.trace[-1]["predicate_assumption"], True)
+        self.assertEqual(skipped.trace[-1]["predicate_assumption"], False)
 
     def test_computes_and_old_value_parallel_move(self):
         short = lambda opcode, rn, rx: {"compute[11:0]": (opcode << 8) | (rn << 4) | rx}
@@ -265,9 +333,7 @@ class TraceTest(unittest.TestCase):
             T.State(10, {4: T.Const(0)}),
             insn("2a", {"cond[4:0]": 0x1F, **full(0x2A, 3, 4)}, 6),
         )
-        self.assertEqual(
-            (concrete.pc_sw, concrete.uregs[3]), (13, T.Const(0xFFFFFFFF))
-        )
+        self.assertEqual((concrete.pc_sw, concrete.uregs[3]), (13, T.Const(0xFFFFFFFF)))
         self.assertEqual(
             concrete.trace[-1],
             {
@@ -667,7 +733,10 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(executed.uregs[17], T.symbol("buffer"))
         self.assertEqual(skipped.uregs[17], T.symbol("buffer"))
         self.assertEqual(
-            (executed.trace[-1]["condition"], executed.trace[-1]["predicate_assumption"]),
+            (
+                executed.trace[-1]["condition"],
+                executed.trace[-1]["predicate_assumption"],
+            ),
             (1, True),
         )
         self.assertEqual(
@@ -696,7 +765,9 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(skipped.trace[-1]["addressing_mode"], "post-modify")
         executed.uregs[4] = T.Const(99)
         executed.uregs[17] = T.Const(0)
-        self.assertEqual((skipped.uregs[4], skipped.uregs[17]), (T.Const(7), T.Const(0x80)))
+        self.assertEqual(
+            (skipped.uregs[4], skipped.uregs[17]), (T.Const(7), T.Const(0x80))
+        )
 
     def test_type3b_dm_postmodify_and_pm_premodify(self):
         store = {
@@ -723,7 +794,34 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(pm.trace[0]["expression"], "pm + 0x4")
         self.assertEqual(pm.uregs[25], T.symbol("pm"))
 
-    def test_type3b_unknown_predicate_second_call_delay_slot_preserves_call_target(self):
+    def test_type4b_immediate_width_and_postmodify(self):
+        memory = loader_memory(
+            loader_block(1, L.SW_ALIAS_BASE + 0x80, 4, payload=b"\x80\x7f\0\0")
+        )
+        fields = {
+            "i[2:0]": 1,
+            "g": 0,
+            "d": 0,
+            "u": 1,
+            "cond[4:0]": 31,
+            "data[5:5]": 0,
+            "data[4:0]": 2,
+            "dreg[3:0]": 3,
+            "l": 0,
+            "x": 1,
+            "w": 0,
+        }
+        state = self.run_one(
+            T.State(1, {17: T.Const(0x80)}, concrete=memory),
+            insn("4b", fields, 4),
+        )
+        self.assertEqual(state.uregs[3], T.Const(0xFFFFFF80))
+        self.assertEqual(state.uregs[17], T.Const(0x82))
+        self.assertEqual(state.trace[0]["access_width"], "byte-sign-extended")
+
+    def test_type3b_unknown_predicate_second_call_delay_slot_preserves_call_target(
+        self,
+    ):
         call = insn("25a_direct", {"addr[23:16]": 0, "addr[15:0]": 99}, 4)
         type3b = insn(
             "3b",
@@ -746,7 +844,7 @@ class TraceTest(unittest.TestCase):
         for result, assumed in ((executed, True), (skipped, False)):
             self.assertEqual(result.stopped, "external-call")
             self.assertEqual(
-                (result.trace[-1]["return_sw"], result.trace[-1]["target_sw"]), (16, 99)
+                (result.trace[-1]["return_sw"], result.trace[-1]["target_sw"]), (17, 99)
             )
             self.assertEqual(result.trace[-2]["predicate_assumption"], assumed)
         self.assertIn(2, executed.uregs)
@@ -761,11 +859,11 @@ class TraceTest(unittest.TestCase):
             "data[15:0]": 0xFFFE,
         }
         self.assertEqual(
-            self.run_one(T.State(1, {25: T.Const(7)}), insn("19a", f, 6)).uregs[26],
+            self.run_one(T.State(1, {25: T.Const(7)}), insn("19a", f, 6)).uregs[27],
             T.Const(5),
         )
         self.assertIsInstance(
-            self.run_one(T.State(1), insn("19a", f, 6)).uregs[26], T.Unknown
+            self.run_one(T.State(1), insn("19a", f, 6)).uregs[27], T.Unknown
         )
 
     def test_delay_slots_variable_width_and_target(self):
@@ -889,13 +987,13 @@ class TraceTest(unittest.TestCase):
         state = self.run_one(
             T.State(1, {17: T.symbol("receive_buffer")}), insn("19a", f, 6)
         )
-        self.assertEqual(T._render(state.uregs[18]), "receive_buffer + 0x94")
-        seeded = T.trace(b"", 0, 0, {"R1": 7}, max_steps=0)[0]
+        self.assertEqual(T._render(state.uregs[19]), "receive_buffer + 0x94")
+        seeded = T.trace(b"", 0, 0, {"R1": 7}, max_steps=1)[0]
         self.assertEqual(seeded.uregs[1], T.Const(7))
-        symbolic = T.trace(b"", 0, 0, {"R1": "@receive_buffer"}, max_steps=0)[0]
+        symbolic = T.trace(b"", 0, 0, {"R1": "@receive_buffer"}, max_steps=1)[0]
         self.assertEqual(symbolic.uregs[1], T.symbol("receive_buffer"))
         with self.assertRaises(ValueError):
-            T.trace(b"", 0, 0, {"R1": "@"}, max_steps=0)
+            T.trace(b"", 0, 0, {"R1": "@"}, max_steps=1)
 
     def test_cli_symbolic_seed(self):
         with tempfile.NamedTemporaryFile("wb", delete=False) as f:
@@ -1040,6 +1138,32 @@ class TraceTest(unittest.TestCase):
                 command + [stream_path, "--blob", "--start", hex(pc), "--json"],
                 capture_output=True,
             )
+            concrete = subprocess.run(
+                command
+                + [
+                    stream_path,
+                    "--blob",
+                    "--start",
+                    hex(pc),
+                    "--concrete-memory",
+                    "--dossier-bytes",
+                    "4",
+                    "--json",
+                ],
+                capture_output=True,
+            )
+            unsafe = subprocess.run(
+                command
+                + [
+                    stream_path,
+                    "--base-sw",
+                    "0",
+                    "--start",
+                    hex(pc),
+                    "--concrete-memory",
+                ],
+                capture_output=True,
+            )
             self.assertNotEqual(missing_base.returncode, 0)
             self.assertIn("--base-sw is required", missing_base.stderr.decode())
             self.assertNotEqual(ambiguous.returncode, 0)
@@ -1047,12 +1171,155 @@ class TraceTest(unittest.TestCase):
             self.assertNotEqual(no_ranges.returncode, 0)
             self.assertIn("no loaded ranges", no_ranges.stderr.decode())
             self.assertEqual(valid.returncode, 0, valid.stderr.decode())
+            self.assertEqual(concrete.returncode, 0, concrete.stderr.decode())
+            self.assertNotEqual(unsafe.returncode, 0)
+            self.assertIn("requires --blob", unsafe.stderr.decode())
             self.assertNotIn("Traceback", valid.stderr.decode())
             self.assertNotIn("raw", valid.stdout.decode())
             json.loads(valid.stdout)
         finally:
             os.unlink(stream_path)
             os.unlink(empty_path)
+
+    def test_concrete_loader_reads_and_forked_write_overlays(self):
+        # Loader memory is keyed at the alias, while application DM code uses
+        # the unaliased address.  Later overlapping loader data still wins.
+        address = L.SW_ALIAS_BASE + 0x100
+        memory = loader_memory(
+            loader_block(1, address, 4, payload=b"\x11\x22\x33\x44"),
+            loader_block(1, address + 2, 2, payload=b"\xaa\xbb"),
+        )
+        self.assertIsNone(T._dm_read(T.State(1, concrete=memory), 0x100, 4))
+        self.assertEqual(
+            T._dm_read(T.State(1, concrete=memory), 0x100, 1), T.Const(0x11)
+        )
+        state = T.State(1, {0: T.Const(0x100)}, concrete=memory, assume_nw32=True)
+        load = insn(
+            "14a",
+            {
+                "l": 0,
+                "addr[31:16]": 0,
+                "addr[15:0]": 0x100,
+                "ureg[6:0]": 1,
+                "g": 0,
+                "d": 0,
+            },
+            6,
+        )
+        loaded = self.run_one(state, load)
+        self.assertEqual(loaded.uregs[1], T.Const(0xBBAA2211))
+        left, right = T._copy(loaded), T._copy(loaded)
+        self.assertTrue(T._dm_write(left, 0x100, 4, T.Const(0x01020304)))
+        self.assertEqual(T._dm_read(left, 0x100, 4), T.Const(0x01020304))
+        self.assertEqual(T._dm_read(right, 0x100, 4), T.Const(0xBBAA2211))
+        self.assertTrue(T._dm_write(left, 0x200, 4, T.Const(0x55667788)))
+        self.assertEqual(T._dm_read(left, 0x200, 4), T.Const(0x55667788))
+        self.assertTrue(T._dm_write(left, 0x310CA300, 4, T.Const(0x11223344)))
+        self.assertEqual(T._dm_read(left, 0x310CA300, 4), T.Const(0x11223344))
+
+    def test_trace_real_return_idiom_and_external_dossier_modes(self):
+        # The return is real decoder-backed firmware syntax: Type9b_abs raw
+        # 0x083f343f, a normal delay slot, then Type25c_rframe raw 0x1901.
+        start, target = 0x100, 0x110
+        call = encode("25a_direct", target)
+        # Two 16-bit slots end at start+5, while delayed CALL must return to
+        # the architectural start+7 rather than to the byte after slot two.
+        slot = bytes.fromhex("f29f")
+        return_branch = struct.pack("<HH", 0x083F, 0x343F)
+        rframe = struct.pack("<H", 0x1901)
+        payload = bytearray((target - start + 5) * 2)
+        payload[: len(call)] = call
+        payload[len(call) : len(call) + len(slot)] = slot
+        payload[len(call) + len(slot) : len(call) + 2 * len(slot)] = slot
+        offset = (target - start) * 2
+        payload[offset : offset + 4] = return_branch
+        payload[offset + 4 : offset + 4 + len(slot)] = slot
+        payload[offset + 4 + len(slot) : offset + 4 + len(slot) + 2] = rframe
+        memory = loader_memory(
+            loader_block(1, L.sw_to_byte(start), len(payload), payload=bytes(payload)),
+            loader_block(1, L.SW_ALIAS_BASE + 0x300, 4, payload=b"\0" * 4),
+        )
+        self.assertEqual(T.decode_at(memory, None, target).type_name, "9b_abs")
+        self.assertEqual(T.decode_at(memory, None, target + 3).type_name, "25c_rframe")
+        returned = T.trace(
+            memory,
+            None,
+            start,
+            max_steps=6,
+            concrete_memory=True,
+            follow_loaded_calls=True,
+        )[0]
+        actions = [event["action"] for event in returned.trace]
+        self.assertIn("loaded-call-enter", actions)
+        self.assertIn("return-branch", actions)
+        self.assertIn("loaded-call-return", actions)
+        self.assertEqual(returned.pc_sw, start + 7)
+
+        stopped = T.trace(
+            memory,
+            None,
+            start,
+            {"I0": 0x300},
+            max_steps=10,
+            concrete_memory=True,
+            dossier_bytes=4,
+        )[0]
+        continued = T.trace(
+            memory,
+            None,
+            start,
+            {"I0": 0x300},
+            max_steps=10,
+            concrete_memory=True,
+            continue_external_calls=True,
+            dossier_bytes=4,
+        )[0]
+        self.assertEqual(stopped.stopped, "external-call")
+        self.assertEqual(stopped.trace[-1]["objects"][0]["bytes"], [0, 0, 0, 0])
+        self.assertIn(
+            "opaque-external-call", [event["action"] for event in continued.trace]
+        )
+        self.assertIsInstance(continued.uregs[0], T.Unknown)
+
+    def test_followed_call_can_explicitly_skip_only_a_provisional_entry(self):
+        provisional = insn("19p_undoc48", {}, length=6, kind="uncertain")
+        state = T.State(
+            0x10,
+            {0: T.Const(7), 16: T.Const(0x100), 32: T.Const(4)},
+            skip_provisional_entries=True,
+            at_loaded_entry=True,
+        )
+        advanced = self.run_one(state, provisional)
+        self.assertEqual(advanced.pc_sw, 0x13)
+        self.assertEqual(advanced.uregs[0], T.Const(7))
+        self.assertIsInstance(advanced.uregs[16], T.Unknown)
+        self.assertIsInstance(advanced.uregs[32], T.Unknown)
+        self.assertEqual(advanced.trace[-1]["action"], "provisional-entry-skip")
+        self.assertTrue(advanced.trace[-1]["evidence_limited"])
+
+        ordinary = T.State(0x10, skip_provisional_entries=True)
+        self.assertIn(
+            "uncertain or undecodable", self.run_one(ordinary, provisional).stopped
+        )
+
+    def test_trace_can_skip_provisional_initial_function_entry(self):
+        start = 0x10
+        payload = bytes.fromhex("8715fffffeff")
+        memory = loader_memory(
+            loader_block(1, L.sw_to_byte(start), len(payload), payload=payload)
+        )
+        state = T.trace(
+            memory,
+            None,
+            start,
+            max_steps=1,
+            concrete_memory=True,
+            follow_loaded_calls=True,
+            skip_provisional_entries=True,
+        )[0]
+        self.assertIn(
+            "provisional-entry-skip", [event["action"] for event in state.trace]
+        )
 
     def test_event_values_are_json_safe(self):
         type3c = {"dmi[2:0]": 0, "dmm[2:0]": 0, "d": 1, "dreg[3:0]": 3}
@@ -1067,6 +1334,8 @@ class TraceTest(unittest.TestCase):
     def test_bounds_and_json_has_no_raw_bytes(self):
         data = b"\x00\x00"
         self.assertEqual(T.trace(data, 0, 0, max_steps=0)[0].stopped, "max-steps")
+        with self.assertRaisesRegex(ValueError, "max_states must be between"):
+            T.trace(data, 0, 0, max_states=0)
         branch = insn(
             "8a_abs", {"b": 0, "cond[4:0]": 1, "addr[23:16]": 0, "addr[15:0]": 20}, 6
         )
