@@ -4706,3 +4706,79 @@ The remaining ~130,000 uncovered bytes are mostly gaps whose first bytes are
 alignment or tail data rather than the entry, plus a repeated non-standard
 prologue idiom (`8f2f 0a2f 0224` after a varying first word) that the three
 patterns above do not match. **[O]**
+
+## A panel-path track trigger joins machine invalidation to the refresh queue **[V]**
+
+The missing operation in the successful behavioral join after machine
+selection was a track-0 trigger, not a synthetic SSI receive record. In an
+exact 1.16 run with
+`--no-unblock` and no `--weakptr`, the accepted panel-wire replay changed
+track 0's machine type from 0 to 2 and invalidated its refresh cache. A
+subsequent host-replayed `TRIG 1` wire event (`2301`, release `2300`) produced
+this chain through the firmware's normal panel-input path: **[V]**
+
+```
+panel machine commit 0x40036798
+  -> setter 0x40051712 (source +0xa2: 0 -> 2)
+  -> notification / cache invalidation
+  -> panel TRIG 1
+  -> FUN_40139878 record construction
+  -> FUN_4013a78a queue append
+  -> guest vector 191 at 0x4002dd0c
+  -> FUN_4002d438(0x426532ec, 0)
+  -> track-0 row 0x80003cd0 byte 0 = 2
+  -> TX frame 0x80005348 + 0x94 = 0x0002
+```
+
+The appended 0x6c-byte child had observed values type 0, state 1, track 0,
+word `+0x14 = 2`, and flags `0x00010781`. Its append hook reported return
+address `0x4012009a`: `FUN_4011fe12` calls `FUN_40139878` at `0x40120094`, and
+on the observed path `FUN_40139878` restores its frame before tail-jumping to
+`FUN_4013a78a` at `0x40139aa0`, preserving the outer return address. Raw 1.16
+bytes were checked at `0x40120094`, `0x40139aa0`, `0x4013a78a`, `0x4002dd0c`,
+and `0x4002d438` against MAIN OS SHA-256
+`57bb4dfa8df07d846adc72fdb4fb0d3cd3c5680c524bf498338460207e008e7d`.
+**[V]**
+
+The controls separate the causal pieces: **[V]**
+
+- `TRIG 1` without a machine change appended and consumed the same track-0
+  record, but the cached source already matched; there was no refresh, row
+  write, or TX type change.
+- Machine change followed by `PLAY` scheduled records only for the current
+  pattern's tracks 3, 12, 13 and 15. Track 0 stayed invalidated and neither its
+  row nor TX type changed.
+- Machine change followed by `TRIG 1` made one refresh call, copied the row,
+  and changed the repeatedly emitted TX word from `0x0000` to `0x0002`.
+
+The reproducible artifact is
+`out/experiments/a2-queue-trigger/report.json`; hashes are in
+`out/experiments/a2-queue-trigger/checksums.txt`. The decisive run ended at
+96,145,920 instructions with 81 vector-191 entries, two queue appends, one
+refresh, zero fault pages, row prefix `02000200`, and TX word `0002`.
+
+This is still a **calibration**, not final hardware qualification: its parent
+snapshot acquired normal vector-170 handover from host-poked markers and the
+SSI0 request rate is the exploratory 1,000 Hz value. Thus it proves the
+ColdFire behavioral join under exact execution, while natural marker
+production and firmware-backed cadence remain open. **[O]**
+
+## The apparent stream-activation lead is USB, not the SSI/DSP peer **[C][V]**
+
+The earlier interpretation of `FUN_40005ff6`, vector 134 and logical channels
+3/7 as a possible missing DSP-peer stream was wrong. `FUN_40005ff6` is a USB
+Chapter 9 setup-request dispatcher: `0x80060000` is setup bytes `80 06`
+(`GET_DESCRIPTOR`), while `0x010b0000` is `01 0b` (`SET_INTERFACE`). The code
+returns device/string descriptors and configures endpoint queues under the
+MCF5441x USBOTG register block at `0xfc0b0000`; SSI0 is separately based at
+`0xfc0bc000`. Vector 134 consumes the USB setup packet and dispatches endpoint
+completion work. **[V]**
+
+Consequently `_DAT_40965a60 == 6`, the `SET_INTERFACE` alternate-setting
+branch, and the USB endpoint queues do not explain the observed A2 refresh.
+The trigger trace instead reaches `FUN_4002d438` through vector 191 after
+local record construction in `FUN_40139878`; no evidence here connects the
+USB control dispatcher or its endpoint configuration to that refresh.
+`FUN_40003376` remains unclassified by this correction. USB endpoint transfer
+type also remains unlabelled until its endpoint descriptor attributes are
+decoded. **[C]**
