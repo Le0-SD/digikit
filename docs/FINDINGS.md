@@ -1293,14 +1293,35 @@ Ghidra or disassembly output and it was not re-checked.
   is the firmware-configured SHARC-side candidate for ColdFire SSI0, but the
   DAI mux alone does not prove board wiring or runtime signal activity.
   **[V][O]**
-- The loader's immutable SPORT instance table pairs SPORT4A control base
-  `0x31002400` with DMA10 base `0x31023000`, and SPORT4B base
-  `0x31002480` with DMA11 base `0x31023080`. The public MMR table identifies
-  those DMA bases as SPORT4 half A/B. This establishes the peripheral/DMA
-  association, not the runtime descriptor contents or application buffer
-  addresses. No direct immediate store to SPORT4, DMA10/11, or PCG C control
-  registers was found in the main SHARC code; those remain behind the driver
-  path. **[D][O]**
+- The loader's immutable SPORT instance table is 16 records of `0x28` bytes at
+  DM `0x26954c..0x2697cb` (loader aliases
+  `0x2826954c..0x282697cb`). Its record IDs are `0..7, 0x0a..0x11`.
+  Record `0x0a` at `0x26968c` pairs SPORT4A control base `0x31002400`
+  with DMA10 base `0x31023000`; record `0x0b` at `0x2696b4` pairs
+  SPORT4B base `0x31002480` with DMA11 base `0x31023080`. The public MMR
+  table identifies those DMA bases as SPORT4 half A/B. Function
+  `0x1ca58a` brackets the array with `0x269548` at `0x1ca5a1` and
+  `0x2697c8` at `0x1ca66f`, then adds the latter base to `I4` at
+  `0x1ca698` before the record-field loads. A second agent independently
+  checked the initializer and instruction bytes. **[V]**
+- The documented `SHIFTOP=0xc8` operation at `0x1ca69d` is `btgl`, and the
+  concrete tracer now models it. With the explicit
+  `--assume-32bit-normal-words` interpretation, Type-4a and non-LW Type-15b
+  immediate modifiers use four-byte displacements. A calibration seed
+  `I4=-0x13c` (`0x26968c-0x2697c8`) makes the consumer read SPORT4A fields
+  `0x269694..0x2696b0`, including `0x31002400` and `0x31023000`; the
+  independent SPORT4B control seed `I4=-0x114` reads the analogous
+  `0x31002480` and `0x31023080` fields. A second agent checked the public
+  `btgl` definition, opt-in address interpretation, and trace values.
+  **[V][O]** These are calibrated consumer slices, not runtime provenance:
+  the firmware path supplying SPORT4A's relative `I4` value is still open,
+  and neither trace establishes execution, direction, descriptor state,
+  application-buffer ownership, or signal activity. Both stop at the
+  undocumented Type-23 prefix at `0x1ca6e9`. Reproducible evidence is in
+  `out/experiments/sharc-ssi-peer/instance-array-003/report.json`.
+- No direct immediate store to SPORT4 or DMA10/11 was found in the main SHARC
+  code. The immutable association and calibrated consumer therefore do not
+  yet recover the runtime DMA descriptor or application buffer. **[O]**
 - **The PCG C part of that main-code negative is now superseded by the loaded
   L2 service image.** At loader byte alias `0x282d7158`, the final 16 bytes are
   `98 b1 b8 00 45 b4 b8 00 06 b7 b8 00 b3 b9 b8 00`, four little-endian

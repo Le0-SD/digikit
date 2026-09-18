@@ -531,6 +531,22 @@ def _compute(
             else Unknown("leftz R%d" % rx)
         )
         return rn, value, "leftz"
+    # PRM Table 17-9 and p. 23-5: SHIFTOP 11001000 is
+    # RN = btgl RX by RY.  Positions outside the 32-bit field leave RX
+    # unchanged.
+    if cu == 2 and opcode == 0xC8:
+        if not isinstance(right, Const):
+            value = Unknown("btgl R%d by R%d" % (rx, ry))
+        elif right.value > 31:
+            value = left
+        else:
+            value = _bitwise(
+                left,
+                Const(1 << right.value),
+                "btgl R%d by R%d" % (rx, ry),
+                lambda a, b: a ^ b,
+            )
+        return rn, value, "bit-toggle"
     # PRM Table 18-9 and pp. 24-5--24-6: SHIFTOP 11001100 is
     # btst RX by RY. It changes status flags only and has no RN result.
     if cu == 2 and opcode == 0xCC:
@@ -1009,6 +1025,11 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             return [_stop(state, insn, str(error))]
         index = _field(f, "i") + (8 if _field(f, "g") else 0)
         offset = _signed((_field(f, "data[5:5]") << 5) | _field(f, "data[4:0]"), 6)
+        # The immediate modifier is in normal-word address units.  Only turn
+        # it into a byte displacement when the caller has explicitly fixed
+        # internal normal words at 32 bits.
+        if state.assume_nw32:
+            offset *= 4
         iv = _ureg(old, 16 + index)
         space = "PM" if _field(f, "g") else "DM"
         if _field(f, "u"):
@@ -1319,6 +1340,11 @@ def _execute(state: State, insn: Instruction) -> List[State]:
     if name == "15b":
         index = _field(f, "i") + (8 if _field(f, "g") else 0)
         offset = _signed(_field(f, "data[6:0]"), 7)
+        # Type 15b's immediate modifier follows the selected memory width.
+        # The opt-in 32-bit normal-word interpretation therefore makes an
+        # unqualified (non-LW) displacement four bytes wide.
+        if state.assume_nw32 and not _field(f, "l"):
+            offset *= 4
         iv = state.uregs.get(16 + index, Unknown("uninitialized I%d" % index))
         address = _add(iv, Const(offset), "I%d + %d" % (index, offset))
         code = _field(f, "ureg")

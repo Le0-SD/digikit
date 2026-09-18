@@ -283,6 +283,30 @@ class TraceTest(unittest.TestCase):
             ("bit-test", True),
         )
 
+        s = self.run_one(
+            T.State(1, {1: T.Const(0x10), 2: T.Const(4)}),
+            insn(
+                "5a_move",
+                {
+                    "srcureghigh[4:0]": 0,
+                    "srcureglow[1:1]": 0,
+                    "srcureglow[0:0]": 0,
+                    "dstureg[6:0]": 3,
+                    "cond[4:0]": 31,
+                    **full(2, 0xC8, 0, 1, 2),
+                },
+                6,
+            ),
+        )
+        self.assertEqual(s.uregs[0], T.Const(0))
+        self.assertEqual(s.trace[0]["operation"], "bit-toggle")
+
+        s = self.run_one(
+            T.State(1, {1: T.Const(0x10), 2: T.Const(32)}),
+            insn("2a", {"cond[4:0]": 31, **full(2, 0xC8, 0, 1, 2)}, 6),
+        )
+        self.assertEqual(s.uregs[0], T.Const(0x10))
+
     def test_compute_unknown_and_unsupported_do_not_mutate(self):
         s = self.run_one(T.State(1), insn("2c", {"compute[11:0]": 0x251}, 2))
         self.assertIsInstance(s.uregs[5], T.Unknown)
@@ -604,6 +628,35 @@ class TraceTest(unittest.TestCase):
         s = self.run_one(T.State(1, {2: T.Const(5)}), insn("15b", f))
         self.assertEqual(s.trace[0]["action"], "store")
         self.assertEqual(s.trace[0]["expression"], "I1 + -1")
+
+    def test_normal_word_immediate_offsets_scale_only_when_opted_in(self):
+        type4 = {
+            "i[2:0]": 1,
+            "g": 0,
+            "d": 0,
+            "cond[4:0]": 31,
+            "data[5:5]": 0,
+            "data[4:0]": 3,
+            "dreg[3:0]": 2,
+            "compute[22:16]": 0,
+            "compute[15:0]": 0,
+            "u": 0,
+        }
+        state = T.State(1, {17: T.Const(0x100)}, assume_nw32=True)
+        s = self.run_one(state, insn("4a", type4, 6))
+        self.assertEqual(s.trace[0]["address"], 0x10C)
+
+        type15 = {
+            "i[2:0]": 1,
+            "g": 0,
+            "d": 0,
+            "l": 0,
+            "ureg[6:0]": 2,
+            "data[6:0]": 3,
+        }
+        state = T.State(1, {17: T.Const(0x100)}, assume_nw32=True)
+        s = self.run_one(state, insn("15b", type15))
+        self.assertEqual(s.trace[0]["address"], 0x10C)
 
     def test_type3b_dm_premodify_load_and_pm_postmodify_store(self):
         load = {
