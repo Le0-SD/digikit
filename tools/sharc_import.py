@@ -7,22 +7,29 @@
 The blob is an ADI boot stream: tools/sharcldr.py parses it into blocks that
 each name a target address and carry (or zero-fill) that many bytes. Those
 targets are the only ground truth about where anything lives, so this builds
-one Ghidra memory block per loaded ADI block rather than dumping the file flat.
+merged Ghidra memory spans and replays the ADI blocks in stream order rather
+than dumping the file flat.
 
 ADDRESSING. The core executes at 16-bit short-word addresses (0x1cxxxx,
-0x12xxxx) while the loader writes byte addresses (0x28xxxxxx, 0x80xxxxxx),
-related by byte = 2 * sw + 0x28000000. The language, SHARC_VISA:LE:32:default
-(tools/ghidra/install-sharc.sh), has a code space with wordsize 2: an address
-offset counts bytes, Ghidra shows it as a short-word address, and a decoded
-branch target is a short-word address. So the program's byte offsets are
+0x12xxxx) while the loader normally writes byte addresses (0x28xxxxxx,
+0x80xxxxxx), related by byte = 2 * sw + 0x28000000. The loader's L2 byte
+window is a second, bounded mapping: 0x20000000 through 0x2001ffff maps to
+execution SW 0x00b80000 through 0x00b8ffff. The language,
+SHARC_VISA:LE:32:default (tools/ghidra/install-sharc.sh), has a code space
+with wordsize 2: an address offset counts bytes, Ghidra shows it as a
+short-word address, and a decoded branch target is a short-word address. So
+the normal program byte offsets are
 
     ghidra_offset = 2 * short_word_address = byte_address - 0x28000000
+
+and an L2 byte offset is 2 * 0x00b80000 + byte_address - 0x20000000.
 
 A pointer STORED in the image holds the short-word value, so use
 --label-table to lay one out as function pointers; it doubles each entry.
 
-FILL blocks reserve address space without supplying bytes (one of them clears
-32 MB of DDR), so they become uninitialized blocks and contribute no data.
+Bounded FILL blocks are materialized with their repeated little-endian argument
+so later fills preserve loader last-write-wins semantics. Absurdly large fills
+(including a 32 MB DDR clear) are deliberately omitted from the analysis map.
 """
 import argparse
 import os
@@ -41,11 +48,44 @@ DEFAULT_PROJECT = os.path.expanduser('~/ghidra-projects/elektron-sharc')
 DEFAULT_PROJECT_NAME = 'elektron-sharc'
 DEFAULT_GHIDRA = '/opt/homebrew/Cellar/ghidra/12.1.3/libexec'
 MAX_UNINIT = 0x400000            # skip absurd fill blocks (a 32 MB DDR clear)
+REPLAY_CHUNK = 0x10000
 
 
 def ghidra_addr(byte_address):
-    """Loader byte address -> address in the imported program."""
+    """Loader byte address -> Ghidra byte offset at its execution address.
+
+    The L2 translation deliberately applies only to its measured byte window;
+    all other loader addresses retain the established L1 translation.
+    """
+    if L.L2_BYTE_BASE <= byte_address < L.L2_BYTE_LIMIT:
+        return 2 * L.L2_SW_BASE + byte_address - L.L2_BYTE_BASE
     return byte_address - SPACE_BASE
+
+
+def mapped_segments(byte_address, byte_count):
+    """Split a loader range where the bounded L2 address mapping changes.
+
+    Yields ``(source_offset, ghidra_offset, length)`` tuples.
+    """
+    end = byte_address + byte_count
+    cuts = [byte_address, end]
+    for boundary in (L.L2_BYTE_BASE, L.L2_BYTE_LIMIT):
+        if byte_address < boundary < end:
+            cuts.append(boundary)
+    cuts.sort()
+    for start, stop in zip(cuts, cuts[1:]):
+        yield start - byte_address, ghidra_addr(start), stop - start
+
+
+def loaded_bytes(data, block, offset, length):
+    """Return one final-loader byte slice for a payload or little-endian fill."""
+    if block['fill']:
+        word = int(block['argument']).to_bytes(4, 'little')
+        phase = offset % len(word)
+        repeated = word * ((phase + length + len(word) - 1) // len(word))
+        return repeated[phase:phase + length]
+    start = block['payload_offset'] + offset
+    return data[start:start + length]
 
 
 def plan(data):
@@ -136,7 +176,10 @@ def main(argv):
                 if b['fill'] and b['byte_count'] > MAX_UNINIT:
                     skipped += 1
                     continue
-                spans.append((ghidra_addr(b['target_address']), b['byte_count']))
+                spans.extend(
+                    (mapped, length)
+                    for _, mapped, length in mapped_segments(
+                        b['target_address'], b['byte_count']))
 
             merged = []
             for start, length in sorted(spans):
@@ -155,17 +198,22 @@ def main(argv):
 
             written = 0
             for b in blocks:
-                if b['byte_count'] == 0 or b['fill']:
+                if b['byte_count'] == 0:
                     continue
-                payload = data[b['payload_offset']:
-                               b['payload_offset'] + b['payload_len']]
-                if not payload:
+                if b['fill'] and b['byte_count'] > MAX_UNINIT:
                     continue
-                mem.setBytes(space.getAddress(ghidra_addr(b['target_address'])),
-                             JArray(JByte)(list(
-                                 x - 256 if x > 127 else x for x in payload)))
+                for source, mapped, length in mapped_segments(
+                        b['target_address'], b['byte_count']):
+                    for local in range(0, length, REPLAY_CHUNK):
+                        chunk = loaded_bytes(
+                            data, b, source + local,
+                            min(REPLAY_CHUNK, length - local))
+                        mem.setBytes(
+                            space.getAddress(mapped + local),
+                            JArray(JByte)(list(
+                                x - 256 if x > 127 else x for x in chunk)))
                 written += 1
-            print('replayed %d payload block(s)' % written)
+            print('replayed %d payload/fill block(s)' % written)
 
             symtab = program.getSymbolTable()
             seeds = []
@@ -214,6 +262,13 @@ def main(argv):
             from ghidra.app.cmd.disassemble import DisassembleCommand
             from ghidra.app.cmd.function import CreateFunctionCmd
             for addr in seeds:
+                # A known entry can land inside a speculative flow-decoded
+                # instruction. Prefer the immutable entry table over that
+                # overlap so the handler can be decoded from its true start.
+                prior = program.getListing().getInstructionContaining(addr)
+                if prior is not None and prior.getAddress() != addr:
+                    program.getListing().clearCodeUnits(
+                        prior.getMinAddress(), prior.getMaxAddress(), False)
                 DisassembleCommand(addr, None, True).applyTo(program, TaskMonitor.DUMMY)
                 CreateFunctionCmd(addr).applyTo(program, TaskMonitor.DUMMY)
             print('seeded disassembly at %d address(es)' % len(seeds))

@@ -868,7 +868,9 @@ class TraceTest(unittest.TestCase):
 
     def test_delay_slots_variable_width_and_target(self):
         branch = insn(
-            "8a_abs", {"b": 0, "cond[4:0]": 31, "addr[23:16]": 0, "addr[15:0]": 99}, 6
+            "8a_abs",
+            {"b": 0, "j": 1, "cond[4:0]": 31, "addr[23:16]": 0, "addr[15:0]": 99},
+            6,
         )
         s = self.run_one(T.State(10), branch)
         s = self.run_one(s, insn("17b", {"ureg[6:0]": 0, "data[15:0]": 1}, 4))
@@ -880,7 +882,9 @@ class TraceTest(unittest.TestCase):
 
     def test_conditional_forks_have_independent_two_slot_delays(self):
         branch = insn(
-            "8a_abs", {"b": 0, "cond[4:0]": 1, "addr[23:16]": 0, "addr[15:0]": 30}, 6
+            "8a_abs",
+            {"b": 0, "j": 1, "cond[4:0]": 1, "addr[23:16]": 0, "addr[15:0]": 30},
+            6,
         )
         taken, not_taken = T._execute(T.State(10), branch)
         self.assertEqual(taken.trace[-1]["action"], "branch")
@@ -910,6 +914,51 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(not_taken.pc_sw, 18)
         self.assertEqual([e["pc_sw"] for e in taken.trace], [10, 13, 15])
         self.assertEqual([e["pc_sw"] for e in not_taken.trace], [10, 13, 15])
+
+    def test_type8_without_db_transfers_immediately(self):
+        branch = insn(
+            "8a_abs",
+            {"b": 0, "j": 0, "cond[4:0]": 31, "addr[23:16]": 0, "addr[15:0]": 30},
+            6,
+        )
+        state = self.run_one(T.State(10), branch)
+        self.assertEqual(state.pc_sw, 30)
+        self.assertIsNone(state.pending)
+        self.assertEqual(state.steps, 1)
+
+        conditional = insn(
+            "8a_abs",
+            {"b": 0, "j": 0, "cond[4:0]": 1, "addr[23:16]": 0, "addr[15:0]": 30},
+            6,
+        )
+        taken, not_taken = T._execute(T.State(10), conditional)
+        self.assertEqual(taken.pc_sw, 30)
+        self.assertEqual(not_taken.pc_sw, 13)
+        self.assertEqual(not_taken.trace[-1]["action"], "branch-not-taken")
+
+    def test_type8_call_without_db_uses_immediate_return_address(self):
+        call = insn(
+            "8a_abs",
+            {"b": 1, "j": 0, "cond[4:0]": 31, "addr[23:16]": 0, "addr[15:0]": 99},
+            6,
+        )
+        taken = self.run_one(T.State(10), call)
+        self.assertEqual(taken.stopped, "external-call")
+        self.assertEqual(
+            (taken.trace[-1]["target_sw"], taken.trace[-1]["return_sw"]), (99, 13)
+        )
+
+        conditional = insn(
+            "8a_abs",
+            {"b": 1, "j": 0, "cond[4:0]": 1, "addr[23:16]": 0, "addr[15:0]": 99},
+            6,
+        )
+        taken, not_taken = T._execute(T.State(10), conditional)
+        self.assertEqual(taken.stopped, "external-call")
+        self.assertEqual(taken.trace[-1]["return_sw"], 13)
+        self.assertEqual(not_taken.pc_sw, 13)
+        self.assertIsNone(not_taken.stopped)
+        self.assertEqual(not_taken.trace[-1]["action"], "branch-not-taken")
 
     def test_delayed_call_returns_after_variable_width_slots(self):
         call = insn("25a_direct", {"addr[23:16]": 0, "addr[15:0]": 99}, 4)
@@ -1337,7 +1386,9 @@ class TraceTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "max_states must be between"):
             T.trace(data, 0, 0, max_states=0)
         branch = insn(
-            "8a_abs", {"b": 0, "cond[4:0]": 1, "addr[23:16]": 0, "addr[15:0]": 20}, 6
+            "8a_abs",
+            {"b": 0, "j": 0, "cond[4:0]": 1, "addr[23:16]": 0, "addr[15:0]": 20},
+            6,
         )
         with patch("sharc_trace.decode_at", return_value=branch):
             self.assertIn(

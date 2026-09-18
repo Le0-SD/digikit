@@ -1301,6 +1301,29 @@ Ghidra or disassembly output and it was not re-checked.
   addresses. No direct immediate store to SPORT4, DMA10/11, or PCG C control
   registers was found in the main SHARC code; those remain behind the driver
   path. **[D][O]**
+- **The PCG C part of that main-code negative is now superseded by the loaded
+  L2 service image.** At loader byte alias `0x282d7158`, the final 16 bytes are
+  `98 b1 b8 00 45 b4 b8 00 06 b7 b8 00 b3 b9 b8 00`, four little-endian
+  VISA SW pointers `0xb8b198`, `0xb8b445`, `0xb8b706`, and `0xb8b9b3`.
+  The third routine family, rooted at `0xb8b706`, contains aligned Type-14a
+  accesses to PCG C's `CTLC0` (`0x310ca300`), `CTLC1` (`0x310ca304`), shared
+  C/D pulse-width register `PW2` (`0x310ca310`), and `SYNC2` (`0x310ca314`).
+  Byte-checked stores include `0xb8b75a` to CTLC1, `0xb8b7bc` to CTLC0,
+  `0xb8b801` to PW2, and `0xb8b71d` to SYNC2; the public hardware reference
+  supplies those register names. A second agent independently replayed the
+  loader, checked the table and instruction bytes, and cross-checked the
+  public register table. **[C][V]** This establishes the driver code and its
+  possible writes, not that a particular path ran or what values it wrote.
+  The bounded concrete trace reaches a CTLC0 load and then stops at the
+  provisional `Type23p_undoc16`, so source selection, divisors, clock input,
+  and cadence remain open. **[O]** Reproducible evidence is in
+  `out/experiments/sharc-l2/l2-001/report.json`.
+- The public Type-8 encoding table makes field `j=0` a non-delayed branch and
+  `j=1` the `(DB)` form; Type-25 `cjump` is explicitly delayed. The concrete
+  tracer previously treated every Type-8 transfer as delayed, which produced
+  false `nested delayed transfer` stops at the PCG entry. It now applies delay
+  slots only when `j=1`; with that correction, the PCG trace reaches the
+  register access above before the provisional instruction boundary. **[C][V]**
 - The DAI result does not yet supply a numeric request cadence. PCG C's
   `CTLC0/CTLC1` divisors and source-select bits have not been recovered, and
   the frequency presented at the possible external source on DAI0 pin 3 is
@@ -1314,6 +1337,9 @@ Ghidra or disassembly output and it was not re-checked.
   value, not the ColdFire RX synchronization marker. RX replay must therefore
   remain disabled until the runtime SPORT DMA producer or an equivalent
   firmware-derived buffer is identified. **[D][O]**
+  The L2-aware decode adds another `0x7fffffff` immediate at SW `0xb88d06`
+  (function entry `0xb88cee`), but it is still not the `0x007fffff` marker and
+  has no established path to SPORT4A/DMA10. **[D][O]**
   The reproducible command list, input hashes, store table and open items are
   recorded under `out/experiments/sharc-ssi-peer/static-001/report.json`.
 - The same checkpoint has no `0x007fffff` row head among the 32 entries in

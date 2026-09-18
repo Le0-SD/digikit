@@ -678,6 +678,27 @@ def _transfer(
     return [taken, not_taken]
 
 
+def _immediate_transfer(
+    state: State, insn: Instruction, target: int, call: bool, cond: Optional[bool]
+) -> List[State]:
+    """Execute a Type 8 transfer without the instruction's DB modifier."""
+    if state.pending:
+        return [_stop(state, insn, "nested delayed transfer")]
+    if insn.length_bytes is None:
+        raise ValueError("cannot transfer from an instruction without a decoded length")
+    fall = state.pc_sw + insn.length_bytes // 2
+    _event(state, insn, "call" if call else "branch", target_sw=target, predicate=cond)
+    if cond is False:
+        return _advance(state, insn)
+    if cond is True:
+        state.pending = Pending(target, call, slots=1, return_sw=fall if call else None)
+        return _advance(state, insn)
+    taken, not_taken = _copy(state), _copy(state)
+    taken.pending = Pending(target, call, slots=1, return_sw=fall if call else None)
+    not_taken.trace[-1]["action"] = "branch-not-taken"
+    return _advance(taken, insn) + _advance(not_taken, insn)
+
+
 def _execute(state: State, insn: Instruction) -> List[State]:
     if insn.kind != "confident" or insn.length_bytes is None:
         if (
@@ -1355,7 +1376,9 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         )
         call = name.startswith("25a") or bool(_field(f, "b"))
         cond = True if name.startswith("25a") else _predicate(_field(f, "cond"))
-        return _transfer(state, insn, target, call, cond)
+        delayed = name.startswith("25a") or bool(_field(f, "j"))
+        transfer = _transfer if delayed else _immediate_transfer
+        return transfer(state, insn, target, call, cond)
     return [_stop(state, insn, "unsupported form " + str(name))]
 
 
