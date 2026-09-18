@@ -4782,3 +4782,45 @@ USB control dispatcher or its endpoint configuration to that refresh.
 `FUN_40003376` remains unclassified by this correction. USB endpoint transfer
 type also remains unlabelled until its endpoint descriptor attributes are
 decoded. **[C]**
+
+## Final static marker and cadence gates are blocked **[V][O]**
+
+Two bounded, independently reviewed gates closed the remaining static A2
+avenues without relaxing the evidence rules. Neither passed, so a natural SSI
+peer model and final qualification must not be implemented from the current
+evidence. **[V]**
+
+The DMA10 marker gate found only immutable SPORT record `0x0a` at DM
+`0x26968c` (loader alias `0x2826968c`), containing SPORT4A `0x31002400` and
+DMA10 `0x31023000`. The supported calibrated consumer slice loads these words
+at `0x1ca6c1` and `0x1ca6c3` and copies them into an object whose address and
+ownership remain unknown. It then stops at aligned provisional words
+`0x1ca6e9: 3e02` (`Type23p_undoc16`) and `0x1ca6ea: 3100`
+(`Type21p_undoc16`). No supported path establishes DMA direction, descriptor
+counts, application buffer, a writer of `0x007fffff`, or placement at stream
+word `0 mod 512`. The loader contains no other direct DMA10-window word, the
+SHARC main contains none, and normalized reference/immediate queries found no
+producer edge. The nine `0x7fffffff` immediates remain unrelated. **[V][O]**
+
+The PCG-C cadence gate confirmed table `0x2d7158` contains only the four
+handler pointers. Handler `0xb8b706` reaches a CTLC0 load at `0xb8b70e`, then
+immediately stops at aligned `0xb8b711: 3e02`. The known stores to SYNC2,
+CTLC1, CTLC0 and PW2 prove reachability only: no supported dataflow supplies
+executed values, source selection, or source frequency. The only justified
+relation remains symbolic:
+
+```
+SSI request rate = bit clock / (24 * 8) = bit clock / 192
+64 requests * 32 bytes = 0x800 bytes per major loop
+```
+
+It does not justify a numeric rate. Consequently 1,000 Hz, 48,000 Hz, or any
+other convenient value remains disqualifying for final A2. **[V][O]**
+
+The gate artifacts are under workflow
+`296e0a13-5d01-4406-b5a6-451d30905086`. Final A2 is now blocked on a newly
+approved supported observation source: for example, runtime PCG-C register and
+edge/request timing plus DMA10 descriptor/application-buffer observation, or
+public documentation that supplies the currently unsupported semantics. Broad
+ISA expansion, guessed marker conversion, and guessed cadence are rejected
+pivots. **[O]**
