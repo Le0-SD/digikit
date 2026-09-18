@@ -58,6 +58,7 @@ class TraceTest(unittest.TestCase):
             ("fext30", 0x023E38108022, 2, 0xFFFFFFFF, 0x3FFFFFFF),
             ("fext31", 0x023E3810C022, 2, 0xFFFFFFFF, 0x7FFFFFFF),
             ("lshift-10", 0x023E7800F611, 1, 0xFFFFFFFF, 0x003FFFFF),
+            ("ashift-8-frame-reader", 0x023E7801F822, 2, 0x80000000, 0xFF800000),
             ("bset-r2", 0x023E00300022, 2, 0, 1),
             ("fext16", 0x023E20100022, 2, 0xFFFFFFFF, 0xFFFF),
             ("bclr25", 0x023E00311922, 2, 0xFFFFFFFF, 0xFDFFFFFF),

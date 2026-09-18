@@ -94,6 +94,24 @@ CHECKS: tuple[tuple[int, str, Mapping[str, int], str], ...] = (
         {"cond[4:0]": 0, "j": 1, "reladdr[15:0]": 10},
         "branch on EQ (unchanged)",
     ),
+    (
+        0x1C33E2,
+        "6b_shiftimm",
+        {"shiftimm[22:16]": 1, "shiftimm[15:0]": 0xF822},
+        "delay slot computes R2 = ASHIFT R2 by -8",
+    ),
+    (
+        0x1C33E5,
+        "15b",
+        {"i[2:0]": 5, "d": 1, "ureg[6:0]": 2, "data[6:0]": 49},
+        "common delay-slot store of shifted R2",
+    ),
+    (
+        0x1C33E7,
+        "15b",
+        {"i[2:0]": 5, "d": 1, "ureg[6:0]": 46, "data[6:0]": 49},
+        "non-EQ-only overwrite with M14",
+    ),
 )
 
 
@@ -176,6 +194,16 @@ def _probe_track(memory: LoadedMemory, track: int) -> dict[str, Any]:
     pcs = {event.get("pc_sw") for state in states for event in state.trace}
     if not {0x1C33D7, 0x1C33DF}.issubset(pcs):
         raise ValueError(f"track {track}: compare/branch endpoint was not reached")
+    changed_stores = {
+        (event.get("ureg"), event.get("expression"))
+        for state in states
+        for event in state.trace
+        if event.get("pc_sw") == 0x1C33E7 and event.get("action") == "store"
+    }
+    if changed_stores != {("M14", "I5 + 196")}:
+        raise ValueError(
+            f"track {track}: unexpected non-EQ store {sorted(changed_stores)}"
+        )
     return {
         "track": track,
         "seeded_i10": "spi_rx + 0x94",
@@ -185,6 +213,8 @@ def _probe_track(memory: LoadedMemory, track: int) -> dict[str, Any]:
         "access_width": "short-word-sign-extended",
         "compare_pc_sw": 0x1C33D7,
         "eq_branch_pc_sw": 0x1C33DF,
+        "non_eq_first_effect": "DM(I5 + 0xc4) = M14",
+        "non_eq_effect_pc_sw": 0x1C33E7,
         "terminal_states": len(states),
         "qualifying": False,
     }
@@ -216,7 +246,8 @@ def build_report(blob_path: Path, frame_path: Path | None = None) -> dict[str, A
             "compare_pc_sw": 0x1C33D7,
             "unchanged_branch_pc_sw": 0x1C33DF,
             "machine_word": "DM(spi_rx + 0x94 + 2*track) (SWSE)",
-            "behavior": "compare received word with cached per-track word; branch EQ when unchanged",
+            "behavior": "compare received word with cached per-track word; EQ skips the M14 overwrite at DM(I5+0xc4)",
+            "non_eq_first_effect": "0x1c33e7 stores M14 to DM(I5+0xc4)",
         },
     }
     if frame_path is not None:

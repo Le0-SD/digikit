@@ -1837,6 +1837,16 @@ Those slices reach byte addresses `spi_rx+0x94`, `spi_rx+0x96`, and
 explicitly `qualifying: false`; they do not establish natural pointer/index
 provenance or runtime reachability.
 
+A target-bounded follow-up crosses the first changed-value path without
+expanding startup. The `EQ` branch at `0x1c33df` has two delay slots:
+`0x1c33e2` performs the documented `R2 = ASHIFT R2 by -8`, and `0x1c33e5`
+stores the shifted `R2` to `DM(I5+0xc4)`. If the comparison is not equal,
+fall-through instruction `0x1c33e7` immediately overwrites that same word with
+`M14`; the equal branch skips this overwrite and both paths meet at
+`0x1c33e9`. Thus the first concrete changed-machine effect is
+`DM(I5+0xc4) = M14`. The meaning of that field and `M14`, and the multifunction
+compute at the join, remain open. **[D][O]**
+
 The same experiment extracted the final `0x802`-byte TX buffers from the four
 accepted calibrated A2 snapshots. Track 0 is type 2 only after machine change
 plus TRIG 1; machine+PLAY, TRIG-1-only and PLAY-only controls retain type 0.
@@ -1848,6 +1858,15 @@ This closes the static semantic join from the ColdFire TX field to a SHARC
 reader. It does **not** yet prove the physical DSPI2 transport, the SHARC DMA
 buffer owning `I5`, natural execution from strict entry, cadence, or the
 non-`EQ` downstream machine-selection behavior. Those remain open. **[O]**
+
+The strongest candidate receive-state construction is now exact but still not
+aliased to `I5`. At `0x1ca03d`, `I4=I3+0x94`; `0x1ca040` copies that pointer to
+`R4`; `0x1ca042` stores it at state offset `+0x20`; `0x1ca044` sets `I12=32`;
+and `0x1ca046` stores 32 at state offset `+0xb0` before calling `0x1c9f9c` at
+`0x1ca048`. A calibrated symbolic slice therefore gives
+`state[0x20]=state+0x94` and `state[0xb0]=32`. No byte-backed reference or
+pointer constant yet equates `state+0x94` with the frame-reader's `I5`, so this
+is a descriptor/buffer candidate rather than established ownership. **[D][O]**
 
 #### The per-track TX frame map **[D]**
 

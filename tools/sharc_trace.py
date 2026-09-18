@@ -619,19 +619,33 @@ def _shift_immediate(
     data8 = (field >> 8) & 0xFF
     rn, rx = (field >> 4) & 0xF, field & 0xF
     source = _ureg(values, rx)
-    if opcode == 0x00:
+    if opcode in (0x00, 0x01):
         amount = _signed(data8, 8)
+        name = "lshift" if opcode == 0x00 else "ashift"
         if amount == 0:
             value = source
         elif not isinstance(source, Const):
-            value = Unknown("lshift R%d by %d" % (rx, amount))
-        elif amount >= 32 or amount <= -32:
+            value = Unknown("%s R%d by %d" % (name, rx, amount))
+        elif amount >= 32:
             value = Const(0)
+        elif amount <= -32:
+            value = (
+                Const(0xFFFFFFFF)
+                if opcode == 0x01 and source.value & 0x80000000
+                else Const(0)
+            )
         elif amount > 0:
             value = Const(source.value << amount)
+        elif opcode == 0x01:
+            value = Const(_signed32(source.value) >> -amount)
         else:
             value = Const(source.value >> -amount)
-        return rn, value, "logical-shift-immediate"
+        operation = (
+            "logical-shift-immediate"
+            if opcode == 0x00
+            else "arithmetic-shift-immediate"
+        )
+        return rn, value, operation
     if opcode == 0x10:
         position = data8 & 0x3F
         length = (_field(f, "dataex[3:0]") << 2) | (data8 >> 6)
