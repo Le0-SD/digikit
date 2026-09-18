@@ -1800,8 +1800,54 @@ Addresses are Digitakt II 1.16.
 
 - So a new machine is not a ColdFire-side concern only. The DSP is told, per
   track and every frame, which of the seven types a track is. What the SHARC
-  does with the value is the open question, and it is now a sharp one: find
-  the reader of receive-buffer offset `0x94 + 2i` in the DSP program. **[O]**
+  does with the value was the next question: find the reader of receive-buffer
+  offset `0x94 + 2i` in the DSP program. **[C]**
+
+#### The SHARC reads and change-tests the `0x94 + 2i` machine word **[V][O]**
+
+The 1.16 SHARC image has a byte-backed reader in `FUN_001c2b24`. The relevant
+chain is:
+
+- caller `0x1c7719` copies `I5` to argument `R8`, then `0x1c771e` calls
+  `FUN_001c2b24` at `0x1c2b24`;
+- `0x1c2ccb` adds `0x94` to `I1`, and `0x1c2cd4` preserves that pointer in
+  `I10`; the same function also forms offsets `0x75c` at `0x1c2cc1` and
+  `0x73c` at `0x1c2cd7`, independently matching two other fields in the
+  ColdFire's `0x802`-byte frame map;
+- reset initialization sets `M7=-1`; `0x1c2ca6` copies `M7` to `R11`,
+  `0x1c2cff` computes `R5 = LSHIFT R15 by R11`, and `0x1c2d02` copies `R5`
+  to modifier `M0`. This establishes the divide-by-two index transform, but
+  not yet the natural runtime provenance of `R15`. **[D]**
+- `0x1c33c4` copies `I10` to `I0`; `0x1c33d2` loads `R0` with
+  `DM(I0,M0) (SWSE)`;
+- SHARC+ scaled address arithmetic multiplies `M0` by the short-word width,
+  so a track modifier `i` addresses byte offset `0x94 + 2i`, not
+  `0x94 + i`;
+- `0x1c33c7` loads a cached per-track short word into `R1`, `0x1c33d7`
+  compares `R1` with received `R0`, and `0x1c33df` branches on `EQ`. Thus the
+  field is behaviorally consumed and change-tested, not merely copied or
+  stored. A second byte review reproduced the image hash, exact instruction
+  bytes and fields, scaled-address rule, compare and branch. **[V]**
+
+`tools/sharc_interface_probe.py` verifies the exact image hash, instruction
+bytes and fields, and runs bounded symbolic slices for tracks 0, 1 and 15.
+Those slices reach byte addresses `spi_rx+0x94`, `spi_rx+0x96`, and
+`spi_rx+0xb2`, followed by the compare and `EQ` branch. The slices seed
+`I10=spi_rx+0x94` and `M0=track`, so they are discovery evidence and
+explicitly `qualifying: false`; they do not establish natural pointer/index
+provenance or runtime reachability.
+
+The same experiment extracted the final `0x802`-byte TX buffers from the four
+accepted calibrated A2 snapshots. Track 0 is type 2 only after machine change
+plus TRIG 1; machine+PLAY, TRIG-1-only and PLAY-only controls retain type 0.
+Track 2 remains type 2 in all four frames and is therefore a useful unchanged
+within-frame control. Artifacts are under
+`out/experiments/sharc-interface-reader/`. **[D]**
+
+This closes the static semantic join from the ColdFire TX field to a SHARC
+reader. It does **not** yet prove the physical DSPI2 transport, the SHARC DMA
+buffer owning `I5`, natural execution from strict entry, cadence, or the
+non-`EQ` downstream machine-selection behavior. Those remain open. **[O]**
 
 #### The per-track TX frame map **[D]**
 
@@ -5116,3 +5162,72 @@ and remains in short-word units. A Type25-specific negative synthetic
 regression now checks this convention. No loaded firmware Type25 negative
 target was found, so this closes a test gap rather than authorizing a new
 loaded-call edge. **[D][O]**
+
+## PASS/EQ removes the low-PM false path, and Type25 wraps at 24 bits **[C][V][O]**
+
+The preceding PM-address-zero blocker and ASTAT deferral are retracted. At
+`0x1c0fb4` the loader-backed combined-PX read still produces concrete zero;
+`0x1c0fb7` copies PX2 to R0, and `0x1c0fb9` performs documented fixed-point
+`PASS R0` while also copying R0 to I8. PASS clears AC/AI/AS/AV and sets AN/AZ
+from the 32-bit result, so zero sets AZ. The `IF EQ RTS` at `0x1c0fbc` is
+therefore taken in concrete SISD execution. The feasible strict path returns
+before `0x1c0fbd`: it never reads PM normal-word address zero, and the six
+downstream Type12a failures disappear. Unknown PASS inputs invalidate ASTATX
+rather than preserving stale flags. **[C][V]**
+
+The preceding Type25 arithmetic conclusion is also retracted. Sign extension
+and addition to the instruction's own PC were right, but the sequencer target
+must then be reduced to the architectural 24-bit short-word PC. At
+`0x1c0fa5`, storage bytes `44 18 9c 00 3d 84` normalize to
+`0x1844009c843d`; its signed displacement is `-6519747`, and the wrapped
+target is `0xb893e2`, not a negative external address. That target maps through
+the loader's L2 fallback to byte address `0x200127c4` in block 69, interval
+`[0x20000000,0x2001ab7c)`. The strict trace now follows this as its third
+loaded call. **[C][V]**
+
+## Enhanced Type19a `(NW)` advances strict startup to `0xb893fb` **[C][V][O]**
+
+The earlier `Type19p_undoc48` classification and every `-257` / `I7 -= 0x404`
+interpretation are retracted. At loaded SW `0xb893e2`, exact bytes
+`87 15 ff ff fe ff` are three little-endian 16-bit parcels in
+most-significant-parcel order, producing logical word `0x1587fffffffe`.
+The SHARC+ PRM documents `sc=01` as enhanced Type19a address scaling, and the
+public Selache encoder/decoder independently confirms fields `w=1`, `g=0`,
+`idis=0`, `is=7`, signed immediate `-2`. The instruction is therefore
+`I7 = MODIFY(I7,-2)(NW)`. **[C][V]**
+
+`tools/sharcspec/build_table.py` now emits this prefix as confident
+`Type19a_scaled`, while preserving the ordinary classic `0x16` Type19a form.
+The strict tracer scales `(NW)` by four only in its explicit byte-address
+model, applies the same scaling to the active circular length, and leaves B/L
+unchanged. The observed entry state is `I7=0x26f7ee`, `B7=0x26f000`,
+`L7=0x1fd`; the documented operation produces `I7=0x26f7e6` without wrapping.
+In normal-word address space the architectural update remains `I7 -= 2`.
+Synthetic tests cover both interpretations and a negative circular wrap.
+An independent loader-aware review reproduced the image hash, L2 fallback
+mapping `0x200127c4`, source block 69, exact six bytes, parcel normalization,
+fields, and both trace endpoints. **[V]**
+
+A new strict run begins at real entry `0x1c1338` against exactly
+`out/sections/dt2-1.16/section_7_BLOB.bin` (SHA-256
+`0f514a12a2255f5c081e292c47f1f29462003177658da4bbae0a22fd737fffa2`),
+with loader-backed concrete memory, public core reset state, 32-bit normal
+words and loaded-call following. It naturally executes the enhanced MODIFY,
+then ends in two states after 6,987 / 6,989 instructions at the same next
+boundary: Type2a at `0xb893fb`, whose full-compute field has `cu=0`, opcode
+`0x00`. The public PRM's ALUOP table has no `0x00` operation, and the independent
+Selache decoder also leaves it as an unknown ALU opcode, so no semantics are
+invented for it. Both states record three loaded calls and no PCG-C, SPORT4A or
+DMA10 access. Artifacts and SHA-256:
+
+```
+out/experiments/sharc-runtime-probe/strict-entry-type19nw-008-summary.json
+7d69408b76fb262e9d03295a9632c7fb2cac90e6ed95474b90ba60489bbd9094
+out/experiments/sharc-runtime-probe/strict-entry-type19nw-008-trace.json
+3195e941880eaa32005db6a1c2186060e3a943a7be34afcdb7f4334522591cd6
+```
+
+This advances the qualifying continuous path but still does not reach PCG-C,
+SPORT4A or DMA10 initialization, derive `I4=-0x13c`, identify the natural
+`0x007fffff` producer, or establish numeric SSI cadence. A2 remains open and
+A3 remains parked. **[V][O]**

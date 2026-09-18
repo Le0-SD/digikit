@@ -127,6 +127,70 @@ class TraceTest(unittest.TestCase):
         )
         self.assertEqual(loop_entry.stopped, "return reached loop PC-stack entry")
 
+    def test_fixed_pass_drives_eq_return_from_documented_astat_flags(self):
+        astatx = T.UREG_CODES["ASTATX"]
+        mode1 = T.UREG_CODES["MODE1"]
+        pass_zero = {
+            "srcureghigh[4:0]": 0,
+            "srcureglow[1:1]": 0,
+            "srcureglow[0:0]": 0,
+            "dstureg[6:0]": 24,
+            "cond[4:0]": 0x1F,
+            "compute[22:16]": 2,
+            "compute[15:0]": 0x1000,
+        }
+        state = self.run_one(
+            T.State(
+                0x1C0FB9,
+                {0: T.Const(0), astatx: T.Const(0xFFFFFFFF), mode1: T.Const(0)},
+                call_stack=[0x200],
+            ),
+            insn("5a_move", pass_zero, length=6),
+        )
+        self.assertEqual(state.uregs[24], T.Const(0))
+        self.assertEqual(state.uregs[astatx], T.Const(0xFFFFFFC1))
+        self.assertTrue(T._predicate(state, 0x00))
+        self.assertFalse(T._predicate(state, 0x10))
+
+        returned = T._execute(
+            state,
+            insn(
+                "11c",
+                {"x": 0, "j": 0, "cond[4:0]": 0x00, "lr": 0},
+                length=2,
+            ),
+        )
+        self.assertEqual(len(returned), 1)
+        self.assertEqual((returned[0].pc_sw, returned[0].call_stack), (0x200, []))
+
+    def test_fixed_pass_sets_an_and_invalidates_unknown_astat(self):
+        astatx = T.UREG_CODES["ASTATX"]
+        mode1 = T.UREG_CODES["MODE1"]
+        short_pass = {"compute[11:0]": 0x201}
+
+        negative = self.run_one(
+            T.State(
+                0x10,
+                {
+                    1: T.Const(0x80000000),
+                    astatx: T.Const(0xFFFF0000),
+                    mode1: T.Const(0),
+                },
+            ),
+            insn("2c", short_pass, length=2),
+        )
+        self.assertEqual(negative.uregs[astatx], T.Const(0xFFFF0004))
+        self.assertFalse(T._predicate(negative, 0x00))
+        self.assertTrue(T._predicate(negative, 0x10))
+
+        unknown = self.run_one(
+            T.State(0x10, {astatx: T.Const(0), mode1: T.Const(0)}),
+            insn("2c", short_pass, length=2),
+        )
+        self.assertIsInstance(unknown.uregs[astatx], T.Unknown)
+        self.assertIsNone(T._predicate(unknown, 0x00))
+        self.assertIsNone(T._predicate(unknown, 0x10))
+
     def test_type11c_rejects_rti_and_loop_reentry(self):
         for fields, reason in (
             ({"x": 1, "j": 0, "cond[4:0]": 0x1F, "lr": 0}, "unsupported Type11c RTI"),
@@ -569,7 +633,7 @@ class TraceTest(unittest.TestCase):
         )
         self.assertEqual(loaded.trace[-1]["access_width"], "normal-word")
 
-    def test_type25_negative_pcrel_target_uses_current_sw_address(self):
+    def test_type25_negative_pcrel_target_wraps_24bit_current_sw_address(self):
         call = insn(
             "25a_pcrel",
             {"reladdr[23:16]": 0x80, "reladdr[15:0]": 0},
@@ -579,7 +643,17 @@ class TraceTest(unittest.TestCase):
         state = self.run_one(state, insn("21c", {}, length=2))
         state = self.run_one(state, insn("21c", {}, length=2))
         self.assertEqual(state.stopped, "external-call")
-        self.assertEqual(state.trace[-1]["target_sw"], -0x7FFF00)
+        self.assertEqual(state.trace[-1]["target_sw"], 0x800100)
+
+        dt2_116 = insn(
+            "25a_pcrel",
+            {"reladdr[23:16]": 0x9C, "reladdr[15:0]": 0x843D},
+            6,
+        )
+        state = self.run_one(T.State(0x1C0FA5), dt2_116)
+        state = self.run_one(state, insn("21c", {}, length=2))
+        state = self.run_one(state, insn("21c", {}, length=2))
+        self.assertEqual(state.trace[-1]["target_sw"], 0xB893E2)
 
     def test_ureg_copy_and_compute_rejection(self):
         f = {
@@ -673,7 +747,15 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(s.trace[0]["action"], "compute")
 
         s = self.run_one(
-            T.State(1, {0: T.Const(99), 2: T.Const(4), 12: T.Const(4)}),
+            T.State(
+                1,
+                {
+                    0: T.Const(99),
+                    2: T.Const(4),
+                    12: T.Const(4),
+                    T.UREG_CODES["ASTATX"]: T.Const(1),
+                },
+            ),
             insn(
                 "5a_move",
                 {
@@ -690,6 +772,7 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(s.uregs[0], T.Const(99))
         self.assertEqual(s.trace[0]["operation"], "compare")
         self.assertTrue(s.trace[0]["status_only"])
+        self.assertIsInstance(s.uregs[T.UREG_CODES["ASTATX"]], T.Unknown)
 
         s = self.run_one(
             T.State(1, {0: T.Const(0x10), 2: T.Const(4)}),
@@ -736,6 +819,19 @@ class TraceTest(unittest.TestCase):
             insn("2a", {"cond[4:0]": 31, **full(2, 0xC8, 0, 1, 2)}, 6),
         )
         self.assertEqual(s.uregs[0], T.Const(0x10))
+
+        s = self.run_one(
+            T.State(1, {1: T.Const(0x80000001), 2: T.Const(4)}),
+            insn("2a", {"cond[4:0]": 31, **full(2, 0x00, 0, 1, 2)}, 6),
+        )
+        self.assertEqual(s.uregs[0], T.Const(0x10))
+        self.assertEqual(s.trace[0]["operation"], "logical-shift")
+
+        s = self.run_one(
+            T.State(1, {1: T.Const(0x80000000), 2: T.Const(0xFFFFFFFC)}),
+            insn("2a", {"cond[4:0]": 31, **full(2, 0x00, 0, 1, 2)}, 6),
+        )
+        self.assertEqual(s.uregs[0], T.Const(0x08000000))
 
     def test_compute_unknown_and_unsupported_do_not_mutate(self):
         s = self.run_one(T.State(1), insn("2c", {"compute[11:0]": 0x251}, 2))
@@ -1153,19 +1249,20 @@ class TraceTest(unittest.TestCase):
             "cond[4:0]": 31,
         }
         expected = {
-            (0, 1, 1): "normal-word",
-            (0, 0, 0): "byte",
-            (0, 1, 0): "byte-sign-extended",
-            (1, 0, 0): "short-word",
-            (1, 1, 0): "short-word-sign-extended",
-            (1, 1, 1): "long-word",
+            (0, 1, 1): ("normal-word", 0x83),
+            (0, 0, 0): ("byte", 0x83),
+            (0, 1, 0): ("byte-sign-extended", 0x83),
+            (1, 0, 0): ("short-word", 0x86),
+            (1, 1, 0): ("short-word-sign-extended", 0x86),
+            (1, 1, 1): ("long-word", 0x98),
         }
-        for (l, x, w), access_width in expected.items():
+        for (l, x, w), (access_width, address) in expected.items():
             event = self.run_one(
                 T.State(1, {16: T.Const(0x80), 32: T.Const(3)}),
                 insn("3b", {**base, "l": l, "x": x, "w": w}),
             ).trace[0]
             self.assertEqual(event["access_width"], access_width)
+            self.assertEqual(event["address"], address)
 
         for fields, reason in (
             ({"l": 0, "x": 0, "w": 1}, "unsupported Type3b access width"),
@@ -1301,6 +1398,13 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(state.uregs[3], T.Const(0xFFFFFF80))
         self.assertEqual(state.uregs[17], T.Const(0x82))
         self.assertEqual(state.trace[0]["access_width"], "byte-sign-extended")
+
+        short = self.run_one(
+            T.State(1, {17: T.Const(0x80)}),
+            insn("4b", {**fields, "u": 0, "l": 1, "x": 1, "w": 0}, 4),
+        )
+        self.assertEqual(short.trace[0]["address"], 0x84)
+        self.assertEqual(short.trace[0]["access_width"], "short-word-sign-extended")
 
     def test_type3b_unknown_predicate_second_call_delay_slot_preserves_call_target(
         self,
@@ -1463,7 +1567,7 @@ class TraceTest(unittest.TestCase):
             negative,
         )
         self.assertEqual(guarded.stopped, "external-call")
-        self.assertEqual(guarded.trace[-1]["target_sw"], -0x800000)
+        self.assertEqual(guarded.trace[-1]["target_sw"], 0x800000)
 
     def test_delayed_call_returns_after_variable_width_slots(self):
         call = insn("25a_direct", {"addr[23:16]": 0, "addr[15:0]": 99}, 4)
@@ -1548,6 +1652,56 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(symbolic.uregs[1], T.symbol("receive_buffer"))
         with self.assertRaises(ValueError):
             T.trace(b"", 0, 0, {"R1": "@"}, max_steps=1)
+
+    def test_scaled_type19_normal_word_modify_and_circular_wrap(self):
+        fields = {
+            "w": 1,
+            "g": 0,
+            "idis[2:0]": 0,
+            "is[2:0]": 7,
+            "data[31:16]": 0xFFFF,
+            "data[15:0]": 0xFFFE,
+        }
+        i7 = T.UREG_CODES["I7"]
+        b7 = T.UREG_CODES["B7"]
+        l7 = T.UREG_CODES["L7"]
+
+        byte_space = self.run_one(
+            T.State(
+                0xB893E2,
+                {
+                    i7: T.Const(0x26F7EE),
+                    b7: T.Const(0x26F000),
+                    l7: T.Const(0x1FD),
+                },
+                assume_nw32=True,
+            ),
+            insn("19a_scaled", fields, length=6),
+        )
+        self.assertEqual(byte_space.uregs[i7], T.Const(0x26F7E6))
+        self.assertEqual(byte_space.uregs[b7], T.Const(0x26F000))
+        self.assertEqual(byte_space.uregs[l7], T.Const(0x1FD))
+        self.assertEqual(byte_space.trace[-1]["offset"], -8)
+
+        normal_space = self.run_one(
+            T.State(
+                0x10,
+                {i7: T.Const(0x100), b7: T.Const(0), l7: T.Const(0)},
+            ),
+            insn("19a_scaled", fields, length=6),
+        )
+        self.assertEqual(normal_space.uregs[i7], T.Const(0xFE))
+
+        wrapped = self.run_one(
+            T.State(
+                0x10,
+                {i7: T.Const(0x104), b7: T.Const(0x100), l7: T.Const(4)},
+                assume_nw32=True,
+            ),
+            insn("19a_scaled", fields, length=6),
+        )
+        self.assertEqual(wrapped.uregs[i7], T.Const(0x10C))
+        self.assertTrue(wrapped.trace[-1]["circular"])
 
     def test_cli_symbolic_seed(self):
         with tempfile.NamedTemporaryFile("wb", delete=False) as f:
@@ -1857,28 +2011,7 @@ class TraceTest(unittest.TestCase):
         )
         self.assertIsInstance(continued.uregs[0], T.Unknown)
 
-    def test_followed_call_can_explicitly_skip_only_a_provisional_entry(self):
-        provisional = insn("19p_undoc48", {}, length=6, kind="uncertain")
-        state = T.State(
-            0x10,
-            {0: T.Const(7), 16: T.Const(0x100), 32: T.Const(4)},
-            skip_provisional_entries=True,
-            at_loaded_entry=True,
-        )
-        advanced = self.run_one(state, provisional)
-        self.assertEqual(advanced.pc_sw, 0x13)
-        self.assertEqual(advanced.uregs[0], T.Const(7))
-        self.assertIsInstance(advanced.uregs[16], T.Unknown)
-        self.assertIsInstance(advanced.uregs[32], T.Unknown)
-        self.assertEqual(advanced.trace[-1]["action"], "provisional-entry-skip")
-        self.assertTrue(advanced.trace[-1]["evidence_limited"])
-
-        ordinary = T.State(0x10, skip_provisional_entries=True)
-        self.assertIn(
-            "uncertain or undecodable", self.run_one(ordinary, provisional).stopped
-        )
-
-    def test_trace_can_skip_provisional_initial_function_entry(self):
+    def test_trace_executes_scaled_type19_loaded_entry(self):
         start = 0x10
         payload = bytes.fromhex("8715fffffeff")
         memory = loader_memory(
@@ -1888,14 +2021,13 @@ class TraceTest(unittest.TestCase):
             memory,
             None,
             start,
+            {"I7": 0x26F7EE, "B7": 0x26F000, "L7": 0x1FD},
             max_steps=1,
             concrete_memory=True,
-            follow_loaded_calls=True,
-            skip_provisional_entries=True,
+            assume_nw32=True,
         )[0]
-        self.assertIn(
-            "provisional-entry-skip", [event["action"] for event in state.trace]
-        )
+        self.assertEqual(state.uregs[T.UREG_CODES["I7"]], T.Const(0x26F7E6))
+        self.assertEqual(state.trace[-2]["action"], "i-add")
 
     def test_trace_can_seed_documented_core_reset_state(self):
         start = 0x10

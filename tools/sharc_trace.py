@@ -403,9 +403,7 @@ def _dm_read(
     return Const(value) if width <= 4 else None
 
 
-def _read_px48(
-    state: State, address: Value | int
-) -> Optional[tuple[Const, Const]]:
+def _read_px48(state: State, address: Value | int) -> Optional[tuple[Const, Const]]:
     """Read a loader-backed 48-bit normal word into the PX1/PX2 halves.
 
     A combined-PX DM or PM transfer without ``LW`` is 48 bits.  L1 block 3's
@@ -427,8 +425,7 @@ def _read_px48(
     if raw is None:
         return None
     high, middle, low = (
-        int.from_bytes(raw[start : start + 2], "little")
-        for start in (0, 2, 4)
+        int.from_bytes(raw[start : start + 2], "little") for start in (0, 2, 4)
     )
     px2 = Const((high << 16) | middle)
     px1 = Const(low << 16)
@@ -449,12 +446,8 @@ def _load_normal_ureg(
             state.uregs[UREG_CODES["PX1"]] = px1
             state.uregs[UREG_CODES["PX2"]] = px2
             return {"PX1": px1.value, "PX2": px2.value}
-        state.uregs[UREG_CODES["PX1"]] = Unknown(
-            "memory-address " + _render(address)
-        )
-        state.uregs[UREG_CODES["PX2"]] = Unknown(
-            "memory-address " + _render(address)
-        )
+        state.uregs[UREG_CODES["PX1"]] = Unknown("memory-address " + _render(address))
+        state.uregs[UREG_CODES["PX2"]] = Unknown("memory-address " + _render(address))
     elif space == "DM":
         loaded = _dm_read(state, address, 4)
         state.uregs[code] = loaded or Unknown("memory-address " + _render(address))
@@ -583,6 +576,17 @@ def _multiply(left: Value, right: Value, expression: str) -> Value:
     return Unknown(expression + " (non-affine multiplication)")
 
 
+def _access_modifier_scale(access_width: str, assume_nw32: bool) -> int:
+    """Return SHARC+ byte-space scaled-address arithmetic width."""
+    if access_width.startswith("short-word"):
+        return 2
+    if access_width == "long-word":
+        return 8
+    if access_width == "normal-word" and assume_nw32:
+        return 4
+    return 1
+
+
 def _bitwise(left: Value, right: Value, expression: str, operation) -> Value:
     if isinstance(left, Const) and isinstance(right, Const):
         return Const(operation(left.value, right.value))
@@ -610,9 +614,7 @@ def _shift_immediate(
     f: Mapping[str, int], values: Mapping[int, Value]
 ) -> tuple[int, Value, str]:
     """Execute the documented ShiftImm subset seen on qualifying paths."""
-    field = (_field(f, "shiftimm[22:16]") << 16) | _field(
-        f, "shiftimm[15:0]"
-    )
+    field = (_field(f, "shiftimm[22:16]") << 16) | _field(f, "shiftimm[15:0]")
     opcode = (field >> 16) & 0x3F
     data8 = (field >> 8) & 0xFF
     rn, rx = (field >> 4) & 0xF, field & 0xF
@@ -638,9 +640,7 @@ def _shift_immediate(
         elif not isinstance(source, Const):
             value = Unknown("fext R%d by %d:%d" % (rx, position, length))
         else:
-            value = Const(
-                (source.value >> position) & ((1 << min(length, 32)) - 1)
-            )
+            value = Const((source.value >> position) & ((1 << min(length, 32)) - 1))
         return rn, value, "field-extract-immediate"
     if opcode in (0x30, 0x31):
         position = data8
@@ -648,9 +648,7 @@ def _shift_immediate(
             value = source
         else:
             calculate = (
-                (lambda a, b: a | b)
-                if opcode == 0x30
-                else (lambda a, b: a & ~b)
+                (lambda a, b: a | b) if opcode == 0x30 else (lambda a, b: a & ~b)
             )
             name = "bset" if opcode == 0x30 else "bclr"
             value = _bitwise(
@@ -745,6 +743,25 @@ def _compute(
     if cu == 1 and opcode == 0x70:
         value = _multiply(left, right, "R%d * R%d" % (rx, ry))
         return rn, value, "multiply"
+    # PRM Table 17-9: SHIFTOP 00000000 is RN = LSHIFT RX by RY. The signed
+    # low byte of RY selects a left (positive) or logical right (negative)
+    # shift; magnitudes of 32 or more produce zero.
+    if cu == 2 and opcode == 0x00:
+        if not isinstance(right, Const):
+            value = Unknown("lshift R%d by R%d" % (rx, ry))
+        else:
+            amount = _signed(right.value & 0xFF, 8)
+            if amount == 0:
+                value = left
+            elif not isinstance(left, Const):
+                value = Unknown("lshift R%d by %d" % (rx, amount))
+            elif amount >= 32 or amount <= -32:
+                value = Const(0)
+            elif amount > 0:
+                value = Const(left.value << amount)
+            else:
+                value = Const(left.value >> -amount)
+        return rn, value, "logical-shift"
     # PRM Table 17-9: SHIFTOP 10001000 is RN = leftz RX.
     if cu == 2 and opcode == 0x88:
         value = (
@@ -780,6 +797,22 @@ def _apply_compute(
     state: State, insn: Instruction, result: tuple[int, Value, str]
 ) -> None:
     rn, value, operation = result
+    if operation == "pass":
+        astatx_code = UREG_CODES["ASTATX"]
+        astatx = _ureg(state.uregs, astatx_code)
+        if isinstance(value, Const) and isinstance(astatx, Const):
+            # Fixed-point PASS updates the six ALU flags: AC/AI/AS/AV are
+            # cleared, AN reflects bit 31, and AZ reflects a zero result.
+            flags = (0x4 if value.value & 0x80000000 else 0) | (
+                0x1 if value.value == 0 else 0
+            )
+            state.uregs[astatx_code] = Const((astatx.value & ~0x3F) | flags)
+        else:
+            state.uregs[astatx_code] = Unknown("pass ASTATX flags")
+    elif operation == "compare":
+        # The value result is sufficient for dataflow, but the tracer does not
+        # yet model all subtraction flags. Do not let a stale AZ drive EQ/NE.
+        state.uregs[UREG_CODES["ASTATX"]] = Unknown("compare ASTATX flags")
     if operation in ("compare", "bit-test"):
         _event(state, insn, "compute", operation=operation, status_only=True)
     else:
@@ -822,9 +855,7 @@ def _advance(state: State, insn: Instruction) -> List[State]:
                     remaining=remaining,
                     mode=loop.mode,
                 )
-                state.loops[-1] = Loop(
-                    loop.start_sw, loop.end_sw, remaining, loop.mode
-                )
+                state.loops[-1] = Loop(loop.start_sw, loop.end_sw, remaining, loop.mode)
                 state.pc_sw = loop.start_sw
                 return [state]
             _event(state, insn, "loop-exit", remaining=0, mode=loop.mode)
@@ -834,9 +865,7 @@ def _advance(state: State, insn: Instruction) -> List[State]:
             state.call_stack.pop()
             _sync_pc_stack(state)
             state.uregs[UREG_CODES["CURLCNTR"]] = (
-                Const(state.loops[-1].remaining)
-                if state.loops
-                else Const(0xFFFFFFFF)
+                Const(state.loops[-1].remaining) if state.loops else Const(0xFFFFFFFF)
             )
             if not state.loops:
                 stkyx_code = UREG_CODES["STKYX"]
@@ -931,6 +960,20 @@ def _advance(state: State, insn: Instruction) -> List[State]:
 def _predicate(state: State, cond: int) -> Optional[bool]:
     if cond == 0x1F:
         return True
+    if cond in (0x00, 0x10):
+        # Conditional branches in SIMD mode combine the PEx/PEy conditions.
+        # The tracer does not yet model the companion PASS, so only consume
+        # AZ when execution is concretely SISD.
+        mode1 = _ureg(state.uregs, UREG_CODES["MODE1"])
+        astatx = _ureg(state.uregs, UREG_CODES["ASTATX"])
+        if (
+            not isinstance(mode1, Const)
+            or mode1.value & (1 << 21)
+            or not isinstance(astatx, Const)
+        ):
+            return None
+        equal = bool(astatx.value & 1)
+        return equal if cond == 0x00 else not equal
     if cond in (0x0D, 0x1D):
         astatx = _ureg(state.uregs, UREG_CODES["ASTATX"])
         if not isinstance(astatx, Const):
@@ -1061,28 +1104,6 @@ def _start_counted_loop(state: State, insn: Instruction, count: int) -> List[Sta
 
 def _execute(state: State, insn: Instruction) -> List[State]:
     if insn.kind != "confident" or insn.length_bytes is None:
-        if (
-            state.skip_provisional_entries
-            and state.at_loaded_entry
-            and insn.type_name == "19p_undoc48"
-            and insn.length_bytes is not None
-        ):
-            # The instruction's six-byte extent is byte-verified, but its
-            # operation is undocumented.  Preserve data-register arguments,
-            # invalidate every DAG register that an opaque frame setup could
-            # affect, and make the evidence gap explicit in the trace.
-            clobbered = list(UREG_NAMES[16:80])
-            for code in range(16, 80):
-                state.uregs[code] = Unknown("provisional entry instruction")
-            state.at_loaded_entry = False
-            _event(
-                state,
-                insn,
-                "provisional-entry-skip",
-                clobbered=clobbered,
-                evidence_limited=True,
-            )
-            return _advance(state, insn)
         return [_stop(state, insn, "uncertain or undecodable form: " + insn.note)]
     state.at_loaded_entry = False
     f, name = insn.fields, insn.type_name
@@ -1107,18 +1128,12 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             source = _ureg(state.uregs, code)
             if isinstance(source, Const):
                 result = (
-                    (source.value & mask) == mask
-                    if bop == 4
-                    else source.value == mask
+                    (source.value & mask) == mask if bop == 4 else source.value == mask
                 )
             else:
                 result = None
             mode1 = _ureg(state.uregs, UREG_CODES["MODE1"])
-            simd = (
-                bool(mode1.value & (1 << 21))
-                if isinstance(mode1, Const)
-                else None
-            )
+            simd = bool(mode1.value & (1 << 21)) if isinstance(mode1, Const) else None
             astatx_code = UREG_CODES["ASTATX"]
             astatx = _ureg(state.uregs, astatx_code)
             if result is None or not isinstance(astatx, Const):
@@ -1277,9 +1292,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             if state.loops:
                 state.loops.pop()
             state.uregs[UREG_CODES["CURLCNTR"]] = (
-                Const(state.loops[-1].remaining)
-                if state.loops
-                else Const(0xFFFFFFFF)
+                Const(state.loops[-1].remaining) if state.loops else Const(0xFFFFFFFF)
             )
             if not state.loops:
                 state.uregs[stkyx_code] = _bitwise(
@@ -1669,6 +1682,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         bank = 8 if _field(f, "g") else 0
         index = _field(f, "i") + bank
         offset = _signed((_field(f, "data[5:5]") << 5) | _field(f, "data[4:0]"), 6)
+        offset *= _access_modifier_scale(access_width, state.assume_nw32)
         post_modify = bool(_field(f, "u"))
         space = "PM" if bank else "DM"
         code = _field(f, "dreg")
@@ -1782,7 +1796,6 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         def access(executed: State) -> None:
             old = dict(executed.uregs)
             iv, mv = _ureg(old, 16 + index), _ureg(old, 32 + modifier)
-            address = iv if post_modify else _add(iv, mv, f"I{index} + M{modifier}")
             widths = {
                 "normal-word": 4,
                 "byte": 1,
@@ -1792,6 +1805,13 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                 "long-word": 8,
             }
             width = widths[access_width]
+            scale = _access_modifier_scale(access_width, executed.assume_nw32)
+            scaled_mv = _multiply(mv, Const(scale), f"M{modifier} * {scale}")
+            address = (
+                iv
+                if post_modify
+                else _add(iv, scaled_mv, f"I{index} + M{modifier} * {scale}")
+            )
             if store:
                 value = _ureg(old, ureg)
                 _event(
@@ -1847,7 +1867,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                 )
             if post_modify:
                 executed.uregs[16 + index] = _add(
-                    iv, mv, "I%d + M%d" % (index, modifier)
+                    iv, scaled_mv, "I%d + M%d * %d" % (index, modifier, scale)
                 )
 
         predicate = _predicate(state, cond)
@@ -1963,7 +1983,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                 concrete_value=loaded,
             )
         return _advance(state, insn)
-    if name == "19a":
+    if name in ("19a", "19a_scaled"):
         bank = 8 if _field(f, "g") else 0
         src_low = _field(f, "is")
         # PGR Type 19 encodes the destination as Id XOR Is, not as a direct
@@ -1972,7 +1992,47 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         src, dst = src_low + bank, dst_low + bank
         v = state.uregs.get(16 + src, Unknown("uninitialized I%d" % src))
         delta = _signed(_wide(f, "data"), 32)
-        state.uregs[16 + dst] = _add(v, Const(delta), "I%d + %d" % (src, delta))
+        scale = 1
+        scaled_width = None
+        if name == "19a_scaled":
+            scaled_width = "normal-word" if _field(f, "w") else "short-word"
+            # The opt-in normal-word model represents the loaded program's
+            # internal pointers in byte space. Enhanced MODIFY therefore
+            # scales NW/SW immediates by four/two bytes respectively.
+            if state.assume_nw32:
+                scale = 4 if _field(f, "w") else 2
+                delta *= scale
+
+        result = _add(v, Const(delta), "I%d + %d" % (src, delta))
+        circular = False
+        wrapped = False
+        if name == "19a_scaled":
+            base = _ureg(state.uregs, UREG_CODES["B%d" % src])
+            length = _ureg(state.uregs, UREG_CODES["L%d" % src])
+            if isinstance(length, Const) and length.value == 0:
+                pass
+            elif (
+                isinstance(v, Const)
+                and isinstance(base, Const)
+                and isinstance(length, Const)
+            ):
+                circular = True
+                byte_length = length.value * scale
+                if byte_length <= abs(delta):
+                    result = Unknown("circular modifier is not smaller than L%d" % src)
+                else:
+                    candidate = (v.value + delta) & 0xFFFFFFFF
+                    lower, upper = base.value, base.value + byte_length
+                    if candidate < lower:
+                        candidate += byte_length
+                        wrapped = True
+                    elif candidate >= upper:
+                        candidate -= byte_length
+                        wrapped = True
+                    result = Const(candidate)
+            else:
+                result = Unknown("scaled circular modify I%d" % src)
+        state.uregs[16 + dst] = result
         _event(
             state,
             insn,
@@ -1980,20 +2040,23 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             source="I%d" % src,
             destination="I%d" % dst,
             offset=delta,
+            scaled_width=scaled_width,
+            circular=circular,
+            wrapped=wrapped,
         )
         return _advance(state, insn)
     if name in ("25a_direct", "25a_pcrel", "8a_abs", "8a_rel"):
         stem = "addr" if name.endswith("direct") or name.endswith("abs") else "reladdr"
         raw = (_field(f, stem + "[23:16]") << 16) | _field(f, stem + "[15:0]")
+        # The sequencer generates 24-bit short-word instruction addresses;
+        # reduce a signed PC-relative sum to that architectural width.
         target = (
-            raw if name.endswith(("direct", "abs")) else state.pc_sw + _signed(raw, 24)
+            raw
+            if name.endswith(("direct", "abs"))
+            else (state.pc_sw + _signed(raw, 24)) & 0xFFFFFF
         )
         call = name.startswith("25a") or bool(_field(f, "b"))
-        cond = (
-            True
-            if name.startswith("25a")
-            else _predicate(state, _field(f, "cond"))
-        )
+        cond = True if name.startswith("25a") else _predicate(state, _field(f, "cond"))
         delayed = name.startswith("25a") or bool(_field(f, "j"))
         transfer = _transfer if delayed else _immediate_transfer
         return transfer(state, insn, target, call, cond)
@@ -2038,10 +2101,14 @@ def trace(
     assume_nw32: bool = False,
     core_reset_state: bool = False,
 ) -> List[State]:
-    uregs: Dict[int, Value] = {
-        UREG_CODES[name]: Const(value)
-        for name, value in CORE_UREG_RESET_VALUES.items()
-    } if core_reset_state else {}
+    uregs: Dict[int, Value] = (
+        {
+            UREG_CODES[name]: Const(value)
+            for name, value in CORE_UREG_RESET_VALUES.items()
+        }
+        if core_reset_state
+        else {}
+    )
     for key, value in (sets or {}).items():
         uregs[_seed_code(key)] = _seed_value(value)
     if concrete_memory and not isinstance(data, LoadedMemory):
@@ -2056,10 +2123,7 @@ def trace(
         raise ValueError("max_call_depth must be between 1 and 32")
     concrete = data if isinstance(data, LoadedMemory) and concrete_memory else None
     mmrs: Dict[int, Value] = (
-        {
-            address: Const(value)
-            for address, value in CORE_MMR_RESET_VALUES.items()
-        }
+        {address: Const(value) for address, value in CORE_MMR_RESET_VALUES.items()}
         if core_reset_state
         else {}
     )
@@ -2146,8 +2210,7 @@ def summarize(states: Sequence[State], start_sw: int) -> dict:
                 "steps": state.steps,
                 "events": len(state.trace),
                 "loaded_calls": sum(
-                    event.get("action") == "loaded-call-enter"
-                    for event in state.trace
+                    event.get("action") == "loaded-call-enter" for event in state.trace
                 ),
                 "opaque_calls": sum(
                     event.get("action") == "opaque-external-call"
@@ -2187,8 +2250,8 @@ def main(argv=None) -> int:
         "--skip-provisional-entries",
         action="store_true",
         help=(
-            "at initial and followed loaded-function entries only, skip the byte-bounded provisional "
-            "frame instruction and invalidate all DAG registers"
+            "legacy artifact-replay option; currently no-op because the former provisional "
+            "Type19 entry is now documented"
         ),
     )
     p.add_argument(

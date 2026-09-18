@@ -63,6 +63,26 @@ class DisasmTest(unittest.TestCase):
             'shiftimm[15:0]': 0x8022,
         })
 
+    def test_15_prefix_is_documented_scaled_type19_modify(self):
+        data = bytes.fromhex("8715fffffeff")
+        rec = next(sharc_disasm.disassemble(data))
+        self.assertEqual(
+            (rec.type_name, rec.length_bytes, rec.kind),
+            ("19a_scaled", 6, "confident"),
+        )
+        self.assertEqual(rec.raw, 0x1587FFFFFFFE)
+        self.assertEqual(
+            rec.fields,
+            {
+                "w": 1,
+                "g": 0,
+                "idis[2:0]": 0,
+                "is[2:0]": 7,
+                "data[31:16]": 0xFFFF,
+                "data[15:0]": 0xFFFE,
+            },
+        )
+
     def test_walk(self):
         t = T.get_type('17b')
         hi, lo = t['fields']['ureg[6:0]']

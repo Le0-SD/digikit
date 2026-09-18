@@ -53,12 +53,10 @@ PRM_VALUE_WINS = {"Type2b"}
 # field rather than a digit (Type22a's `emu` selects idle from emuidle).
 # Field declarations to ignore, so the classic grid's fixed values at those bits
 # are used instead. Type19a's PRM figure draws bits 41-40 as a selector
-# `sc[1:0]` and bit 39 as `w`, while the PGR grid and the ADSP-2106x, ADSP-21065L
-# and ADSP-21160 manuals all fix bits 44-40 at 10110 and make bit 39 the
-# bit-reverse flag. With the fields declared, Type19a matched on six bits and
-# took the whole 000101 block, including the undocumented 10101; without them it
-# matches on nine, like Type19a_bitrev. See docs/FINDINGS.md, "Type19a's mask is
-# two bits short".
+# `sc[1:0]` and bit 39 as `w`, while the classic PGR grid fixes the ordinary
+# unscaled form at 10110. Keep that classic form narrow here; the SHARC+ scaled
+# `sc=01` form is emitted separately below from the PRM BH table and an
+# independent public decoder.
 DROP_FIELDS = {"Type19a": {"sc[1:0]", "w"}}
 
 # Bits where a split branch form takes the PRM figure's digit although its own
@@ -124,14 +122,6 @@ UNDOCUMENTED = [
         "note": "provisional, from firmware only (the old Type26a prefix; one "
                 "instance per image, too few to judge)",
     },
-    # Bits 44-40 = 10101 sits between Type 18 (10100) and Type 19 (10110), and
-    # no ADI manual across four generations puts an instruction there. Type19a
-    # used to take it, because its figure declares bits 41-39 as fields where
-    # the classic grid fixes them; with Type19a tightened to nine bits these
-    # words need a home. 757 across the two images, 748 of them with bit 39 set.
-    # The field layout below is Type19a's, which the frames fit -- an index
-    # register and a small signed immediate -- but that is a reading of the
-    # bytes, not a source, and bit 39's meaning is unknown.
     # The words Type8a used to take on its loose eight-bit prefix, now that
     # both halves fix bit 25 to zero (RESTORE_PRM_GAP). Excluding them without
     # giving them a home costs 50 aligned instructions in 1.16 and 71 in 1.11
@@ -160,24 +150,6 @@ UNDOCUMENTED = [
         "note": "provisional, from firmware only (bits 47-41 = 0000011 with "
                 "bit 25 set, which no real Type 8a branch has; 32 across the "
                 "two images)",
-    },
-    {
-        "name": "Type19p_undoc48",
-        "width": 48,
-        "prefix_bits": "00010101",
-        "fields": [
-            {"label": "u", "hi": 39, "lo": 39},
-            {"label": "g", "hi": 38, "lo": 38},
-            {"label": "idis[2:0]", "hi": 37, "lo": 35},
-            {"label": "is[2:0]", "hi": 34, "lo": 32},
-            {"label": "data[31:16]", "hi": 31, "lo": 16},
-            {"label": "data[15:0]", "hi": 15, "lo": 0},
-        ],
-        "source": "firmware (undocumented; the 10101 gap between Type 18 and "
-                  "Type 19; unconfirmed)",
-        "note": "provisional, from firmware only (bits 44-40 = 10101, which no "
-                "manual documents; taken from Type19a when its mask is "
-                "tightened to the nine bits the classic grid fixes)",
     },
 ]
 
@@ -424,6 +396,34 @@ forms.append({
 notes.append(
     "Type6b_shiftimm: public decoder selects 48 bits for the 0x02 prefix; "
     "the PRM Type6a no-memory mask and ShiftImm fields then decode the operation"
+)
+
+# The SHARC+ Type19a BH table assigns sc=01 to enhanced immediate MODIFY and
+# uses bit 39 to choose SW/NW scaling.  The public Selache decoder independently
+# confirms the remaining PRM field layout.  Keep the ordinary sc=10 Type19a
+# above for classic compatibility and emit the scaled form explicitly.
+forms.append({
+    "name": "Type19a_scaled",
+    "width": 48,
+    "visa": True,
+    "isa": True,
+    "mask": "0xff0000000000",
+    "value": "0x150000000000",
+    "fixed_bits": 8,
+    "fields": [
+        {"label": "w", "hi": 39, "lo": 39},
+        {"label": "g", "hi": 38, "lo": 38},
+        {"label": "idis[2:0]", "hi": 37, "lo": 35},
+        {"label": "is[2:0]", "hi": 34, "lo": 32},
+        {"label": "data[31:16]", "hi": 31, "lo": 16},
+        {"label": "data[15:0]", "hi": 15, "lo": 0},
+    ],
+    "source": "prm Type19a layout/BH table + public Selache decoder cross-check",
+    "classic_keys": [],
+    "unconfirmed_bits": 0,
+})
+notes.append(
+    "Type19a_scaled: PRM Type19a BH sc=01 form; bit 39 selects SW/NW scaling"
 )
 
 def undocumented_form(entry):
