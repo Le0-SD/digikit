@@ -14,13 +14,14 @@ import re
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Sequence, Union
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 from sharc_disasm import Instruction, decode_loaded_at, disassemble
-from sharcldr import SW_ALIAS_BASE, LoadedMemory
+from sharcimm import name_address
+from sharcldr import SW_ALIAS_BASE, LoadedMemory, sw_to_byte
 
 UREG_NAMES = tuple(
     [f"R{i}" for i in range(16)]
@@ -65,6 +66,46 @@ UREG_NAMES = tuple(
     ]
 )
 UREG_CODES = {name: code for code, name in enumerate(UREG_NAMES)}
+
+# Public SHARC+ register tables document these reset values.  Keep this list
+# deliberately bounded to core state used by startup rather than treating
+# every absent UREG as zero.
+CORE_UREG_RESET_VALUES = {
+    name: 0
+    for name in (
+        "MODE1",
+        "MMASK",
+        "MODE1STK",
+        "MODE2",
+        "PCSTK",
+        "PCSTKP",
+        "LADDR",
+        "LCNTR",
+        "CURLCNTR",
+        "ASTATX",
+        "ASTATY",
+        "STKYX",
+        "STKYY",
+        "IRPTL",
+        "IMASK",
+        "IMASKP",
+    )
+}
+CORE_MMR_RESET_VALUES = {
+    0x30024: 0,  # CMMR_SYSCTL
+    0x31400: 0,  # SHBTB_CFG
+    0x31401: 0,  # SHBTB_LOCK_START
+    0x31402: 0,  # SHBTB_LOCK_END
+    0x3E000: 0,  # SHL1C_CFG
+    0x3E002: 0,  # SHL1C_CFG2
+}
+
+# ADSP-2156x L1 block 3 aliases.  The normal-word window is the one used by
+# the reset path's PM(...)=PX table read; the loader records the same physical
+# storage through the short-word/system-byte view.
+L1_BLOCK3_NW_BASE = 0x000E0000
+L1_BLOCK3_NW_LIMIT = 0x000E8000
+L1_BLOCK3_SW_BASE = 0x001C0000
 
 
 @dataclass(frozen=True)
@@ -134,6 +175,14 @@ class Pending:
     return_sw: Optional[int] = None
 
 
+@dataclass(frozen=True)
+class Loop:
+    start_sw: int
+    end_sw: int
+    remaining: int
+    mode: int
+
+
 @dataclass
 class State:
     pc_sw: int
@@ -155,6 +204,11 @@ class State:
     skip_provisional_entries: bool = False
     at_loaded_entry: bool = False
     assume_nw32: bool = False
+    loops: List[Loop] = field(default_factory=list)
+    status_stack: List[tuple[Value, Value, Value]] = field(default_factory=list)
+    core_reset_state: bool = False
+    mmrs: Dict[int, Value] = field(default_factory=dict)
+    data_memory_tainted: bool = False
 
 
 def _signed(value: int, bits: int) -> int:
@@ -255,6 +309,11 @@ def _copy(state: State) -> State:
         state.skip_provisional_entries,
         state.at_loaded_entry,
         state.assume_nw32,
+        list(state.loops),
+        list(state.status_stack),
+        state.core_reset_state,
+        dict(state.mmrs),
+        state.data_memory_tainted,
     )
 
 
@@ -304,12 +363,29 @@ def _dm_read(
     concrete = _concrete_address(address)
     if state.concrete is None or concrete is None or width not in (1, 2, 4, 8):
         return None
-    if width == 4 and not state.assume_nw32 and not 0x30000000 <= concrete < 0x40000000:
+    fixed_width_mmr = (
+        concrete in CORE_MMR_RESET_VALUES or name_address(concrete) is not None
+    )
+    if width == 4 and fixed_width_mmr and concrete in state.mmrs:
+        value = state.mmrs[concrete]
+        return value if isinstance(value, Const) else None
+    if width == 4 and fixed_width_mmr and state.data_memory_tainted:
+        return None
+    if (
+        width == 4
+        and not state.assume_nw32
+        and not fixed_width_mmr
+        and not 0x30000000 <= concrete < 0x40000000
+    ):
         # Internal normal-word width depends on runtime IMDWx state.  Reading
         # four loader bytes as one word is opt-in until that state is known.
         return None
     concrete = _canonical_dm_address(state, concrete, width)
     if concrete is None:
+        return None
+    if state.data_memory_tainted and not all(
+        here in state.overlay for here in range(concrete, concrete + width)
+    ):
         return None
     backing = state.concrete
     assert backing is not None
@@ -327,6 +403,66 @@ def _dm_read(
     return Const(value) if width <= 4 else None
 
 
+def _read_px48(
+    state: State, address: Value | int
+) -> Optional[tuple[Const, Const]]:
+    """Read a loader-backed 48-bit normal word into the PX1/PX2 halves.
+
+    A combined-PX DM or PM transfer without ``LW`` is 48 bits.  L1 block 3's
+    normal-word alias packs those words in three 16-bit columns, while loader
+    records use the short-word/system-byte view.  Each 48-bit word therefore
+    consumes six loader bytes.  The three parcels are individually little-
+    endian, but retain their architectural high-to-low order.
+    """
+    concrete = _concrete_address(address)
+    if (
+        state.concrete is None
+        or concrete is None
+        or not L1_BLOCK3_NW_BASE <= concrete < L1_BLOCK3_NW_LIMIT
+    ):
+        return None
+    offset = concrete - L1_BLOCK3_NW_BASE
+    byte_address = sw_to_byte(L1_BLOCK3_SW_BASE) + 6 * offset
+    raw = state.concrete.read(byte_address, 6)
+    if raw is None:
+        return None
+    high, middle, low = (
+        int.from_bytes(raw[start : start + 2], "little")
+        for start in (0, 2, 4)
+    )
+    px2 = Const((high << 16) | middle)
+    px1 = Const(low << 16)
+    return px1, px2
+
+
+def _load_normal_ureg(
+    state: State, space: str, address: Value | int, code: int
+) -> Optional[Const | dict[str, int]]:
+    """Load one normal-word UREG value, including combined-PX DM/PM reads."""
+    if code == UREG_CODES["PX"]:
+        halves = _read_px48(state, address)
+        if halves is not None:
+            px1, px2 = halves
+            state.uregs[UREG_CODES["PX"]] = Unknown(
+                "combined PX represented by PX1/PX2"
+            )
+            state.uregs[UREG_CODES["PX1"]] = px1
+            state.uregs[UREG_CODES["PX2"]] = px2
+            return {"PX1": px1.value, "PX2": px2.value}
+        state.uregs[UREG_CODES["PX1"]] = Unknown(
+            "memory-address " + _render(address)
+        )
+        state.uregs[UREG_CODES["PX2"]] = Unknown(
+            "memory-address " + _render(address)
+        )
+    elif space == "DM":
+        loaded = _dm_read(state, address, 4)
+        state.uregs[code] = loaded or Unknown("memory-address " + _render(address))
+        return loaded
+    state.uregs[code] = Unknown("memory-address " + _render(address))
+    return None
+
+
 def _dm_write(state: State, address: Value | int, width: int, value: Value) -> bool:
     concrete = _concrete_address(address)
     if (
@@ -336,7 +472,18 @@ def _dm_write(state: State, address: Value | int, width: int, value: Value) -> b
         or width not in (1, 2, 4)
     ):
         return False
-    if width == 4 and not state.assume_nw32 and not 0x30000000 <= concrete < 0x40000000:
+    fixed_width_mmr = (
+        concrete in CORE_MMR_RESET_VALUES or name_address(concrete) is not None
+    )
+    if width == 4 and fixed_width_mmr:
+        state.mmrs[concrete] = value
+        return True
+    if (
+        width == 4
+        and not state.assume_nw32
+        and not fixed_width_mmr
+        and not 0x30000000 <= concrete < 0x40000000
+    ):
         return False
     concrete = _canonical_dm_address(state, concrete, width, for_write=True)
     if concrete is None:
@@ -440,6 +587,81 @@ def _bitwise(left: Value, right: Value, expression: str, operation) -> Value:
     if isinstance(left, Const) and isinstance(right, Const):
         return Const(operation(left.value, right.value))
     return Unknown(expression)
+
+
+def _sync_pc_stack(state: State) -> None:
+    """Mirror the tracer's architectural PC stack into its public registers."""
+    state.uregs[UREG_CODES["PCSTKP"]] = Const(len(state.call_stack))
+    state.uregs[UREG_CODES["PCSTK"]] = (
+        Const(state.call_stack[-1]) if state.call_stack else Const(0x7FFFFFFF)
+    )
+    stkyx_code = UREG_CODES["STKYX"]
+    state.uregs[stkyx_code] = _bitwise(
+        _ureg(state.uregs, stkyx_code),
+        Const(1 << 22),
+        "PC stack empty" if not state.call_stack else "PC stack nonempty",
+        (lambda value, mask: value | mask)
+        if not state.call_stack
+        else (lambda value, mask: value & ~mask),
+    )
+
+
+def _shift_immediate(
+    f: Mapping[str, int], values: Mapping[int, Value]
+) -> tuple[int, Value, str]:
+    """Execute the documented ShiftImm subset seen on qualifying paths."""
+    field = (_field(f, "shiftimm[22:16]") << 16) | _field(
+        f, "shiftimm[15:0]"
+    )
+    opcode = (field >> 16) & 0x3F
+    data8 = (field >> 8) & 0xFF
+    rn, rx = (field >> 4) & 0xF, field & 0xF
+    source = _ureg(values, rx)
+    if opcode == 0x00:
+        amount = _signed(data8, 8)
+        if amount == 0:
+            value = source
+        elif not isinstance(source, Const):
+            value = Unknown("lshift R%d by %d" % (rx, amount))
+        elif amount >= 32 or amount <= -32:
+            value = Const(0)
+        elif amount > 0:
+            value = Const(source.value << amount)
+        else:
+            value = Const(source.value >> -amount)
+        return rn, value, "logical-shift-immediate"
+    if opcode == 0x10:
+        position = data8 & 0x3F
+        length = (_field(f, "dataex[3:0]") << 2) | (data8 >> 6)
+        if length == 0:
+            value = Const(0)
+        elif not isinstance(source, Const):
+            value = Unknown("fext R%d by %d:%d" % (rx, position, length))
+        else:
+            value = Const(
+                (source.value >> position) & ((1 << min(length, 32)) - 1)
+            )
+        return rn, value, "field-extract-immediate"
+    if opcode in (0x30, 0x31):
+        position = data8
+        if position > 31:
+            value = source
+        else:
+            calculate = (
+                (lambda a, b: a | b)
+                if opcode == 0x30
+                else (lambda a, b: a & ~b)
+            )
+            name = "bset" if opcode == 0x30 else "bclr"
+            value = _bitwise(
+                source,
+                Const(1 << position),
+                "%s R%d by %d" % (name, rx, position),
+                calculate,
+            )
+        operation = "bit-set-immediate" if opcode == 0x30 else "bit-clear-immediate"
+        return rn, value, operation
+    raise ValueError("unsupported ShiftImm opcode %#x" % opcode)
 
 
 def _not(value: Value, expression: str) -> Value:
@@ -587,6 +809,43 @@ def _advance(state: State, insn: Instruction) -> List[State]:
         raise ValueError("cannot advance an instruction without a decoded length")
     next_pc = state.pc_sw + insn.length_bytes // 2
     if state.pending is None:
+        if state.loops and state.pc_sw == state.loops[-1].end_sw:
+            loop = state.loops[-1]
+            remaining = loop.remaining - 1
+            state.uregs[UREG_CODES["CURLCNTR"]] = Const(max(remaining, 0))
+            if remaining > 0:
+                _event(
+                    state,
+                    insn,
+                    "loop-back",
+                    target_sw=loop.start_sw,
+                    remaining=remaining,
+                    mode=loop.mode,
+                )
+                state.loops[-1] = Loop(
+                    loop.start_sw, loop.end_sw, remaining, loop.mode
+                )
+                state.pc_sw = loop.start_sw
+                return [state]
+            _event(state, insn, "loop-exit", remaining=0, mode=loop.mode)
+            state.loops.pop()
+            if not state.call_stack or state.call_stack[-1] != loop.start_sw:
+                return [_stop(state, insn, "loop PC-stack mismatch")]
+            state.call_stack.pop()
+            _sync_pc_stack(state)
+            state.uregs[UREG_CODES["CURLCNTR"]] = (
+                Const(state.loops[-1].remaining)
+                if state.loops
+                else Const(0xFFFFFFFF)
+            )
+            if not state.loops:
+                stkyx_code = UREG_CODES["STKYX"]
+                state.uregs[stkyx_code] = _bitwise(
+                    _ureg(state.uregs, stkyx_code),
+                    Const(1 << 26),
+                    "loop stacks empty",
+                    lambda a, b: a | b,
+                )
         state.pc_sw = next_pc
         return [state]
     p = state.pending
@@ -594,7 +853,10 @@ def _advance(state: State, insn: Instruction) -> List[State]:
         if p.return_from_call:
             if not state.call_stack:
                 return [_stop(state, insn, "return without followed call")]
+            if state.loops and state.call_stack[-1] == state.loops[-1].start_sw:
+                return [_stop(state, insn, "return reached loop PC-stack entry")]
             state.pc_sw = state.call_stack.pop()
+            _sync_pc_stack(state)
             state.pending = None
             _event(state, insn, "loaded-call-return", return_sw=state.pc_sw)
             return [state]
@@ -607,16 +869,19 @@ def _advance(state: State, insn: Instruction) -> List[State]:
                 state.follow_loaded_calls
                 and state.concrete is not None
                 and target is not None
+                and target >= 0
             ):
                 decoded = decode_at(state.concrete, None, target)
                 loaded = decoded.kind != "unknown"
             if loaded:
-                if len(state.call_stack) >= state.max_call_depth:
+                followed_depth = len(state.call_stack) - len(state.loops)
+                if followed_depth >= state.max_call_depth:
                     return [_stop(state, insn, "max-call-depth")]
                 return_sw = p.return_sw
                 if return_sw is None:
                     return [_stop(state, insn, "call without architectural return")]
                 state.call_stack.append(return_sw)
+                _sync_pc_stack(state)
                 state.pending = None
                 state.pc_sw = target
                 state.at_loaded_entry = True
@@ -663,9 +928,16 @@ def _advance(state: State, insn: Instruction) -> List[State]:
     return [state]
 
 
-def _predicate(cond: int) -> Optional[bool]:
-    # TRUE is documented; no flag model exists, so every other predicate is unknown.
-    return True if cond == 0x1F else None
+def _predicate(state: State, cond: int) -> Optional[bool]:
+    if cond == 0x1F:
+        return True
+    if cond in (0x0D, 0x1D):
+        astatx = _ureg(state.uregs, UREG_CODES["ASTATX"])
+        if not isinstance(astatx, Const):
+            return None
+        bit_test = bool(astatx.value & (1 << 18))
+        return bit_test if cond == 0x0D else not bit_test
+    return None
 
 
 def _transfer(
@@ -715,6 +987,78 @@ def _immediate_transfer(
     return _advance(taken, insn) + _advance(not_taken, insn)
 
 
+def _return_transfer(
+    state: State, insn: Instruction, predicate: Optional[bool], delayed: bool
+) -> List[State]:
+    """Execute a documented RTS against the tracer's followed-call stack."""
+    if state.pending:
+        return [_stop(state, insn, "nested delayed transfer")]
+    if insn.length_bytes is None:
+        raise ValueError("cannot return from an instruction without a decoded length")
+    length_bytes = insn.length_bytes
+    _event(state, insn, "return", predicate=predicate, delayed=delayed)
+    if predicate is False:
+        state.trace[-1]["action"] = "return-not-taken"
+        return _advance(state, insn)
+
+    def take_return(taken: State) -> List[State]:
+        if not taken.call_stack:
+            return [_stop(taken, insn, "return without followed call")]
+        if taken.loops and taken.call_stack[-1] == taken.loops[-1].start_sw:
+            return [_stop(taken, insn, "return reached loop PC-stack entry")]
+        if delayed:
+            taken.steps += 1
+            taken.pc_sw += length_bytes // 2
+            taken.pending = Pending(None, slots=2, return_from_call=True)
+        else:
+            taken.steps += 1
+            taken.pc_sw = taken.call_stack.pop()
+            _sync_pc_stack(taken)
+            _event(taken, insn, "loaded-call-return", return_sw=taken.pc_sw)
+        return [taken]
+
+    if predicate is True:
+        return take_return(state)
+    taken, not_taken = _copy(state), _copy(state)
+    not_taken.trace[-1]["action"] = "return-not-taken"
+    return take_return(taken) + _advance(not_taken, insn)
+
+
+def _start_counted_loop(state: State, insn: Instruction, count: int) -> List[State]:
+    if count == 0:
+        return [_stop(state, insn, "unsupported zero-count Type12a loop")]
+    reladdr = (_field(insn.fields, "reladdr[22:16]") << 16) | _field(
+        insn.fields, "reladdr[15:0]"
+    )
+    if insn.length_bytes is None:
+        raise ValueError("cannot start a loop from an instruction without a length")
+    end_sw = state.pc_sw + _signed(reladdr, 23)
+    start_sw = state.pc_sw + insn.length_bytes // 2
+    mode = _field(insn.fields, "mode")
+    state.uregs[UREG_CODES["LCNTR"]] = Const(count)
+    state.uregs[UREG_CODES["CURLCNTR"]] = Const(count)
+    stkyx_code = UREG_CODES["STKYX"]
+    state.uregs[stkyx_code] = _bitwise(
+        _ureg(state.uregs, stkyx_code),
+        Const(1 << 26),
+        "loop stacks nonempty",
+        lambda a, b: a & ~b,
+    )
+    state.loops.append(Loop(start_sw, end_sw, count, mode))
+    state.call_stack.append(start_sw)
+    _sync_pc_stack(state)
+    _event(
+        state,
+        insn,
+        "loop-setup",
+        start_sw=start_sw,
+        end_sw=end_sw,
+        count=count,
+        mode=mode,
+    )
+    return _advance(state, insn)
+
+
 def _execute(state: State, insn: Instruction) -> List[State]:
     if insn.kind != "confident" or insn.length_bytes is None:
         if (
@@ -742,8 +1086,245 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         return [_stop(state, insn, "uncertain or undecodable form: " + insn.note)]
     state.at_loaded_entry = False
     f, name = insn.fields, insn.type_name
+    if name in ("21a", "21c"):
+        return _advance(state, insn)
+    if name == "6b_shiftimm":
+        if _field(f, "cond") != 0x1F:
+            return [_stop(state, insn, "unsupported Type6b predicate")]
+        try:
+            result = _shift_immediate(f, dict(state.uregs))
+        except ValueError as error:
+            return [_stop(state, insn, str(error))]
+        _apply_compute(state, insn, result)
+        return _advance(state, insn)
+    if name == "18a":
+        bop = _field(f, "bop")
+        sreg = _field(f, "sreg")
+        if bop in (4, 5):
+            operation = "bit-test" if bop == 4 else "xor-test"
+            code = UREG_CODES["USTAT1"] + sreg
+            mask = _wide(f, "data")
+            source = _ureg(state.uregs, code)
+            if isinstance(source, Const):
+                result = (
+                    (source.value & mask) == mask
+                    if bop == 4
+                    else source.value == mask
+                )
+            else:
+                result = None
+            mode1 = _ureg(state.uregs, UREG_CODES["MODE1"])
+            simd = (
+                bool(mode1.value & (1 << 21))
+                if isinstance(mode1, Const)
+                else None
+            )
+            astatx_code = UREG_CODES["ASTATX"]
+            astatx = _ureg(state.uregs, astatx_code)
+            if result is None or not isinstance(astatx, Const):
+                state.uregs[astatx_code] = Unknown(operation + " BTF")
+            else:
+                state.uregs[astatx_code] = Const(
+                    (astatx.value & ~(1 << 18)) | ((1 << 18) if result else 0)
+                )
+            # In SIMD mode the complementary STKY/ASTAT pair is evaluated
+            # independently.  Preserve that uncertainty unless both MODE1
+            # and the complementary source are concrete.
+            if sreg in (6, 7, 8, 9) and simd is not False:
+                complement = {6: 7, 7: 6, 8: 9, 9: 8}[sreg]
+                complement_source = _ureg(
+                    state.uregs, UREG_CODES["USTAT1"] + complement
+                )
+                if simd is True and isinstance(complement_source, Const):
+                    complement_result = (
+                        (complement_source.value & mask) == mask
+                        if bop == 4
+                        else complement_source.value == mask
+                    )
+                else:
+                    complement_result = None
+                astaty_code = UREG_CODES["ASTATY"]
+                astaty = _ureg(state.uregs, astaty_code)
+                if complement_result is None or not isinstance(astaty, Const):
+                    state.uregs[astaty_code] = Unknown(operation + " PEy BTF")
+                else:
+                    state.uregs[astaty_code] = Const(
+                        (astaty.value & ~(1 << 18))
+                        | ((1 << 18) if complement_result else 0)
+                    )
+            _event(
+                state,
+                insn,
+                "system-bit-test",
+                register=UREG_NAMES[code],
+                operation=operation,
+                mask=mask,
+                result=result,
+                simd=simd,
+            )
+            return _advance(state, insn)
+        operations = {
+            0: ("set", lambda a, b: a | b),
+            1: ("clear", lambda a, b: a & ~b),
+            2: ("toggle", lambda a, b: a ^ b),
+        }
+        if bop not in operations:
+            return [_stop(state, insn, "unsupported Type18a BOP %#x" % bop)]
+        # ASTATx/y and STKYx/y have implicit complementary-register behavior
+        # in SIMD mode.  Stop rather than invent MODE1/PE state for those
+        # register pairs; the other SYSREG selections have no companion.
+        if sreg in (6, 7, 8, 9):
+            return [
+                _stop(
+                    state,
+                    insn,
+                    "unsupported Type18a SIMD-sensitive system register",
+                )
+            ]
+        code = UREG_CODES["USTAT1"] + sreg
+        mask = _wide(f, "data")
+        previous = _ureg(state.uregs, code)
+        operation, calculate = operations[bop]
+        value = _bitwise(
+            previous,
+            Const(mask),
+            "%s %s %#x" % (operation, UREG_NAMES[code], mask),
+            calculate,
+        )
+        state.uregs[code] = value
+        _event(
+            state,
+            insn,
+            "system-bit-op",
+            register=UREG_NAMES[code],
+            operation=operation,
+            mask=mask,
+            previous=_json_value(previous),
+            value=value,
+        )
+        return _advance(state, insn)
+    if name == "20a":
+        push_fields = ("lpu", "spu", "ppu")
+        pop_fields = ("lpo", "spo", "ppo")
+        if any(_field(f, field) for field in push_fields) and any(
+            _field(f, field) for field in pop_fields
+        ):
+            return [_stop(state, insn, "invalid Type20a mixed push and pop")]
+        unsupported = [
+            field
+            for field in (
+                "lpu",
+                "ppu",
+                "llii",
+                "lldwb",
+                "lldi",
+                "llpwb",
+                "llpi",
+            )
+            if _field(f, field)
+        ]
+        if unsupported:
+            return [
+                _stop(
+                    state,
+                    insn,
+                    "unsupported Type20a operations: " + ", ".join(unsupported),
+                )
+            ]
+        push_status = bool(_field(f, "spu"))
+        pop_status = bool(_field(f, "spo"))
+        pop_loop = bool(_field(f, "lpo"))
+        pop_pc = bool(_field(f, "ppo"))
+        flush_cache = bool(_field(f, "fc"))
+        astatx_code = UREG_CODES["ASTATX"]
+        astaty_code = UREG_CODES["ASTATY"]
+        mode1_code = UREG_CODES["MODE1"]
+        stkyx_code = UREG_CODES["STKYX"]
+        if push_status:
+            state.status_stack.append(
+                (
+                    _ureg(state.uregs, astatx_code),
+                    _ureg(state.uregs, astaty_code),
+                    _ureg(state.uregs, mode1_code),
+                )
+            )
+            state.uregs[mode1_code] = _bitwise(
+                _ureg(state.uregs, mode1_code),
+                _ureg(state.uregs, UREG_CODES["MMASK"]),
+                "MODE1 masked by PUSH STS",
+                lambda mode1, mmask: mode1 & ~mmask,
+            )
+            state.uregs[stkyx_code] = _bitwise(
+                _ureg(state.uregs, stkyx_code),
+                Const(1 << 24),
+                "status stack nonempty",
+                lambda value, mask: value & ~mask,
+            )
+        if pop_status:
+            if state.status_stack:
+                astatx, astaty, mode1 = state.status_stack.pop()
+                state.uregs[astatx_code] = astatx
+                state.uregs[astaty_code] = astaty
+                state.uregs[mode1_code] = mode1
+            if not state.status_stack:
+                state.uregs[stkyx_code] = _bitwise(
+                    _ureg(state.uregs, stkyx_code),
+                    Const(1 << 24),
+                    "status stack empty",
+                    lambda value, mask: value | mask,
+                )
+        if pop_loop:
+            if state.loops:
+                state.loops.pop()
+            state.uregs[UREG_CODES["CURLCNTR"]] = (
+                Const(state.loops[-1].remaining)
+                if state.loops
+                else Const(0xFFFFFFFF)
+            )
+            if not state.loops:
+                state.uregs[stkyx_code] = _bitwise(
+                    _ureg(state.uregs, stkyx_code),
+                    Const(1 << 26),
+                    "loop stacks empty",
+                    lambda value, mask: value | mask,
+                )
+        if pop_pc:
+            if state.call_stack:
+                state.call_stack.pop()
+            _sync_pc_stack(state)
+        _event(
+            state,
+            insn,
+            "stack-control",
+            push_status=push_status,
+            pop_status=pop_status,
+            pop_loop=pop_loop,
+            pop_pc=pop_pc,
+            flush_cache=flush_cache,
+            status_depth=len(state.status_stack),
+        )
+        return _advance(state, insn)
+    if name == "12a_imm":
+        count = (_field(f, "data[15:8]") << 8) | _field(f, "data[7:0]")
+        return _start_counted_loop(state, insn, count)
+    if name == "12a_ureg":
+        count = _ureg(state.uregs, _field(f, "ureg"))
+        if not isinstance(count, Const):
+            return [_stop(state, insn, "nonconcrete Type12a UREG loop count")]
+        return _start_counted_loop(state, insn, count.value)
     if state.pending and name in ("25a_direct", "25a_pcrel", "8a_abs", "8a_rel"):
         return [_stop(state, insn, "nested delayed transfer")]
+    if name == "11c":
+        if _field(f, "x"):
+            return [_stop(state, insn, "unsupported Type11c RTI")]
+        if _field(f, "lr"):
+            return [_stop(state, insn, "unsupported Type11c loop reentry")]
+        return _return_transfer(
+            state,
+            insn,
+            _predicate(state, _field(f, "cond")),
+            bool(_field(f, "j")),
+        )
     # The verified compiler return is a TRUE 9b_abs jump through I4/M6,
     # with two delay slots, one of which is the confident 25c_rframe form.
     # Do not treat rframe alone, its provisional 48-bit sibling, or another
@@ -851,8 +1432,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                 access_width="normal-word",
             )
         else:
-            loaded = _dm_read(state, address, 4) if space == "DM" else None
-            state.uregs[ureg] = loaded or Unknown("memory-address " + _render(address))
+            loaded = _load_normal_ureg(state, space, address, ureg)
             _event(
                 state,
                 insn,
@@ -902,8 +1482,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                 ),
             )
         else:
-            loaded = _dm_read(state, address, 4) if space == "DM" else None
-            state.uregs[code] = loaded or Unknown("memory-address " + rendered)
+            loaded = _load_normal_ureg(state, space, address, code)
             _event(
                 state,
                 insn,
@@ -932,7 +1511,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         )
         dst = _field(f, "dstureg")
         copied = _ureg(old, src)
-        predicate = _predicate(cond)
+        predicate = _predicate(state, cond)
         if predicate is False:
             _event(
                 state,
@@ -990,7 +1569,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         if compute is None:
             return [_stop(state, insn, "empty full compute")]
         cond = _field(f, "cond")
-        predicate = _predicate(cond)
+        predicate = _predicate(state, cond)
         if predicate is True:
             _apply_compute(state, insn, compute)
             state.trace[-1].update(condition=cond, predicate_assumption=True)
@@ -1150,7 +1729,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                     iv, Const(offset), "I%d + %d" % (index, offset)
                 )
 
-        predicate = _predicate(cond)
+        predicate = _predicate(state, cond)
         if predicate is True:
             access_memory(state)
             return _advance(state, insn)
@@ -1233,16 +1812,25 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                     predicate_assumption=True,
                 )
             else:
-                loaded = (
-                    _dm_read(
-                        executed, address, width, access_width.endswith("sign-extended")
+                if access_width == "normal-word":
+                    loaded: Optional[Const | dict[str, int]] = _load_normal_ureg(
+                        executed, space, address, ureg
                     )
-                    if space == "DM"
-                    else None
-                )
-                executed.uregs[ureg] = loaded or Unknown(
-                    "memory-address " + _render(address)
-                )
+                else:
+                    scalar_loaded = (
+                        _dm_read(
+                            executed,
+                            address,
+                            width,
+                            access_width.endswith("sign-extended"),
+                        )
+                        if space == "DM"
+                        else None
+                    )
+                    executed.uregs[ureg] = scalar_loaded or Unknown(
+                        "memory-address " + _render(address)
+                    )
+                    loaded = scalar_loaded
                 _event(
                     executed,
                     insn,
@@ -1262,7 +1850,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                     iv, mv, "I%d + M%d" % (index, modifier)
                 )
 
-        predicate = _predicate(cond)
+        predicate = _predicate(state, cond)
         if predicate is True:
             access(state)
             return _advance(state, insn)
@@ -1401,7 +1989,11 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             raw if name.endswith(("direct", "abs")) else state.pc_sw + _signed(raw, 24)
         )
         call = name.startswith("25a") or bool(_field(f, "b"))
-        cond = True if name.startswith("25a") else _predicate(_field(f, "cond"))
+        cond = (
+            True
+            if name.startswith("25a")
+            else _predicate(state, _field(f, "cond"))
+        )
         delayed = name.startswith("25a") or bool(_field(f, "j"))
         transfer = _transfer if delayed else _immediate_transfer
         return transfer(state, insn, target, call, cond)
@@ -1444,8 +2036,12 @@ def trace(
     max_call_depth: int = 8,
     skip_provisional_entries: bool = False,
     assume_nw32: bool = False,
+    core_reset_state: bool = False,
 ) -> List[State]:
-    uregs: Dict[int, Value] = {}
+    uregs: Dict[int, Value] = {
+        UREG_CODES[name]: Const(value)
+        for name, value in CORE_UREG_RESET_VALUES.items()
+    } if core_reset_state else {}
     for key, value in (sets or {}).items():
         uregs[_seed_code(key)] = _seed_value(value)
     if concrete_memory and not isinstance(data, LoadedMemory):
@@ -1459,6 +2055,14 @@ def trace(
     if max_call_depth < 1 or max_call_depth > 32:
         raise ValueError("max_call_depth must be between 1 and 32")
     concrete = data if isinstance(data, LoadedMemory) and concrete_memory else None
+    mmrs: Dict[int, Value] = (
+        {
+            address: Const(value)
+            for address, value in CORE_MMR_RESET_VALUES.items()
+        }
+        if core_reset_state
+        else {}
+    )
     active, done = (
         [
             State(
@@ -1473,6 +2077,8 @@ def trace(
                 skip_provisional_entries=skip_provisional_entries,
                 at_loaded_entry=skip_provisional_entries,
                 assume_nw32=assume_nw32,
+                core_reset_state=core_reset_state,
+                mmrs=mmrs,
             )
         ],
         [],
@@ -1491,6 +2097,68 @@ def trace(
             else:
                 active.append(child)
     return done
+
+
+def summarize(states: Sequence[State], start_sw: int) -> dict:
+    """Return a bounded machine-readable runtime-probe summary."""
+    summaries = []
+    for state in states:
+        peripheral_accesses = []
+        loop_setups = []
+        for event in state.trace:
+            if event.get("action") == "loop-setup":
+                loop_setups.append(
+                    {
+                        key: event[key]
+                        for key in (
+                            "pc_sw",
+                            "start_sw",
+                            "end_sw",
+                            "count",
+                            "mode",
+                        )
+                    }
+                )
+            if event.get("action") not in ("load", "store"):
+                continue
+            address = event.get("address")
+            if not isinstance(address, int):
+                continue
+            peripheral = name_address(address)
+            if peripheral is None:
+                continue
+            access = {
+                "pc_sw": event["pc_sw"],
+                "action": event["action"],
+                "address": address,
+                "peripheral": peripheral,
+            }
+            for key in ("value", "concrete_value", "access_width"):
+                if key in event:
+                    access[key] = event[key]
+            peripheral_accesses.append(access)
+        stop_event = state.trace[-1] if state.trace else {}
+        summaries.append(
+            {
+                "stopped": state.stopped,
+                "stop_pc_sw": stop_event.get("pc_sw", state.pc_sw),
+                "stop_form": stop_event.get("form"),
+                "steps": state.steps,
+                "events": len(state.trace),
+                "loaded_calls": sum(
+                    event.get("action") == "loaded-call-enter"
+                    for event in state.trace
+                ),
+                "opaque_calls": sum(
+                    event.get("action") == "opaque-external-call"
+                    for event in state.trace
+                ),
+                "loop_setups": loop_setups,
+                "peripheral_accesses": peripheral_accesses,
+                "last_events": state.trace[-5:],
+            }
+        )
+    return {"start_sw": start_sw, "states": summaries}
 
 
 def main(argv=None) -> int:
@@ -1528,7 +2196,23 @@ def main(argv=None) -> int:
         action="store_true",
         help="opt in to four-byte internal normal-word DM accesses (runtime IMDWx is otherwise unknown)",
     )
-    p.add_argument("--json", action="store_true")
+    p.add_argument(
+        "--core-reset-state",
+        action="store_true",
+        help="seed only documented core-register and core-MMR reset values",
+    )
+    output = p.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true")
+    output.add_argument(
+        "--summary",
+        action="store_true",
+        help="print compact stop, loop and named-peripheral details",
+    )
+    p.add_argument(
+        "--trace-json",
+        metavar="PATH",
+        help="also write the full JSON trace to PATH",
+    )
     a = p.parse_args(argv)
     values = {}
     for item in a.sets:
@@ -1587,17 +2271,30 @@ def main(argv=None) -> int:
         max_call_depth=a.max_call_depth,
         skip_provisional_entries=a.skip_provisional_entries,
         assume_nw32=a.assume_32bit_normal_words,
+        core_reset_state=a.core_reset_state,
     )
     result = [
         {
             "stopped": s.stopped,
             "steps": s.steps,
-            "assumptions": ["32-bit internal normal words"] if s.assume_nw32 else [],
+            "assumptions": (
+                (["32-bit internal normal words"] if s.assume_nw32 else [])
+                + (["documented core/MMR reset values"] if s.core_reset_state else [])
+            ),
             "trace": s.trace,
         }
         for s in states
     ]
-    if a.json:
+    if a.trace_json:
+        try:
+            with open(a.trace_json, "w") as fh:
+                json.dump(result, fh, indent=2)
+                fh.write("\n")
+        except OSError as error:
+            p.error("cannot write trace JSON: " + str(error))
+    if a.summary:
+        print(json.dumps(summarize(states, a.start), separators=(",", ":")))
+    elif a.json:
         print(json.dumps(result, indent=2))
     else:
         for state in result:

@@ -91,22 +91,7 @@ FULL_WORD = {
     "Type26a": (48, 0x004000000000, ()),      # Figure 17-13
 }
 
-# Undocumented 16-bit instruction family, identified only from firmware.
-# ADI's public PRM omits Type 23 and Type 24; the firmware contains a heavily-used
-# 16-bit instruction with top-7 bits 0000001 and a 9-bit operand field (the word
-# 0x023e alone occurs 329x in the DT2 image). No public figure documents it, so
-# this entry carries a prefix and length only — no confirmed name or semantics.
-# It exists so the decoder sizes these instructions correctly and stays in sync.
-# Prefix width is deliberately a parameter so it can be re-tuned against the
-# firmware; default top-7 bits = 0000001.
 UNDOCUMENTED = [
-    {
-        "name": "Type23p_undoc16",    # provisional; p = provisional
-        "width": 16,
-        "prefix_bits": "0000001",      # top bits, MSB-first, from bit47 down
-        "note": "provisional, from firmware only (0x023e x329, top-7 0000001 "
-                "family = 62% of unknowns)",
-    },
     # The words Type21a used to swallow: with Type21a tightened to the all-zero
     # word, a first word whose top nine bits are zero and whose rest is not is
     # left over. 95% of the old Type21a matches are such words (859 of 904 in
@@ -410,6 +395,36 @@ for f in prm:
         "fields": fields, "source": source, "classic_keys": list(keys),
         "unconfirmed_bits": len(unconfirmed),
     })
+
+# The same public decoder independently agrees with the PRM-only Type12a UREG
+# field layout on the exact loop words reached from reset, so that form no
+# longer needs to carry the table builder's single-source marker.
+type12a_ureg = next(f for f in forms if f["name"] == "Type12a_ureg")
+type12a_ureg["source"] = "prm layout + public Selache decoder cross-check"
+type12a_ureg["unconfirmed_bits"] = 0
+
+# A public SHARC+ VISA decoder identifies the 0x02-prefixed 48-bit form as the
+# no-memory immediate-shift instruction.  Its remaining fixed bits and field
+# positions are identical to the PRM's Type6a no-memory figure, and its low
+# 23-bit ShiftImm field renders through the PRM opcode table without any new
+# semantic mapping.  This corrects the old firmware-only interpretation of the
+# first 0x023e parcel as a standalone reserved 16-bit Type 23 instruction.
+# See docs/sharc/SOURCES.md and docs/FINDINGS.md.
+type6a_nomem = next(f for f in forms if f["name"] == "Type6a (nomem)")
+forms.append({
+    **type6a_nomem,
+    "name": "Type6b_shiftimm",
+    "visa": True,
+    "isa": False,
+    "value": "0x020000000000",
+    "source": "public Selache VISA decoder, cross-checked against PRM Type6a shiftimm",
+    "classic_keys": [],
+    "unconfirmed_bits": 0,
+})
+notes.append(
+    "Type6b_shiftimm: public decoder selects 48 bits for the 0x02 prefix; "
+    "the PRM Type6a no-memory mask and ShiftImm fields then decode the operation"
+)
 
 def undocumented_form(entry):
     prefix_bits = entry["prefix_bits"]

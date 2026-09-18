@@ -52,6 +52,15 @@ from sharc_disasm import disassemble  # noqa: E402
 
 PERIPHERAL_SPACE = (0x30000000, 0x31FFFFFF)
 
+CORE_MMR_REGS = {
+    0x30024: "CMMR_SYSCTL",
+    0x31400: "SHBTB_CFG",
+    0x31401: "SHBTB_LOCK_START",
+    0x31402: "SHBTB_LOCK_END",
+    0x3E000: "SHL1C_CFG",
+    0x3E002: "SHL1C_CFG2",
+}
+
 SPI_REGS = {
     0x04: "CTL", 0x08: "RXCTL", 0x0C: "TXCTL", 0x10: "CLK", 0x14: "DLY",
     0x18: "SLVSEL", 0x1C: "RWC", 0x20: "RWCR", 0x24: "TWC", 0x28: "TWCR",
@@ -155,6 +164,8 @@ BLOCKS = sorted(_blocks())
 
 def name_address(value: int) -> str | None:
     """Peripheral register name for a value, or None outside every known block."""
+    if value in CORE_MMR_REGS:
+        return CORE_MMR_REGS[value]
     for page, dai in ((0x310C9000, 0), (0x310CA000, 1)):
         if page <= value < page + 0x1000:
             off = value - page

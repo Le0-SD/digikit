@@ -50,6 +50,19 @@ class TableTest(unittest.TestCase):
 
 
 class DisasmTest(unittest.TestCase):
+    def test_02_prefix_is_a_48_bit_shift_immediate(self):
+        data = struct.pack('<HHH', 0x023e, 0x3810, 0x8022)
+        rec = next(sharc_disasm.disassemble(data))
+        self.assertEqual((rec.type_name, rec.length_bytes, rec.kind),
+                         ('6b_shiftimm', 6, 'confident'))
+        self.assertEqual(rec.raw, 0x023e38108022)
+        self.assertEqual(rec.fields, {
+            'cond[4:0]': 0x1f,
+            'dataex[3:0]': 7,
+            'shiftimm[22:16]': 0x10,
+            'shiftimm[15:0]': 0x8022,
+        })
+
     def test_walk(self):
         t = T.get_type('17b')
         hi, lo = t['fields']['ureg[6:0]']

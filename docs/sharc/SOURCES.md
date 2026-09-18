@@ -10,15 +10,22 @@ independent list of SHARC+ manual sections is in `docs/refs/sharc-plus-isa.md`.
 
 | File | Document | Pages | Used for |
 |---|---|---|---|
-| `sc58x-2158x-prm.pdf` | SHARC+ Core Programming Reference, Rev 1.5 (June 2023), ADSP-SC5xx and ADSP-215xx | 798 | Instruction bit-layout figures (primary source) and computation opcode tables |
-| `adsp-2136x_2137x_214xx_pgr_rev2.4.pdf` | SHARC Processor Programming Reference, Rev 2.4 (classic core) | 694 | Independent cross-check of opcode bits and computation tables |
-| `adsp-21562-21563-21565-21566-21567-21569.pdf` | ADSP-2156x datasheet, Rev D | 102 | Memory map and peripheral address ranges |
+| `sc58x-2158x-prm.pdf` | SHARC+ Core Programming Reference, Rev 1.5 (June 2023), ADSP-SC5xx and ADSP-215xx | 798 | Instruction bit-layout figures (primary source), computation opcode tables, and combined-PX transfer layout (printed pp. 2-7--2-10) |
+| `adsp-2136x_2137x_214xx_pgr_rev2.4.pdf` | SHARC Processor Programming Reference, Rev 2.4 (classic core) | 694 | Independent cross-check of opcode bits and computation tables; normal/short-word alias example (printed pp. 7-19--7-20) |
+| `adsp-21562-21563-21565-21566-21567-21569.pdf` | ADSP-2156x datasheet, Rev D | 102 | Memory map and peripheral address ranges, including L1 block-3 normal/short-word aliases |
 | `2156x_EZKIT_Manual.pdf` | ADZS-21569-EZKIT manual | 36 | Board context only |
 | `adsp-2156x-hwr.pdf` | ADSP-2156x SHARC+ Processor Hardware Reference, Rev 1.0 (December 2020) | 2331 | Boot stream block flags in `tools/sharcldr.py`; peripheral register addresses (Appendix A), DMA channel assignment (Table 27-2) and SEC ids (Table 6-5) in `tools/sharcimm.py` |
 | `sharc-plus-prm.pdf` | SHARC+ Core Programming Reference, Rev 1.4 | | Page citations in `tools/sharc_visa_tables.py` |
 | `ADSP-21160_isr_rev2.1.pdf` | ADSP-21160 SHARC DSP Instruction Set Reference, Rev 2.1 (April 2013) | 262 | Third opcode source; Table 1-21 records the Type 23/24/25 renumbering |
 | `50836807228561adsp2106xsharcprocessorusersmanual_revision2_1.pdf` | ADSP-2106x SHARC Processor User's Manual, Rev 2.1 (March 2004) | 698 | Third opcode source; documents Type 23 (`IDLE16`) and Type 24 (`CJUMP`/`RFRAME`) |
 | `3789835185494138226006565l_book_tr.pdf` | ADSP-21065L SHARC DSP Technical Reference, Rev 2.0 (July 2003) | 508 | Third opcode source; per-type opcode bit maps in its instruction-set appendix |
+
+Public software used as an independent decoder/corpus cross-check:
+
+| Repository | Revision | Used for |
+|---|---|---|
+| [`js216/selache`](https://github.com/js216/selache) | `2b26d3b75c53063575bc5c820fa0d38879335187` | SHARC+ VISA width and `0x02`-prefixed immediate-shift decode; the decoded ShiftImm field and operation semantics were checked independently against the public programming reference |
+| [`analogdevicesinc/runtime-sharc-loader`](https://github.com/analogdevicesinc/runtime-sharc-loader) | `bbb85bb59b203f4219a831814a721f7646f27498` | Public SHARC+ source/loader corpus containing aligned matching byte sequences; executable placement and source-line association are not established |
 
 `dt2/elz.py`, the section decompressor, follows the format of `aplib.c` in
 [mischa85/elektron-firmware-tool](https://github.com/mischa85/elektron-firmware-tool)

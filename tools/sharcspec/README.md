@@ -90,9 +90,11 @@ wrong or the difference lies in field values.
 
 - Types 25a/25c rframe: bits 23–4 (25a) / 31–20 (25c) are white with no label,
   and the PRM text doesn't say what they hold.
-- The VISA length rule: which prefixes select 16/32/48-bit decoding. Short forms
-  reuse long-form prefixes with a marker field (e.g. 1b = 1a with bits 22–16 =
-  `0111111`); this still needs to be stated from the text and tested.
+- The complete VISA length rule: which remaining prefixes select 16/32/48-bit
+  decoding. Short forms reuse long-form prefixes with a marker field (e.g. 1b
+  = 1a with bits 22–16 = `0111111`). A public independent decoder establishes
+  that first byte `0x02` selects a 48-bit immediate-shift form; its field layout
+  matches the PRM Type6a no-memory ShiftImm figure.
 - Classic 5a/6a pattern details differ slightly between the PRM and PGR in
   blank-vs-gray bits: must-be-zero or don't-care?
 

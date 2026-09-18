@@ -1704,9 +1704,9 @@
      "lo": 0
     }
    ],
-   "source": "prm",
+   "source": "prm layout + public Selache decoder cross-check",
    "classic_keys": [],
-   "unconfirmed_bits": 17
+   "unconfirmed_bits": 0
   },
   {
    "name": "Type13a",
@@ -2441,23 +2441,38 @@
    "unconfirmed_bits": 16
   },
   {
-   "name": "Type23p_undoc16",
-   "width": 16,
+   "name": "Type6b_shiftimm",
+   "width": 48,
    "visa": true,
    "isa": false,
-   "mask": "0xfe0000000000",
+   "mask": "0xffc187800000",
    "value": "0x020000000000",
-   "fixed_bits": 7,
+   "fixed_bits": 16,
    "fields": [
     {
-     "label": "operand[8:0]",
-     "hi": 40,
-     "lo": 32
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "dataex[3:0]",
+     "hi": 30,
+     "lo": 27
+    },
+    {
+     "label": "shiftimm[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "shiftimm[15:0]",
+     "hi": 15,
+     "lo": 0
     }
    ],
-   "source": "firmware (undocumented; unconfirmed)",
+   "source": "public Selache VISA decoder, cross-checked against PRM Type6a shiftimm",
    "classic_keys": [],
-   "unconfirmed_bits": 7
+   "unconfirmed_bits": 0
   },
   {
    "name": "Type21p_undoc16",
@@ -2618,7 +2633,7 @@
   "Type10a: split into Type10a_abs/Type10a_rel -- classic.json keeps these as separate absolute-or-indirect/PC-relative tables; see SPLIT_FORMS",
   "Type19a: PRM field declarations ['sc[1:0]', 'w'] dropped so the classic grid's fixed values at those bits are used",
   "Type25c_rframe: 16-bit form from PGR",
-  "Type23p_undoc16: provisional, from firmware only (0x023e x329, top-7 0000001 family = 62% of unknowns)",
+  "Type6b_shiftimm: public decoder selects 48 bits for the 0x02 prefix; the PRM Type6a no-memory mask and ShiftImm fields then decode the operation",
   "Type21p_undoc16: provisional, from firmware only (the old Type21a prefix; 95% of its matches are not the all-zero NOP word)",
   "Type22p_undoc48: provisional, from firmware only (the old Type22a prefix; its strict word occurs in neither image; 48 bits as the loose Type22a read them -- a 16-bit reading strands the other two words)",
   "Type26p_undoc48: provisional, from firmware only (the old Type26a prefix; one instance per image, too few to judge)",

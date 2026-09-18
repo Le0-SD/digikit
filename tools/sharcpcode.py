@@ -74,6 +74,14 @@ MAX_INSN_BYTES = 32
 MIN_SECONDS = 0.5                    # smaller time differences are noise
 
 IMAGES = {
+    'dt2-1.15C': {
+        'blob': 'out/sections/dt2-1.15C/section_7_BLOB.bin',
+        'region': 'out/sharc/dt2-1.15C-main.bin',
+        'base_sw': 0x1C1338,
+        # DM 0x2d7148 is imported at unified-code SW 0x16b8a4.
+        'label_tables': ['16b8a4:4'],
+        'probes': [],
+    },
     'dt2-1.16': {
         'blob': 'out/sections/dt2-1.16/section_7_BLOB.bin',
         'region': 'out/sharc/dt2-1.16-main.bin',
@@ -93,6 +101,8 @@ IMAGES = {
         'blob': 'out/sections/dn2-1.11/section_7_BLOB.bin',
         'region': 'out/sharc/dn2-1.11-main.bin',
         'base_sw': 0x1C12E2,
+        # DM 0x2dd3d0 is imported at unified-code SW 0x16e9e8.
+        'label_tables': ['16e9e8:4'],
         'probes': [],
     },
 }

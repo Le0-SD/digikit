@@ -157,7 +157,7 @@ def audit_form(dform, figs_by_name, classic):
         "note": "",
     }
 
-    if name in ("Type23p_undoc16", "Type21p_undoc16"):
+    if name == "Type21p_undoc16":
         result["note"] = "no PRM figure at all (undocumented firmware-only form); N/A"
         return result
 

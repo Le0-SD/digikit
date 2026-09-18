@@ -201,24 +201,45 @@ here; the firmware is the arbiter.
   47..16. In memory, code is 16-bit little-endian words, most-significant word
   first for multi-word instructions.
 
-### 3.6 The undocumented 16-bit instruction (`Type23p_undoc16`)
+### 3.6 `0x023e` begins a 48-bit immediate-shift form (corrected)
 
-- ADI's public PRM **skips Type 23 and Type 24** entirely.
-- The firmware contains a heavily-used **16-bit** instruction the manual never
-  documents. The word **`0x023e` occurs 329× in DT2** and is 49% of all unknowns.
-- It belongs to a family sharing **top-7 bits `0000001`** with a flat 9-bit
-  operand field (62% of all unknowns fall in this family). Behavioural signature:
-  followed ~50% by Type21a (nop) and ~23% by Type5a-swap — an ~11–34× enrichment
-  over base rates. Sits at real instruction boundaries (both address parities).
-- Added provisionally as **`Type23p_undoc16`**: 16-bit, mask `0xfe0000000000`,
-  value `0x020000000000` (top-7 `0000001`), 9-bit operand, `unconfirmed`.
-  Prefix width tuned against the firmware: top-6 gains nothing, top-8 drops real
-  members (e.g. `0x0300`); **top-7 is the sweet spot**.
-- Name and semantics are **unknown**. Sources to identify it: infer from
-  behaviour, or ADI errata.
-- One open boundary case: the Ghidra prior-art module sizes `0x0300` as 48-bit
-  where our provisional form makes it 16-bit. Branch alignment did not regress, so
-  the 16-bit call holds for now, but the exact extent of the family is not final.
+- The old `Type23p_undoc16` hypothesis was a width error. A public independent
+  SHARC+ VISA decoder selects 48 bits for first byte `0x02`; the matching mask
+  and field positions are the PRM Type6a no-memory ShiftImm layout with the
+  alternate VISA prefix `0x02`.
+- Loader memory stores each 16-bit parcel little-endian while multi-parcel
+  instructions keep the most-significant parcel first. Thus physical bytes
+  `3e 02 10 38 22 80` are architectural word `0x023e38108022`, not a short
+  `0x023e` followed by a Type1a instruction.
+- The low 23 bits use the public ShiftImm opcode table directly. Selected-path
+  examples decode as `BSET`, `BCLR`, `FEXT`, and `LSHIFT`; no new operation
+  semantics are inferred from firmware.
+- `Type23p_undoc16` has been removed. The old frequency and successor statistics
+  mixed the trailing parcels of these 48-bit instructions into false successor
+  instructions and must not be used as instruction-boundary evidence.
+- Public decoder source and immutable revision are recorded in
+  `docs/sharc/SOURCES.md`; exact firmware words and corrected runtime effects are
+  recorded in `docs/FINDINGS.md`.
+
+### 3.6a Combined-PX PM reads need 48-bit alias and split-register semantics
+
+- `PX` is a combined 64-bit bus-exchange register; `PX1` and `PX2` are its
+  32-bit halves. The public SHARC+ reference states that a non-`LW` transfer
+  between combined `PX` and internal memory moves 48 bits in PX bits 63--16.
+  Therefore a PM load into `PX` cannot be represented as an ordinary 32-bit
+  UREG load.
+- Loader bytes are addressed through the system/short-word view. For ADSP-2156x
+  L1 block 3, normal-word `0xe0000` and short-word `0x1c0000` alias the same
+  physical base. A 48-bit combined-PX word consumes three little-endian
+  16-bit parcels (six bytes) per normal-word offset.
+- The tracer keeps the combined `PX` value unknown because its `Const` domain is
+  intentionally 32-bit, but writes concrete `PX2=(parcel0<<16)|parcel1` and
+  `PX1=parcel2<<16`. A missing backing read invalidates all three registers;
+  retaining the prior halves would create a false value.
+- This support is deliberately bounded to loader-backed block-3 combined-PX
+  normal-word reads over either data bus. It does not claim generic PM
+  byte/short aliases, memory writes, arbitrary blocks, or a value for
+  unrepresented memory such as normal-word address zero.
 
 ### 3.7 Type 21a is the whole word, not a prefix
 
@@ -231,13 +252,11 @@ here; the firmware is the arbiter.
 - `FULL_WORD` in `build_table.py` now takes every bit from the figure for these
   two forms: Type21a `0xffffffffffff`/`0`, Type21c `0xffff00000000`/
   `0x000100000000`.
-- The left-over first words become **`Type21p_undoc16`**, provisional in the
-  same sense as Type23p_undoc16: top nine bits zero, a 7-bit operand, 16 bits
-  long, no name and no semantics. 883 in 1.16, 969 in 1.11. Its commonest
-  first words are `0x0032`, `0x001c`, `0x0008`, `0x0030`, `0x0010`. It is
-  followed by itself 18% of the time, then by `2a`, `23p_undoc16` and `3a` —
-  not the signature 3.6 records for Type23p_undoc16, so the two are probably
-  unrelated despite the shared construction.
+- The left-over first words become **`Type21p_undoc16`**: top nine bits zero,
+  a provisional 7-bit operand, 16-bit extent, and no established name or
+  semantics. Its old counts and successor statistics must be remeasured after
+  the corrected 48-bit `0x02` form; those statistics previously included false
+  boundaries downstream of mis-sized instructions.
 - In the SLEIGH module the crossing pattern with Type22c moves from Type21a to
   Type21p_undoc16 (bit 32), and Type21c stops crossing anything.
 - Open: what the instruction is. The first-word values cluster, which is a
