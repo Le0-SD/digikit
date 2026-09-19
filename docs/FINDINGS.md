@@ -2859,6 +2859,11 @@ mapped images are in `tools/machineprofile.py`.
   in Digitone II 1.11 (479 and 72). An indirect call moves I6 to R2 and I7 to
   I6, then jumps through `9b_abs` with M5 (DB) with the same push and store:
   12 sites in each image. **[V]**
+- **[C]** The "seventh address" passage counts pipeline instruction slots,
+  not short-word addresses. A CJUMP returns to the instruction after its
+  second delay slot: call + 7 short words after a 16-bit `3c` push, call + 9
+  after a 48-bit `3a` push. See "Tracer decode and call-model corrections"
+  below.
 - This corrects the call triple above (`3c`, `16a`, `25a_direct`, "stores
   the goto's short-word address minus 1"): the push and store belong to the
   CJUMP before them. The triple looked right because calls often follow each
@@ -2867,6 +2872,10 @@ mapped images are in `tools/machineprofile.py`.
   two delay slots hold `25c_rframe` and one epilogue instruction, mostly `15b`
   then `25c_rframe`: 390 of 391 returns in 1.16 and 276 of 277 in 1.11
   contain `25c_rframe` in the slots. **[D]**
+- **[C]** Type 9 indirect branches use DAG2 registers, so this return is
+  `JUMP (M14, I12) (DB)`, not I4/M6. The same correction applies to the other
+  "I4/M6" mentions in this file. See "Tracer decode and call-model
+  corrections" below.
 - `tools/sharcspec/ghidra/gen_sleigh.py` now emits Type25a as `call`. Its
   delay slots are not modelled: they follow the call in the listing.
   `tools/sharcflow.py` lists the calls, indirect calls and returns with their
@@ -5409,3 +5418,151 @@ This advances the qualifying continuous path but still does not reach PCG-C,
 SPORT4A or DMA10 initialization, derive `I4=-0x13c`, identify the natural
 `0x007fffff` producer, or establish numeric SSI cadence. A2 remains open and
 A3 remains parked. **[V][O]**
+
+**[C]** `0xb893fb` is not an undefined ALU opcode. It is a 32-bit compute,
+`R2 = LEFTZ R8`, read with the wrong width. See the next section.
+
+## Tracer decode and call-model corrections move strict startup to `0x1c1460` **[C][V][O]**
+
+Six defects in the decoder and in `tools/sharc_trace.py` caused the startup,
+callback and `0x1ca7e4` stops recorded above. With them fixed, a strict run
+from `0x1c1338` runs to step 7,545 and stops at a different, earlier-unseen
+boundary. The run uses the same image
+(`out/sections/dt2-1.16/section_7_BLOB.bin`, SHA-256
+`0f514a12a2255f5c081e292c47f1f29462003177658da4bbae0a22fd737fffa2`) and
+flags as before, with at most 1,024 states. **[C][V][O]**
+
+### `0x01` words with bit 39 set are 32-bit computes **[C][V]**
+
+The decoder read every VISA word with first byte `0x01` as 48-bit Type2a.
+When frame bit 39 (bit 7 of the first parcel) is 1, the instruction is 32
+bits wide: an unconditional compute whose 23-bit field is
+`((parcel1 & 0x7f) << 16) | parcel2`, frame bits 38:16. The public Selache
+decoder applies this width rule to every `0x01` word (`selinstr/src/visa.rs`,
+`visa_width`: "Type 2: sub5=00001, bit7=1→32b, bit7=0→48b";
+`decode_32_type2b`). The PRM has no 32-bit form for this prefix. Its Type2b
+(prefix `0xc0`) is a different encoding.
+
+In the aligned Digitakt II 1.16 sweep (`tools/sharcflow.aligned`, minimum
+depth 8), 1,880 of 2,396 Type2a words have bit 39 set. For them, the next
+word decodes confidently 4 bytes later in 99.1% of cases and 6 bytes later
+in 49.0%. For the 516 words with bit 39 clear, the 48-bit reading gives
+92.4%. A second agent recomputed these numbers from the image and quoted the
+Selache source. **[V]**
+
+`tools/sharcspec/build_table.py` now emits the form as confident
+`Type2a_short` (mask `0xff8000000000`, value `0x018000000000`, VISA only).
+Classic ISA decoding keeps Type2a. In the aligned 1.16 sweep,
+`Type21p_undoc16` words drop from 513 to 11 and `Type22p_undoc48` words from
+75 to 2. `tools/sharcpcode.py compare` reports no regressions on the three
+images. The earlier boundaries read as follows: **[C][V]**
+
+| PC | earlier reading | 32-bit reading |
+|---:|---|---|
+| `0xb893fb` | Type2a, undefined ALUOP `0x00` | `R2 = LEFTZ R8`, then a relative jump to `0xb8941e` |
+| `0xb8783f` (lock routine `0xb87838`) | Type2a, then undoc16 `0x0000`, `0x001d` | `R2 = LEFTZ R2`, then a relative jump to `0xb8785e` |
+| `0xb8c615` | Type2a, then undoc16 `0x0000`, `0x001a` | `R1 = BTGL R2 BY R1`, then a relative jump to `0xb8c631` |
+| `0xb8b0eb`, `0xb8b141` | Type2a, then undoc16 pairs | `COMPU(R4, R2)`, then relative jumps to `0xb8b114`, `0xb8b164` |
+
+The callback stop at `0x1c0efa` also goes away: the tracer reached it through
+the misaligned stream. The `0x0000` words there remain undocumented where
+they really occur. **[V]**
+
+A whole-image width comparison against Selache on the three images finds
+364, 395 and 434 other disagreements. By the same successor test every one
+favours the existing table. For example, reading Type4a words with first
+parcel bit 0 clear as 32-bit (Selache's rule) makes `Type21p_undoc16` words
+four times more common. **[V]**
+
+### A delayed call returns after its second delay slot **[C][V]**
+
+The tracer returned from every delayed call to call + 7 short words. The
+firmware's CJUMP returns in software: the second delay slot stores
+`own address + 2`, the callee loads that value into I12, and
+`JUMP (M14, I12) (DB)` with M14 = 1 continues after the store. After a 16-bit
+`3c` push that is call + 7; after a 48-bit `3a` push it is call + 9. The old
+rule returned two short words into the store and decoded half of its literal
+as `Type22p_undoc48`. The stops at `0xb89376` (strict) and `0xb868c0`
+(callback) were this artifact. In the strict run the epilogue now loads
+I12 = `0xb89409` for the call whose return is `0xb8940a`. **[C][V]**
+
+### Indirect branches use DAG2 registers **[C][V]**
+
+`JUMP/CALL (Md, Ic)` uses DAG2: Ic is I8-I15 and Md is M8-M15 (SHARC+ PRM,
+DAG chapter: "DAG2 supports indirect branch addressing"; ADSP-2136x PGR:
+"Ic indicates a DAG2 index register (I15–8)"). The return idiom
+`0x083f343f` (`pmi=4`, `pmm=6`) is therefore `JUMP (M14, I12) (DB)`. The
+tracer now checks that I12 + M14 equals the recorded return when both are
+known; in the strict run four returns are checked and all match. Other
+Type 9 jumps now go to I(8+pmi) + M(8+pmm) when both are known. **[C][V]**
+
+### Type3a and Type6a scale the modifier under 32-bit normal words **[C][V]**
+
+The Type3a and Type6a memory handlers added M to I unscaled, while every
+other normal-word access scales it by 4. In the strict run, a Type3a push
+`DM(I7,M7)=R2` in a nested call moved I7 by one byte, and the next store
+overwrote the saved I6. With scaling, RFRAME restores I6 = `0x26f7e0` and the
+return check above passes. **[C][V]**
+
+### Status flags and conditions **[V]**
+
+The tracer now updates ASTATX per the PRM instruction pages: add, subtract,
+increment, decrement and negate set AC/AV/AN/AZ and clear AS/AI/AF; pass,
+not, and, or and xor clear AC/AV/AS/AI/AF and set AN/AZ; comp and compu also
+shift CACC; the shifter operations set SZ, SV and SS as each page states
+(for example, LSHIFT sets SV for any left shift, and LEFTZ sets SV when the
+result is 32); multiplier operations make MN/MV/MU/MI unknown, and the MR
+data move clears them. ASTATX is tracked per bit, so an operation that
+defines some flags does not need the others to be known. The conditions
+LT, GE, LE and GT follow PGR p.4-93 / PRM p.4-53, with
+X = (¬AF ∧ (AN ⊕ (AV ∧ ¬ALUSAT))) ∨ (AF ∧ AN) ∨ AZ (LE is X, GT is ¬X) and
+Y = (¬AF ∧ (AN ⊕ (AV ∧ ¬ALUSAT))) ∨ (AF ∧ AN ∧ ¬AZ) (LT is Y, GE is ¬Y).
+AC, MV, MS, SV and SZ conditions read their bits. Identical states are
+merged. Before these changes the strict run split into 1,072 states; it now
+follows one path to step 7,058 and 66 paths after that. **[V]**
+
+### Current boundaries **[V][O]**
+
+All 66 strict states stop at `0x1c1460`, raw `0x04bfc0800000`, which the
+table decodes as uncertain Type7d. The PRM ACONV table (p.355) suggests
+`I7 = B2W(I7)`; this is not yet checked. No state reaches PCG-C, SPORT4A,
+DMA10, `0x1ca6d6`, `0x1ca7e4` or the marker store. The only access in
+`0x31000000..0x310fffff` is the RCU0+0x2c store at `0x1c1414`. **[V][O]**
+
+The callback replay from `0x1c7749` is calibration, not qualification. It
+reaches the marker store `0x1c7586` in 118 of 1,041 states. The store writes
+`0x7fffffff` to `I4 + M5*4`, but M5 is not set on that entry path, so the
+buffer is not resolved. Its other stops are `0x1c7521`
+(`JUMP (M13, I12)` with unknown registers) and, before the negate above was
+added, `0x1c7599` (ALU `0x22`). **[O]**
+
+### Static results for the DMA/SPORT slice **[D][O]**
+
+- `0x1ca7e4` has four direct callers, each with an immediate R8:
+  `0x1c7971` (`0x2620c8`), `0x1c79f8` (`0x262100`), `0x1c7af9`
+  (`0x264138`), `0x1c7b9e` (`0x264170`). The image holds no literal
+  `0x1ca7e4`, so no pointer table calls it. **[D]**
+- For the two large lists, R4 is the slot that the setup call `0x1ca58a`
+  has just filled: `R4 = DM(0x261a00)` at `0x1c7a6a` for `0x264138`, and
+  `R4 = DM(0x261a04)` at `0x1c7b1d` for `0x264170`. The SPORT/DMA object P
+  arrives in I2 and is not written in `0x1c7749..0x1c7b9e`. Whether P and the
+  slot object are the same is open. **[D][O]**
+- `0x1ca7e4` reads the byte at R4+0x30 (`0x1ca802`). One branch at
+  `0x1ca807` returns at once; the other calls the lock routine `0xb87838`
+  before any descriptor work. **[D]**
+- No instruction or data word in the image holds an absolute SPORT4A/B or
+  DMA10/11 register address. The one data word `0x31023000` is the SPORT
+  record field at DM `0x2696a0` (`0x26968c + 0x14`). The driver can reach
+  these registers only through the object chain. Two agents found this with
+  different methods. **[V]**
+- No writer of the selector DM `0x25f780` was found; it is read at
+  `0x1c7524`, `0x1c7578` and `0x1c75b6`. **[D][O]**
+- The template CFG word `0x00100000` sets only INT. EN, WNR, FLOW, NDSIZE,
+  MSIZE and PSIZE are 0, and MSIZE/PSIZE 0 are not listed values
+  (ADSP-2156x HWR, DMA_CFG fields, pp.1286-1293). The word cannot be the
+  final DMA10_CFG value; `0x1ca7e4` or its callees must add fields. **[D][O]**
+- `0x007fffff` is `0x7fffffff >> 8`, the top 24 bits. The HWR says SPORT
+  words shorter than 32 bits are right-justified in the transmit buffer
+  (p.1050), which would send the low 24 bits. The link must use another word
+  length, packing or framing. The SPORT4A control value is still unknown.
+  **[D][O]**

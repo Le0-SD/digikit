@@ -296,6 +296,11 @@ here; the firmware is the arbiter.
   PRM digits are the stale template values the merge rule exists to ignore,
   so it stands for them. Type3d, Type4d and Type20a change nothing
   measurable either way.
+- **[C]** Type2a's bit 39 is a width selector in VISA code. When it is 1 the
+  word is a 32-bit unconditional compute (`Type2a_short`, compute field in
+  frame bits 38:16); when it is 0 the word is the 48-bit conditional Type2a.
+  The public Selache decoder uses the same rule. See docs/FINDINGS.md,
+  "`0x01` words with bit 39 set are 32-bit computes".
 - A 16-bit reading of Type22a's leftovers was tried first and rejected: it
   stranded the two words after each one, split the RPC dispatcher into two
   functions and added 33 truncated functions in 1.16.
