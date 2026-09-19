@@ -532,12 +532,43 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(loaded.trace[0]["address"], 0x310C90C0)
         self.assertEqual(loaded.uregs[16], T.Unknown("memory-address 0x310c90c0"))
 
-        long_word = self.run_one(
-            T.State(10, {0: T.Const(1), 1: T.Const(2)}),
-            insn("14a", {**fields, "ureg[6:0]": 0, "l": 1}, 6),
+        memory = loader_memory(
+            loader_block(0, 0x200, 8, payload=b"\0" * 8),
         )
-        self.assertEqual(long_word.stopped, "unsupported Type14a long-word access")
-        self.assertEqual(long_word.trace[0]["action"], "stop")
+        long_fields = {
+            **fields,
+            "addr[31:16]": 0,
+            "addr[15:0]": 0x200,
+            "ureg[6:0]": 6,
+            "l": 1,
+        }
+        long_word = self.run_one(
+            T.State(
+                10,
+                {6: T.Const(0x12345678), 7: T.Const(0x9ABCDEF0)},
+                concrete=memory,
+                assume_nw32=True,
+            ),
+            insn("14a", long_fields, 6),
+        )
+        self.assertEqual(T._dm_read(long_word, 0x200, 4), T.Const(0x12345678))
+        self.assertEqual(T._dm_read(long_word, 0x204, 4), T.Const(0x9ABCDEF0))
+        self.assertEqual(long_word.trace[0]["ureg_pair"], ["R6", "R7"])
+        self.assertEqual(long_word.trace[0]["access_width"], "long-word")
+
+        long_word.pc_sw = 10
+        loaded_pair = self.run_one(
+            long_word,
+            insn("14a", {**long_fields, "d": 0, "ureg[6:0]": 10}, 6),
+        )
+        self.assertEqual(loaded_pair.uregs[10], T.Const(0x12345678))
+        self.assertEqual(loaded_pair.uregs[11], T.Const(0x9ABCDEF0))
+
+        odd_pair = self.run_one(
+            T.State(10),
+            insn("14a", {**long_fields, "ureg[6:0]": 7}, 6),
+        )
+        self.assertEqual(odd_pair.stopped, "unsupported Type14a odd UREG pair")
 
     def test_pm_normal_word_load_into_px_splits_loader_backed_48_bits(self):
         address = T.L1_BLOCK3_NW_BASE + 0x20

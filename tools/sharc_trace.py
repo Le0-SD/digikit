@@ -1655,11 +1655,62 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             _apply_compute(state, insn, compute)
         return _advance(state, insn)
     if name == "14a":
-        # Forced long-word Type 14a accesses use a neighboring data-register
-        # pair.  Do not report them as a single-UREG transfer until the tracer
-        # models that pair explicitly.
         if _field(f, "l"):
-            return [_stop(state, insn, "unsupported Type14a long-word access")]
+            code = _field(f, "ureg")
+            if _field(f, "g"):
+                return [_stop(state, insn, "unsupported Type14a PM long-word access")]
+            if code & 1 or code + 1 >= len(UREG_NAMES):
+                return [_stop(state, insn, "unsupported Type14a odd UREG pair")]
+            address = _wide(f, "addr")
+            rendered = _render(Const(address))
+            pair = (code, code + 1)
+            if _field(f, "d"):
+                values = tuple(_ureg(state.uregs, item) for item in pair)
+                writes = tuple(
+                    _dm_write(state, address + 4 * offset, 4, value)
+                    for offset, value in enumerate(values)
+                )
+                concrete_write = all(writes)
+                _event(
+                    state,
+                    insn,
+                    "store",
+                    space="DM",
+                    ureg_pair=[UREG_NAMES[item] for item in pair],
+                    values=[_json_value(value) for value in values],
+                    address=address,
+                    expression=rendered,
+                    access_width="long-word",
+                    concrete_write=concrete_write,
+                    simd_companion_possible=False,
+                )
+            else:
+                values = tuple(
+                    _dm_read(state, address + 4 * offset, 4)
+                    for offset in range(2)
+                )
+                for item, value, offset in zip(pair, values, range(2)):
+                    state.uregs[item] = value or Unknown(
+                        "memory-address " + _render(Const(address + 4 * offset))
+                    )
+                _event(
+                    state,
+                    insn,
+                    "load",
+                    space="DM",
+                    ureg_pair=[UREG_NAMES[item] for item in pair],
+                    address=address,
+                    expression=rendered,
+                    concrete_values=[
+                        _json_value(value)
+                        if value is not None
+                        else {"unknown": "unavailable memory"}
+                        for value in values
+                    ],
+                    access_width="long-word",
+                    simd_companion_possible=False,
+                )
+            return _advance(state, insn)
         address = _wide(f, "addr")
         rendered = _render(Const(address))
         code = _field(f, "ureg")

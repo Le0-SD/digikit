@@ -2,10 +2,14 @@ import pathlib
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / "tools"))
 import sharc_interface_probe as P  # pyright: ignore[reportMissingImports]
+
+BLOB = pathlib.Path("out/sections/dt2-1.16/section_7_BLOB.bin")
 
 
 class SharcInterfaceProbeTest(unittest.TestCase):
@@ -30,6 +34,52 @@ class SharcInterfaceProbeTest(unittest.TestCase):
             blob.write_bytes(b"not the qualifying image")
             with self.assertRaisesRegex(ValueError, "wrong SHARC image"):
                 P.build_report(blob)
+
+    def test_descriptor_probe_rejects_nonconcrete_template_write(self):
+        specification = P.DMA_DESCRIPTOR_PROBES[0]
+        state = SimpleNamespace(
+            stopped="breakpoint",
+            trace=[
+                {
+                    "action": "store",
+                    "address": specification["base"],
+                    "concrete_write": False,
+                }
+            ],
+        )
+        with mock.patch.object(P.trace, "trace", return_value=[state]):
+            with self.assertRaisesRegex(
+                ValueError, "non-concrete descriptor-template"
+            ):
+                P._probe_dma_descriptor_list(mock.sentinel.memory, specification)
+
+    @unittest.skipUnless(BLOB.exists(), "DT2 1.16 SHARC loader is not available")
+    def test_build_report_recovers_four_ping_pong_descriptor_lists(self):
+        report = P.build_report(BLOB)
+        probes = report["calibrated_dma_descriptor_probes"]
+        self.assertEqual(
+            [item["buffer_bytes"] for item in probes], [256, 256, 2048, 2048]
+        )
+        self.assertEqual(
+            [item["list_head"] for item in probes],
+            [0x2620C8, 0x262100, 0x264138, 0x264170],
+        )
+        self.assertEqual(
+            [descriptor["start_address"] for descriptor in probes[2]["descriptors"]],
+            [0x262138, 0x262938],
+        )
+        self.assertTrue(
+            all(item["calibration"]["seeded_values"]["R11"] == 0 for item in probes)
+        )
+        self.assertTrue(all(item["qualifying"] is False for item in probes))
+        self.assertEqual(
+            report["interface_boundaries"]["dma_descriptor_lists"]["dma10_selection"],
+            "not proven",
+        )
+        marker = report["calibrated_marker_writer_probe"]
+        self.assertEqual(marker["store_address"], 0x262138)
+        self.assertEqual(marker["stored_value"], 0x7FFFFFFF)
+        self.assertIn("not proven", marker["coldfire_marker_join"])
 
 
 if __name__ == "__main__":

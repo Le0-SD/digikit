@@ -4935,6 +4935,78 @@ public documentation that supplies the currently unsupported semantics. Broad
 ISA expansion, guessed marker conversion, and guessed cadence are rejected
 pivots. **[O]**
 
+### A target-backed descriptor slice reaches the marker candidate **[C][V][O]**
+
+The earlier statement that all nine `0x7fffffff` immediates were unrelated is
+superseded. Address-aware decoding and a bounded replay now establish an exact
+store from one of them into a buffer named by a concrete descriptor-list
+template. This
+does not yet establish that the list belongs to DMA10, nor that the serial
+boundary converts the value to the ColdFire's `0x007fffff`. **[C][V][O]**
+
+At the aligned, even-register Type-14a forced-long-word DM sites used here, the
+documented form writes the explicit UREG and its next neighbor at `address` and
+`address+4`. (The tracer conservatively stops on odd explicit registers; these
+sites do not use them.) With that form modeled, four bounded setup slices
+reconstruct cyclic two-descriptor templates and pass their heads in `R8` to
+`0x1ca7e4`: **[V]**
+
+| list head | descriptors | start buffers | `CFG, XCNT, XMOD, YCNT, YMOD` | bytes/buffer |
+|---:|---|---|---|---:|
+| `0x2620c8` | `0x2620c8` ↔ `0x2620e4` | `0x261cc8`, `0x261dc8` | `0x100000, 64, 4, 0, 0` | `0x100` |
+| `0x262100` | `0x262100` ↔ `0x26211c` | `0x261ec8`, `0x261fc8` | `0x100000, 64, 4, 0, 0` | `0x100` |
+| `0x264138` | `0x264138` ↔ `0x264154` | `0x262138`, `0x262938` | `0x100000, 512, 4, 0, 0` | `0x800` |
+| `0x264170` | `0x264170` ↔ `0x26418c` | `0x263138`, `0x263938` | `0x100000, 512, 4, 0, 0` | `0x800` |
+
+All four slices calibrate `R11=0` across an unresolved caller path; lists 2 and
+4 additionally seed register values written before unresolved call boundaries.
+Their rows are verified calibrated reconstructions, not proof that intervening
+calls preserve the registers or that natural execution constructs the same
+result. All four probe records disclose common and slice-specific seeds and
+remain `qualifying: false`. **[V][O]**
+
+The field names above follow the public descriptor-list register order:
+`DSCPTR_NXT`, `ADDRSTART`, `CFG`, `XCNT`, `XMOD`, `YCNT`, `YMOD`. The two
+large list geometries exactly match one ColdFire eDMA48/50 `0x800`-byte major
+loop, but equal byte counts are not physical ownership or wiring evidence.
+The same setup family has four candidate software objects and global slots;
+the runtime join from any one object through the three-level SPORT/DMA chain
+to record `0x0a` and DMA10 remains unproved. `0x1ca7e4` may also transform the
+templates before any hardware fetch, so these are not live DMA descriptors.
+**[V][O]**
+
+The first large list does have a byte-backed producer for its first word.
+At `0x1c7578` the code loads selector word `DM(0x25f780)` into `R1`;
+`0x1c757b` computes `R2 = LSHIFT R1 by 11`; `0x1c757e` copies that byte
+offset to `I4`; `0x1c7580` loads exact constant `0x7fffffff` into `I12`;
+`0x1c7583` adds base `0x262138`; and `0x1c7586` stores `I12` through
+`DM(I4,M5)`. Global setup writes `M5=0` at `0x1c0f44`. With the loader's
+zero selector, the calibrated replay therefore writes `0x7fffffff` at
+`0x262138`; selector value one would address peer buffer `0x262938`. Those
+are exactly the two `ADDRSTART` words in descriptor list `0x264138`.
+This is an application-buffer/descriptor-template join, not yet a DMA10/object
+join. The instruction path and conditional address expression were checked
+independently against the image bytes; the replay is direct-entry and therefore
+non-qualifying. **[V][O]**
+
+No exact supported path currently changes `0x7fffffff` into
+`0x007fffff`. ColdFire SSI0 is configured for 24-bit words, but the executed
+SPORT4A control value, transmitted word length, bit selection, and ownership
+of list `0x264138` are still missing. Inferring truncation from the matching
+low 24 bits would violate the evidence gate. The smallest useful natural
+breakpoint set is now: `0x1c7588` after the marker store, watching
+`0x25f780`, `0x262138`, and `0x262938`; `0x1ca7e4` on descriptor submission,
+recording `R4/R8`; and `0x1ca6d6` on DMA-base installation, recording the
+full `P/L1/L2/L3` chain. A qualifying join needs one natural run to correlate
+those observations and the eventual DMA10 register writer. **[O]**
+
+The deterministic report is
+`out/experiments/sharc-interface-reader/dma-descriptors-001.json`. Each
+calibrated slice is marked `qualifying: false`; its exact bytes, descriptor
+words, complete seed disclosure and classification, and residual ownership
+gaps are included.
+**[V]**
+
 The two concrete static hypotheses left after reopening that conclusion were
 then tested. First, a documented 32- or 48-bit predecessor does **not** consume
 the aligned `0x023e` parcel. At all four PCG-C sites in each of DT2 1.15C, DT2

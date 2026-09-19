@@ -30,11 +30,78 @@ SPORT_CALLER_PROBES = (
     (0x1C7A54, 0x1C7A5F, 0x261970, 0x261A00),
     (0x1C7B00, 0x1C7B12, 0x2619B8, 0x261A04),
 )
+DMA_DESCRIPTOR_PROBES = (
+    {
+        "start": 0x1C792F,
+        "call_pc": 0x1C7971,
+        "base": 0x2620C8,
+        "candidate_object": 0x2618D0,
+        "candidate_slot": 0x261960,
+        "seeds": {},
+        "descriptors": (
+            (0x2620E4, 0x261CC8, 0x00100000, 64, 4, 0, 0),
+            (0x2620C8, 0x261DC8, 0x00100000, 64, 4, 0, 0),
+        ),
+    },
+    {
+        "start": 0x1C79C4,
+        "call_pc": 0x1C79F8,
+        "base": 0x262100,
+        "candidate_object": 0x261918,
+        "candidate_slot": 0x261964,
+        "seeds": {
+            "R6": 64,
+            "R7": 4,
+            "R10": 4,
+            "R11": 0,
+            "R14": 0x00100000,
+            "R15": 64,
+            "I5": 0x00100000,
+        },
+        "descriptors": (
+            (0x26211C, 0x261EC8, 0x00100000, 64, 4, 0, 0),
+            (0x262100, 0x261FC8, 0x00100000, 64, 4, 0, 0),
+        ),
+    },
+    {
+        "start": 0x1C7AB7,
+        "call_pc": 0x1C7AF9,
+        "base": 0x264138,
+        "candidate_object": 0x261970,
+        "candidate_slot": 0x261A00,
+        "seeds": {},
+        "descriptors": (
+            (0x264154, 0x262138, 0x00100000, 512, 4, 0, 0),
+            (0x264138, 0x262938, 0x00100000, 512, 4, 0, 0),
+        ),
+    },
+    {
+        "start": 0x1C7B6A,
+        "call_pc": 0x1C7B9E,
+        "base": 0x264170,
+        "candidate_object": 0x2619B8,
+        "candidate_slot": 0x261A04,
+        "seeds": {
+            "R6": 0x00100000,
+            "R7": 512,
+            "R10": 4,
+            "R11": 0,
+            "R14": 512,
+            "R15": 4,
+            "I5": 0x00100000,
+        },
+        "descriptors": (
+            (0x26418C, 0x263138, 0x00100000, 512, 4, 0, 0),
+            (0x264170, 0x263938, 0x00100000, 512, 4, 0, 0),
+        ),
+    },
+)
 
 
 CHECKS: tuple[tuple[int, str, Mapping[str, int], str], ...] = (
     (0x1C0F3C, "17b", {"ureg[6:0]": 39, "data[15:0]": 0xFFFF}, "M7=-1"),
     (0x1C0F40, "17b", {"ureg[6:0]": 38, "data[15:0]": 1}, "M6=1"),
+    (0x1C0F42, "17b", {"ureg[6:0]": 45, "data[15:0]": 0}, "M13=0"),
     (0x1C0F44, "17b", {"ureg[6:0]": 37, "data[15:0]": 0}, "M5=0"),
     (
         0x1C7C0F,
@@ -199,6 +266,138 @@ CHECKS: tuple[tuple[int, str, Mapping[str, int], str], ...] = (
             "data[15:0]": 0x78FC,
         },
         "CJUMP delay slot saves return-address-minus-one",
+    ),
+    (
+        0x1C7938,
+        "14a",
+        {"g": 0, "d": 1, "l": 0, "ureg[6:0]": 20, "addr[31:16]": 0x26, "addr[15:0]": 0x20C8},
+        "first descriptor-list head points to its second descriptor",
+    ),
+    (
+        0x1C795F,
+        "14a",
+        {"g": 0, "d": 1, "l": 1, "ureg[6:0]": 14, "addr[31:16]": 0x26, "addr[15:0]": 0x20D0},
+        "first descriptor long-word store writes CFG/XCNT",
+    ),
+    (
+        0x1C796E,
+        "17a",
+        {"ureg[6:0]": 8, "data[31:16]": 0x26, "data[15:0]": 0x20C8},
+        "pass first descriptor-list head in R8",
+    ),
+    (
+        0x1C7971,
+        "25a_direct",
+        {"addr[23:16]": 0x1C, "addr[15:0]": 0xA7E4},
+        "submit first descriptor list",
+    ),
+    (
+        0x1C79CD,
+        "14a",
+        {"g": 0, "d": 1, "l": 0, "ureg[6:0]": 20, "addr[31:16]": 0x26, "addr[15:0]": 0x2100},
+        "second descriptor-list head points to its second descriptor",
+    ),
+    (
+        0x1C79DD,
+        "14a",
+        {"g": 0, "d": 1, "l": 1, "ureg[6:0]": 10, "addr[31:16]": 0x26, "addr[15:0]": 0x2110},
+        "second descriptor long-word store writes XMOD/YCNT",
+    ),
+    (
+        0x1C79F5,
+        "17a",
+        {"ureg[6:0]": 8, "data[31:16]": 0x26, "data[15:0]": 0x2100},
+        "pass second descriptor-list head in R8",
+    ),
+    (
+        0x1C79F8,
+        "25a_direct",
+        {"addr[23:16]": 0x1C, "addr[15:0]": 0xA7E4},
+        "submit second descriptor list",
+    ),
+    (
+        0x1C7AE6,
+        "14a",
+        {"g": 0, "d": 1, "l": 0, "ureg[6:0]": 20, "addr[31:16]": 0x26, "addr[15:0]": 0x4138},
+        "third descriptor-list head points to its second descriptor",
+    ),
+    (
+        0x1C7AC8,
+        "14a",
+        {"g": 0, "d": 1, "l": 1, "ureg[6:0]": 6, "addr[31:16]": 0x26, "addr[15:0]": 0x4140},
+        "third descriptor long-word store writes CFG/XCNT",
+    ),
+    (
+        0x1C7AF6,
+        "17a",
+        {"ureg[6:0]": 8, "data[31:16]": 0x26, "data[15:0]": 0x4138},
+        "pass third descriptor-list head in R8",
+    ),
+    (
+        0x1C7AF9,
+        "25a_direct",
+        {"addr[23:16]": 0x1C, "addr[15:0]": 0xA7E4},
+        "submit third descriptor list",
+    ),
+    (
+        0x1C7B88,
+        "14a",
+        {"g": 0, "d": 1, "l": 0, "ureg[6:0]": 20, "addr[31:16]": 0x26, "addr[15:0]": 0x4170},
+        "fourth descriptor-list head points to its second descriptor",
+    ),
+    (
+        0x1C7B6D,
+        "14a",
+        {"g": 0, "d": 1, "l": 1, "ureg[6:0]": 6, "addr[31:16]": 0x26, "addr[15:0]": 0x4178},
+        "fourth descriptor long-word store writes CFG/XCNT",
+    ),
+    (
+        0x1C7B9B,
+        "17a",
+        {"ureg[6:0]": 8, "data[31:16]": 0x26, "data[15:0]": 0x4170},
+        "pass fourth descriptor-list head in R8",
+    ),
+    (
+        0x1C7B9E,
+        "25a_direct",
+        {"addr[23:16]": 0x1C, "addr[15:0]": 0xA7E4},
+        "submit fourth descriptor list",
+    ),
+    (
+        0x1C7524,
+        "14a",
+        {"g": 0, "d": 0, "l": 0, "ureg[6:0]": 2, "addr[31:16]": 0x25, "addr[15:0]": 0xF780},
+        "load the ping-pong selector before the buffer-maintenance callback",
+    ),
+    (
+        0x1C7578,
+        "14a",
+        {"g": 0, "d": 0, "l": 0, "ureg[6:0]": 1, "addr[31:16]": 0x25, "addr[15:0]": 0xF780},
+        "reload the ping-pong selector before the marker store",
+    ),
+    (
+        0x1C757B,
+        "6b_shiftimm",
+        {"cond[4:0]": 31, "shiftimm[22:16]": 0, "shiftimm[15:0]": 0x0B21},
+        "scale the selector by 0x800 bytes into R2",
+    ),
+    (
+        0x1C7580,
+        "17a",
+        {"ureg[6:0]": 28, "data[31:16]": 0x7FFF, "data[15:0]": 0xFFFF},
+        "load the exact 0x7fffffff marker candidate into I12",
+    ),
+    (
+        0x1C7583,
+        "19a",
+        {"g": 0, "idis[2:0]": 0, "is[2:0]": 4, "data[31:16]": 0x26, "data[15:0]": 0x2138},
+        "add the first large DMA-buffer base to the selector offset",
+    ),
+    (
+        0x1C7586,
+        "3b",
+        {"u": 0, "i[2:0]": 4, "m[2:0]": 5, "d": 1, "l": 0, "ureg[6:0]": 28},
+        "store I12 at the selected large DMA-buffer head",
     ),
     (
         0x1CA5C9,
@@ -506,6 +705,159 @@ def _probe_sport_caller(
     }
 
 
+def _probe_dma_descriptor_list(
+    memory: LoadedMemory, specification: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Replay one straight-line descriptor build up to its submission call."""
+    common_sets = {
+        "I7": 0x26F000,
+        "I6": 0x26F100,
+        "M7": -1,
+        "M5": 0,
+        "R11": 0,
+        "B7": 0,
+        "L7": 0,
+    }
+    sets = {
+        **common_sets,
+        **specification["seeds"],
+    }
+    states = trace.trace(
+        memory,
+        None,
+        specification["start"],
+        sets=sets,
+        max_steps=100,
+        max_states=16,
+        concrete_memory=True,
+        follow_loaded_calls=True,
+        assume_nw32=True,
+        breakpoints=[0x1CA7E4],
+    )
+    stopped = [state for state in states if state.stopped == "breakpoint"]
+    if len(stopped) != 1:
+        raise ValueError(
+            f"{specification['start']:#x}: expected one descriptor breakpoint, "
+            f"got {[state.stopped for state in states]!r}"
+        )
+    state = stopped[0]
+    base = specification["base"]
+    nonconcrete = [
+        event
+        for event in state.trace
+        if event.get("action") == "store"
+        and base <= event.get("address", -1) < base + 14 * 4
+        and event.get("concrete_write") is False
+    ]
+    if nonconcrete:
+        raise ValueError(
+            f"{specification['start']:#x}: non-concrete descriptor-template "
+            f"writes: {nonconcrete!r}"
+        )
+    words: list[int] = []
+    for offset in range(14):
+        value = trace._dm_read(state, base + 4 * offset, 4)
+        if not isinstance(value, trace.Const):
+            raise ValueError(
+                f"{specification['start']:#x}: descriptor word "
+                f"{base + 4 * offset:#x} is not concrete"
+            )
+        words.append(value.value)
+    descriptors = [words[:7], words[7:]]
+    expected = [list(item) for item in specification["descriptors"]]
+    if descriptors != expected:
+        raise ValueError(
+            f"{specification['start']:#x}: descriptor mismatch: "
+            f"expected {expected!r}, got {descriptors!r}"
+        )
+    fields = (
+        "next_descriptor",
+        "start_address",
+        "configuration",
+        "x_count",
+        "x_modify",
+        "y_count",
+        "y_modify",
+    )
+    return {
+        "start_pc_sw": specification["start"],
+        "submit_call_pc_sw": specification["call_pc"],
+        "submit_function_sw": 0x1CA7E4,
+        "list_head": base,
+        "classification": "descriptor-list template passed to 0x1ca7e4; live DMA10 fetch not proven",
+        "candidate_object": specification["candidate_object"],
+        "candidate_slot": specification["candidate_slot"],
+        "descriptors": [dict(zip(fields, item)) for item in descriptors],
+        "buffer_bytes": descriptors[0][3] * descriptors[0][4],
+        "calibration": {
+            "disposable_stack": True,
+            "seeded_values": sets,
+            "seed_provenance": {
+                "M7": "global initialization at 0x1c0f3c",
+                "M5": "global initialization at 0x1c0f44",
+                "R11": "calibrated zero across an unresolved caller path",
+                "I6/I7/B7/L7": "disposable non-circular compiler frame",
+                "slice_specific": "listed prior caller values across unresolved call boundaries",
+            },
+            "invariant": "the bounded immediate/direct-store descriptor-template words under the disclosed seeds",
+        },
+        "runtime_object_join": "not proven",
+        "qualifying": False,
+    }
+
+
+def _probe_marker_writer(memory: LoadedMemory) -> dict[str, Any]:
+    """Replay the byte-backed marker store with the loader's zero selector."""
+    states = trace.trace(
+        memory,
+        None,
+        0x1C7524,
+        sets={"M5": 0, "M13": 0},
+        max_steps=64,
+        max_states=4,
+        concrete_memory=True,
+        assume_nw32=True,
+        core_reset_state=True,
+        breakpoints=[0x1C7588],
+    )
+    stopped = [state for state in states if state.stopped == "breakpoint"]
+    if len(stopped) != 1:
+        raise ValueError(
+            "marker writer: expected one breakpoint, got "
+            f"{[state.stopped for state in states]!r}"
+        )
+    state = stopped[0]
+    first = trace._dm_read(state, 0x262138, 4)
+    peer = trace._dm_read(state, 0x262938, 4)
+    if first != trace.Const(0x7FFFFFFF) or peer != trace.Const(0):
+        raise ValueError(
+            "marker writer mismatch: expected 0x7fffffff/0 in large buffers, "
+            f"got {first!r}/{peer!r}"
+        )
+    return {
+        "start_pc_sw": 0x1C7524,
+        "selector_address": 0x25F780,
+        "selector_value": 0,
+        "selector_scale_pc_sw": 0x1C757B,
+        "selector_scale_bytes": 0x800,
+        "constant_pc_sw": 0x1C7580,
+        "base_add_pc_sw": 0x1C7583,
+        "store_pc_sw": 0x1C7586,
+        "store_address": 0x262138,
+        "stored_value": 0x7FFFFFFF,
+        "peer_buffer": 0x262938,
+        "descriptor_join": "exact ADDRSTART pair in descriptor-list template 0x264138",
+        "coldfire_marker_join": "not proven: no exact supported 0x7fffffff to 0x007fffff transport transformation",
+        "calibration": {
+            "direct_entry": True,
+            "loader_selector_value": 0,
+            "seeded_modifiers": {"M5": 0, "M13": 0},
+            "seed_sources": {"M5": 0x1C0F44, "M13": 0x1C0F42},
+        },
+        "qualifying": False,
+    }
+
+
 def build_report(blob_path: Path, frame_path: Path | None = None) -> dict[str, Any]:
     blob = blob_path.read_bytes()
     digest = hashlib.sha256(blob).hexdigest()
@@ -530,6 +882,11 @@ def build_report(blob_path: Path, frame_path: Path | None = None) -> dict[str, A
             _probe_sport_caller(memory, *arguments)
             for arguments in SPORT_CALLER_PROBES
         ],
+        "calibrated_dma_descriptor_probes": [
+            _probe_dma_descriptor_list(memory, specification)
+            for specification in DMA_DESCRIPTOR_PROBES
+        ],
+        "calibrated_marker_writer_probe": _probe_marker_writer(memory),
         "result": {
             "reader_function_sw": 0x1C2B24,
             "load_pc_sw": 0x1C33D2,
@@ -560,6 +917,29 @@ def build_report(blob_path: Path, frame_path: Path | None = None) -> dict[str, A
             },
         ],
         "interface_boundaries": {
+            "dma_descriptor_lists": {
+                "public_register_order": [
+                    "DMA_DSCPTR_NXT",
+                    "DMA_ADDRSTART",
+                    "DMA_CFG",
+                    "DMA_XCNT",
+                    "DMA_XMOD",
+                    "DMA_YCNT",
+                    "DMA_YMOD",
+                ],
+                "dma10_mmrs": {
+                    "descriptor_next": 0x31023000,
+                    "start_address": 0x31023004,
+                    "configuration": 0x31023008,
+                    "x_count": 0x3102300C,
+                    "x_modify": 0x31023010,
+                    "y_count": 0x31023014,
+                    "y_modify": 0x31023018,
+                },
+                "large_list_geometry": "two 512 x 4-byte ping-pong lists; each buffer is 0x800 bytes",
+                "coldfire_geometry_match": "same byte length as one eDMA48/50 major-loop bank; ownership and wiring not proven",
+                "dma10_selection": "not proven",
+            },
             "reader_i5": {
                 "construction": "0x1c76e5 sets I5=I6-14 normal words (I6-0x38 under the 32-bit normal-word model)",
                 "use": "0x1c7719 copies I5 to R8 for the 0x1c2b24 call",
