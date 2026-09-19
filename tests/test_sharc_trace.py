@@ -450,9 +450,17 @@ class TraceTest(unittest.TestCase):
         )
         self.assertEqual(s.uregs[2], T.Const(0x12345678))
 
-    def test_type7a_modify_is_explicitly_unknown_and_type3a_moves_one_word(self):
+    def test_type7a_modify_uses_its_m_register_and_type3a_moves_one_word(self):
         modified = self.run_one(
-            T.State(1, {23: T.Const(0x100), 1: T.Const(4), 2: T.Const(5)}),
+            T.State(
+                1,
+                {
+                    23: T.Const(0x100),
+                    1: T.Const(4),
+                    2: T.Const(5),
+                    T.UREG_CODES["M7"]: T.Const(1),
+                },
+            ),
             insn(
                 "7a",
                 {
@@ -460,8 +468,7 @@ class TraceTest(unittest.TestCase):
                     "cond[4:0]": 31,
                     "is[2:2]": 1,
                     "is[1:0]": 3,
-                    "breg": 1,
-                    "toby": 1,
+                    "m[2:0]": 7,
                     "idis[2:0]": 0,
                     "compute[22:16]": 0x28,
                     "compute[15:0]": 0x8310,
@@ -471,7 +478,7 @@ class TraceTest(unittest.TestCase):
         )
         self.assertEqual(modified.trace[0]["action"], "i-modify")
         self.assertEqual(modified.trace[0]["source"], "I7")
-        self.assertIsInstance(modified.uregs[23], T.Unknown)
+        self.assertEqual(modified.uregs[23], T.Const(0x101))
         self.assertEqual(modified.uregs[3], T.Const(29))
 
         memory = loader_memory(loader_block(1, 0x80, 4, payload=b"\0" * 4))
@@ -578,6 +585,311 @@ class TraceTest(unittest.TestCase):
             insn("14a", {**long_fields, "ureg[6:0]": 7}, 6),
         )
         self.assertEqual(odd_pair.stopped, "unsupported Type14a odd UREG pair")
+
+    def test_type7d_aconv_matches_prm_worked_example(self):
+        # out/refs/sharc-plus-prm p.351 ACONV Example: "I0 = B2W(I2);" and
+        # "IF AV B4 = W2B(B1);" -- is is the source register number within
+        # its class; the destination is is XOR idis, as in Type7a/Type19a.
+        b2w = self.run_one(
+            T.State(1, {T.UREG_CODES["I2"]: T.Const(0x400)}),
+            insn(
+                "7d",
+                {
+                    "g": 0,
+                    "is[2:2]": 0,
+                    "is[1:0]": 2,
+                    "breg": 0,
+                    "toby": 0,
+                    "idis[2:0]": 2,
+                },
+                6,
+            ),
+        )
+        self.assertEqual(b2w.uregs[T.UREG_CODES["I0"]], T.Const(0x100))
+        self.assertEqual(
+            b2w.trace[0],
+            {
+                "pc_sw": 1,
+                "form": "7d",
+                "action": "aconv",
+                "direction": "b2w",
+                "source": "I2",
+                "destination": "I0",
+                "value": 0x100,
+                "semantics": "prm-likely",
+            },
+        )
+
+        w2b = self.run_one(
+            T.State(1, {T.UREG_CODES["B1"]: T.Const(0x40)}),
+            insn(
+                "7d",
+                {
+                    "g": 0,
+                    "is[2:2]": 0,
+                    "is[1:0]": 1,
+                    "breg": 1,
+                    "toby": 1,
+                    "idis[2:0]": 5,
+                },
+                6,
+            ),
+        )
+        self.assertEqual(w2b.uregs[T.UREG_CODES["B4"]], T.Const(0x100))
+        self.assertEqual(w2b.trace[0]["direction"], "w2b")
+        self.assertEqual(w2b.trace[0]["source"], "B1")
+        self.assertEqual(w2b.trace[0]["destination"], "B4")
+
+    def test_type7d_firmware_instance_stops_without_a_concrete_source(self):
+        # Strict-run cluster boundary at 0x1c1460 (docs/FINDINGS.md "Current
+        # boundaries"): raw 0x04bfc0800000 decodes g=0, is=7 (is[2:2]=1,
+        # is[1:0]=3), breg=0, toby=0, idis=0, i.e. "I7 = B2W(I7)".
+        fields = {
+            "g": 0,
+            "is[2:2]": 1,
+            "is[1:0]": 3,
+            "breg": 0,
+            "toby": 0,
+            "idis[2:0]": 0,
+        }
+        stopped = self.run_one(T.State(1), insn("7d", fields, 6))
+        self.assertEqual(
+            stopped.stopped, "Type7d B2W(I7) source is not concrete"
+        )
+
+        concrete = self.run_one(
+            T.State(1, {T.UREG_CODES["I7"]: T.Const(0x1000)}),
+            insn("7d", fields, 6),
+        )
+        self.assertEqual(concrete.uregs[T.UREG_CODES["I7"]], T.Const(0x400))
+        self.assertEqual(concrete.trace[0]["semantics"], "prm-likely")
+
+    def test_type14d_short_word_store_and_zero_extended_load(self):
+        # out/refs/sharc-plus-prm pp.384-386: w=0,ex=0,l=1 is (sw)/(sw) BH
+        # (store) / BHSE with x=0 (zero-extend load). Firmware instances
+        # 0x1c8119 (store) and 0x1c811c (load) share DM 0x269454.
+        fields = {
+            "ex": 0,
+            "l": 1,
+            "w": 0,
+            "x": 0,
+            "dreg[3:0]": 2,
+            "addr[31:16]": 0x26,
+            "addr[15:0]": 0x9454,
+        }
+        memory = loader_memory(loader_block(1, 0x269454, 4, payload=b"\0" * 4))
+        stored = self.run_one(
+            T.State(1, {2: T.Const(0x1234ABCD)}, concrete=memory),
+            insn("14d", {**fields, "d": 1}, 6),
+        )
+        self.assertEqual(stored.trace[0]["access_width"], "short-word")
+        self.assertTrue(stored.trace[0]["concrete_write"])
+        self.assertEqual(T._dm_read(stored, 0x269454, 2), T.Const(0xABCD))
+
+        memory = loader_memory(
+            loader_block(1, 0x269454, 2, payload=struct.pack("<H", 0xBEEF))
+        )
+        loaded = self.run_one(
+            T.State(1, concrete=memory), insn("14d", {**fields, "d": 0}, 6)
+        )
+        self.assertEqual(loaded.uregs[2], T.Const(0xBEEF))
+        self.assertEqual(loaded.trace[0]["access_width"], "short-word")
+
+    def test_type14d_byte_sign_and_zero_extended_loads(self):
+        # Firmware instance 0xb8cdaf: w=0,ex=0,l=0,x=1 is (bwse), a
+        # sign-extended byte load (p.386 BHSE Encode Table).
+        fields = {
+            "ex": 0,
+            "l": 0,
+            "w": 0,
+            "d": 0,
+            "dreg[3:0]": 2,
+            "addr[31:16]": 0x2D,
+            "addr[15:0]": 0x722C,
+        }
+        memory = loader_memory(loader_block(1, 0x2D722C, 1, payload=bytes([0x80])))
+        signed = self.run_one(
+            T.State(1, concrete=memory), insn("14d", {**fields, "x": 1}, 6)
+        )
+        self.assertEqual(signed.uregs[2], T.Const(0xFFFFFF80))
+        self.assertEqual(signed.trace[0]["access_width"], "byte-sign-extended")
+
+        memory = loader_memory(loader_block(1, 0x2D722C, 1, payload=bytes([0x80])))
+        unsigned = self.run_one(
+            T.State(1, concrete=memory), insn("14d", {**fields, "x": 0}, 6)
+        )
+        self.assertEqual(unsigned.uregs[2], T.Const(0x80))
+        self.assertEqual(unsigned.trace[0]["access_width"], "byte")
+
+    def test_type14d_stops_on_exclusive_access_and_undocumented_encodings(self):
+        base = {
+            "d": 0,
+            "l": 0,
+            "x": 0,
+            "dreg[3:0]": 0,
+            "addr[31:16]": 0,
+            "addr[15:0]": 0,
+        }
+        exclusive = self.run_one(
+            T.State(1), insn("14d", {**base, "ex": 1, "w": 1}, 6)
+        )
+        self.assertEqual(
+            exclusive.stopped, "unsupported Type14d exclusive access"
+        )
+
+        undocumented_w = self.run_one(
+            T.State(1), insn("14d", {**base, "ex": 0, "w": 1}, 6)
+        )
+        self.assertEqual(
+            undocumented_w.stopped,
+            "undocumented Type14d encoding (w=1, ex=0)",
+        )
+
+        undocumented_store_x = self.run_one(
+            T.State(1),
+            insn("14d", {**base, "ex": 0, "w": 0, "d": 1, "x": 1}, 6),
+        )
+        self.assertEqual(
+            undocumented_store_x.stopped,
+            "undocumented Type14d store encoding (x=1)",
+        )
+
+    def test_type15a_symbolic_load_leaves_the_i_register_unmodified(self):
+        # out/refs/sharc-plus-prm p.388: "The I register is pre-modified
+        # with an immediate value ... The I register is not updated,"
+        # unlike Type19a's post-modify MODIFY.
+        loaded = self.run_one(
+            T.State(1, {16: T.symbol("buf")}),
+            insn(
+                "15a",
+                {
+                    "g": 0,
+                    "i[2:0]": 0,
+                    "d": 0,
+                    "l": 0,
+                    "ureg[6:0]": 7,
+                    "addr[31:16]": 0,
+                    "addr[15:0]": 0x18,
+                },
+                6,
+            ),
+        )
+        self.assertEqual(loaded.trace[0]["expression"], "buf + 0x18")
+        self.assertEqual(loaded.uregs[7], T.Unknown("memory-address buf + 0x18"))
+        self.assertEqual(loaded.uregs[16], T.symbol("buf"))
+
+    def test_type15a_dm_store_and_pm_dag2_load(self):
+        memory = loader_memory(loader_block(1, 0x3000, 4, payload=b"\0" * 4))
+        stored = self.run_one(
+            T.State(
+                1,
+                {16: T.Const(0x2000), 5: T.Const(0xCAFEBABE)},
+                concrete=memory,
+                assume_nw32=True,
+            ),
+            insn(
+                "15a",
+                {
+                    "g": 0,
+                    "i[2:0]": 0,
+                    "d": 1,
+                    "l": 0,
+                    "ureg[6:0]": 5,
+                    "addr[31:16]": 0,
+                    "addr[15:0]": 0x1000,
+                },
+                6,
+            ),
+        )
+        self.assertTrue(stored.trace[0]["concrete_write"])
+        self.assertEqual(T._dm_read(stored, 0x3000, 4), T.Const(0xCAFEBABE))
+        # Pre-modify only: I0 keeps its value.
+        self.assertEqual(stored.uregs[16], T.Const(0x2000))
+
+        loaded_pm = self.run_one(
+            T.State(1, {T.UREG_CODES["I11"]: T.Const(5)}),
+            insn(
+                "15a",
+                {
+                    "g": 1,
+                    "i[2:0]": 3,
+                    "d": 0,
+                    "l": 0,
+                    "ureg[6:0]": 0,
+                    "addr[31:16]": 0,
+                    "addr[15:0]": 0x10,
+                },
+                6,
+            ),
+        )
+        self.assertEqual(loaded_pm.trace[0]["space"], "PM")
+        self.assertIsInstance(loaded_pm.uregs[0], T.Unknown)
+
+    def test_type15a_forced_long_word_register_pair(self):
+        memory = loader_memory(loader_block(1, 0x400, 8, payload=b"\0" * 8))
+        long_word = self.run_one(
+            T.State(
+                1,
+                {16: T.Const(0x300), 6: T.Const(0x11111111), 7: T.Const(0x22222222)},
+                concrete=memory,
+                assume_nw32=True,
+            ),
+            insn(
+                "15a",
+                {
+                    "g": 0,
+                    "i[2:0]": 0,
+                    "d": 1,
+                    "l": 1,
+                    "ureg[6:0]": 6,
+                    "addr[31:16]": 0,
+                    "addr[15:0]": 0x100,
+                },
+                6,
+            ),
+        )
+        self.assertEqual(T._dm_read(long_word, 0x400, 4), T.Const(0x11111111))
+        self.assertEqual(T._dm_read(long_word, 0x404, 4), T.Const(0x22222222))
+        self.assertEqual(long_word.trace[0]["access_width"], "long-word")
+        self.assertEqual(long_word.trace[0]["simd_companion_possible"], False)
+
+        long_word.pc_sw = 1
+        loaded_pair = self.run_one(
+            long_word,
+            insn(
+                "15a",
+                {
+                    "g": 0,
+                    "i[2:0]": 0,
+                    "d": 0,
+                    "l": 1,
+                    "ureg[6:0]": 10,
+                    "addr[31:16]": 0,
+                    "addr[15:0]": 0x100,
+                },
+                6,
+            ),
+        )
+        self.assertEqual(loaded_pair.uregs[10], T.Const(0x11111111))
+        self.assertEqual(loaded_pair.uregs[11], T.Const(0x22222222))
+
+        odd_pair = self.run_one(
+            T.State(1, {16: T.Const(0x300)}),
+            insn(
+                "15a",
+                {
+                    "g": 0,
+                    "i[2:0]": 0,
+                    "d": 0,
+                    "l": 1,
+                    "ureg[6:0]": 7,
+                    "addr[31:16]": 0,
+                    "addr[15:0]": 0x100,
+                },
+                6,
+            ),
+        )
+        self.assertEqual(odd_pair.stopped, "unsupported Type15a odd UREG pair")
 
     def test_pm_normal_word_load_into_px_splits_loader_backed_48_bits(self):
         address = T.L1_BLOCK3_NW_BASE + 0x20

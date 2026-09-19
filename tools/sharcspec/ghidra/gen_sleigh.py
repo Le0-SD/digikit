@@ -846,11 +846,9 @@ def gen_constructor(form):
 # Crossing-pattern conflicts
 # ----------------------------------------------------------------------
 # A systematic pairwise check of every VISA form's (mask,value) against every
-# other's (see gen_sleigh.py dev notes / task report) found exactly 3 pairs
-# whose bit patterns genuinely CROSS (neither form's matching set contains
-# the other's -- e.g. Type7b constrains bits[22:16] that Type7d doesn't,
-# while Type7d constrains bits{39,29,23} that Type7b doesn't, so some frames
-# satisfy both, some satisfy only one, some the other). Per
+# other's (see gen_sleigh.py dev notes / task report) finds the pairs whose bit
+# patterns genuinely CROSS: neither form's matching set contains the other's,
+# so some frames satisfy both, some satisfy only one, some the other. Per
 # sleigh_constructors.html sec 7.8.1, SLEIGH accepts one pattern properly
 # containing another (that's how e.g. Type1a/Type1b -- differing only by
 # whether compute[22:16] is pinned to the "no-op compute" value -- resolve
@@ -866,7 +864,9 @@ CROSSING_RESOLVERS = [
     # (winner form, loser form, [(frame_hi, frame_lo, value), ...],
     #  base label of a winner field to drop from display/pattern because
     #  the resolver's extra constraint exactly subsumes it -- or None)
-    dict(winner="Type7d", loser="Type7b", extra=[(22, 16, 0x3F)], drop_label="compute"),
+    # Type7d used to leave compute[22:16] free and so crossed Type7b. It now
+    # pins its own empty compute, which makes the two forms exclusive, and the
+    # old extra constraint contradicted those pinned bits.
     # Type21a is now the all-zero word, so it no longer crosses Type22c (bit 32
     # is 0 there and 1 here); the provisional Type21p_undoc16 inherits the
     # crossing, since it fixes bits 47-39 while Type22c fixes 47-40 and bit 32.

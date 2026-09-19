@@ -2170,22 +2170,30 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         )
         return _advance(state, insn)
     if name == "7a":
-        # Type 7a is MODIFY: the manual guarantees an index-register update
-        # in parallel with its optional compute.  This decoder does not expose
-        # the complete M-register selection, so retain that missing operand in
-        # the value rather than inventing an address update.
+        # Type 7a is MODIFY: the manual guarantees an index-register update in
+        # parallel with its optional compute.  The table now carries the M
+        # register selector at bits 29-27, the same field Type7b uses.
         if _field(f, "cond") != 0x1F:
             return [_stop(state, insn, "unsupported Type7a predicate")]
         bank = 8 if _field(f, "g") else 0
         source_low = _field(f, "is[2:2]") << 2 | _field(f, "is[1:0]")
         destination_low = source_low ^ _field(f, "idis")
         source, destination = source_low + bank, destination_low + bank
+        modifier = _field(f, "m") + bank
         try:
             compute = _compute(f, False, dict(state.uregs), state.special)
         except ValueError as error:
             return [_stop(state, insn, str(error))]
-        state.uregs[16 + destination] = Unknown(
-            "Type7a MODIFY(I%d, unknown M register)" % source
+        index_value = _ureg(state.uregs, 16 + source)
+        modifier_value = _ureg(state.uregs, 32 + modifier)
+        scale = _access_modifier_scale("normal-word", state.assume_nw32)
+        scaled_modifier = _multiply(
+            modifier_value, Const(scale), "M%d * %d" % (modifier, scale)
+        )
+        state.uregs[16 + destination] = _add(
+            index_value,
+            scaled_modifier,
+            "I%d + M%d * %d" % (source, modifier, scale),
         )
         _event(
             state,
@@ -2193,10 +2201,70 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             "i-modify",
             source="I%d" % source,
             destination="I%d" % destination,
-            modifier="unknown (decoder does not expose Type7a M selection)",
+            modifier="M%d" % modifier,
         )
         if compute is not None:
             _apply_compute(state, insn, compute)
+        return _advance(state, insn)
+    if name == "7d":
+        # SHARC+ Core Programming Reference (out/refs/sharc-plus-prm), ACONV
+        # (Type 7d), Figure 13-21 p.352 and its Encode Table (same page):
+        # this is the Type7a word with cond=11111 and an empty compute
+        # (Table 13-22, p.350), which decode_table.json now pins into the
+        # mask/value, so cond/compute are not free fields here. g selects
+        # DAG1/DAG2 (add 8, as for Type7a/Type19a); breg selects the I or B
+        # register class; toby selects W2B (1) vs B2W (0); the destination
+        # register is the source XOR idis, the same trick as Type7a/Type19a.
+        #
+        # Table 6-4 "Switch Address Instruction Semantics" (same PRM p.200,
+        # printed 6-16; identical table in out/refs/sc58x-2158x-prm) hedges
+        # the shift:
+        #   "Id = B2W(Is) ... Base addr in byte-addressed space: Convert
+        #   byte pointer to word pointer. Likely semantics Id <- Is >> 2.
+        #   Exact semantics depend on address map and must work correctly
+        #   for all addresses in both internal and external memory. In case
+        #   of byte addresses not having word space equivalent Is will be
+        #   retained as is i.e. Id = Is and illegal address space (ILAD)
+        #   interrupt is generated."
+        #   "Id = W2B(Is) ... Likely semantics Id <- Is << 2 ... [same ILAD
+        #   hedge]." (Bd/Bs rows mirror Id/Is.)
+        # This decoder does not model the address map or the ILAD trap, so
+        # it only applies the documented "likely" shift, tags the event
+        # semantics="prm-likely", and stops when the source is not concrete
+        # rather than guess whether the trap fires.
+        bank = 8 if _field(f, "g") else 0
+        source_low = _field(f, "is[2:2]") << 2 | _field(f, "is[1:0]")
+        destination_low = source_low ^ _field(f, "idis")
+        source, destination = source_low + bank, destination_low + bank
+        breg = bool(_field(f, "breg"))
+        reg_class = "B" if breg else "I"
+        base_code = UREG_CODES["B0"] if breg else UREG_CODES["I0"]
+        src_code, dst_code = base_code + source, base_code + destination
+        value = _ureg(state.uregs, src_code)
+        w2b = bool(_field(f, "toby"))
+        direction = "w2b" if w2b else "b2w"
+        if not isinstance(value, Const):
+            return [
+                _stop(
+                    state,
+                    insn,
+                    "Type7d %s(%s%d) source is not concrete"
+                    % (direction.upper(), reg_class, source),
+                )
+            ]
+        shifted = value.value << 2 if w2b else value.value >> 2
+        result = Const(shifted)
+        state.uregs[dst_code] = result
+        _event(
+            state,
+            insn,
+            "aconv",
+            direction=direction,
+            source="%s%d" % (reg_class, source),
+            destination="%s%d" % (reg_class, destination),
+            value=_json_value(result),
+            semantics="prm-likely",
+        )
         return _advance(state, insn)
     if name == "3a":
         # PRM Type 3a is a conditional compute plus one normal-word DM/PM
@@ -2355,6 +2423,79 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                 expression=rendered,
                 concrete_value=loaded,
                 simd_companion_possible=True,
+            )
+        return _advance(state, insn)
+    if name == "14d":
+        # SHARC+ Core Programming Reference (out/refs/sharc-plus-prm)
+        # pp.384-387, Figure 15-2 ("Type14d Instruction Opcode"): a direct-
+        # address DM <-> R-register-file move, an "extension (exclusive
+        # access) to 14a instruction". The w/ex/d/l opcode table (p.384-385)
+        # lists only EX/LWEX rows (Dreg = dm(addr32) EX/LWEX and the mirror
+        # store) at w=1,ex=1; every w=0 row is BH/BHEX (store, l selects
+        # byte/short) or BHSE/BHSEEX (load, l selects byte/short and x
+        # selects zero- vs sign-extend, p.386 BHSE/BHSEEX Encode Tables).
+        # BWSE/SWSE are load-only per the Description on p.386. This
+        # decoder does not model exclusive-access monitors, so it stops on
+        # ex=1 (EX/BHEX/BHSEEX/LWEX) and on the undocumented w=1,ex=0
+        # combination the opcode table has no row for.
+        if _field(f, "ex"):
+            return [_stop(state, insn, "unsupported Type14d exclusive access")]
+        if _field(f, "w"):
+            return [
+                _stop(state, insn, "undocumented Type14d encoding (w=1, ex=0)")
+            ]
+        store = bool(_field(f, "d"))
+        l_bit, x_bit = _field(f, "l"), _field(f, "x")
+        if store:
+            if x_bit:
+                return [
+                    _stop(
+                        state,
+                        insn,
+                        "undocumented Type14d store encoding (x=1)",
+                    )
+                ]
+            access_width, width, signed = (
+                ("byte", 1, False),
+                ("short-word", 2, False),
+            )[l_bit]
+        else:
+            access_width, width, signed = {
+                (0, 0): ("byte", 1, False),
+                (1, 0): ("short-word", 2, False),
+                (0, 1): ("byte-sign-extended", 1, True),
+                (1, 1): ("short-word-sign-extended", 2, True),
+            }[(l_bit, x_bit)]
+        address = _wide(f, "addr")
+        rendered = _render(Const(address))
+        code = _field(f, "dreg")
+        if store:
+            value = _ureg(state.uregs, code)
+            _event(
+                state,
+                insn,
+                "store",
+                space="DM",
+                dreg="R%d" % code,
+                value=value,
+                address=address,
+                expression=rendered,
+                access_width=access_width,
+                concrete_write=_dm_write(state, address, width, value),
+            )
+        else:
+            loaded = _dm_read(state, address, width, signed)
+            state.uregs[code] = loaded or Unknown("memory-address " + rendered)
+            _event(
+                state,
+                insn,
+                "load",
+                space="DM",
+                dreg="R%d" % code,
+                address=address,
+                expression=rendered,
+                concrete_value=loaded,
+                access_width=access_width,
             )
         return _advance(state, insn)
     if name in ("5a_move", "5b_move"):
@@ -2856,6 +2997,113 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                 expression=_render(address),
                 long_word=bool(_field(f, "l")),
                 concrete_value=loaded,
+            )
+        return _advance(state, insn)
+    if name == "15a":
+        # SHARC+ Core Programming Reference (out/refs/sharc-plus-prm)
+        # pp.387-390, Figure 15-3 p.390 ("Type15a Instruction Opcode"):
+        # DM(<data32>,Ia) = Ureg / Ureg = DM(<data32>,Ia), and the PM/Ic
+        # form when g=1 (opcode table p.387: g=0 -> dm/I1REG(DAG1), g=1 ->
+        # pm/I2REG(DAG2)). p.388 Description: "The I register is pre-
+        # modified with an immediate value specified in the instruction.
+        # The I register is not updated" -- pre-modify without writeback,
+        # unlike Type19a's post-modify MODIFY. The optional (lw) "forces
+        # register pair access" (p.389), modelled the same way as Type14a's
+        # own (lw) register-pair form, with no SIMD companion.
+        bank = 8 if _field(f, "g") else 0
+        index = _field(f, "i[2:0]") + bank
+        addr = _wide(f, "addr")
+        iv = _ureg(state.uregs, 16 + index)
+        address = _add(iv, Const(addr), "I%d + %d" % (index, addr))
+        rendered = _render(address)
+        space = "PM" if bank else "DM"
+        if _field(f, "l"):
+            code = _field(f, "ureg")
+            if code & 1 or code + 1 >= len(UREG_NAMES):
+                return [_stop(state, insn, "unsupported Type15a odd UREG pair")]
+            pair = (code, code + 1)
+            offsets = tuple(
+                _add(address, Const(4 * offset), "%s + %d" % (rendered, 4 * offset))
+                for offset in range(2)
+            )
+            if _field(f, "d"):
+                values = tuple(_ureg(state.uregs, item) for item in pair)
+                writes = tuple(
+                    _dm_write(state, offset_address, 4, value)
+                    if space == "DM"
+                    else False
+                    for offset_address, value in zip(offsets, values)
+                )
+                concrete_write = all(writes)
+                _event(
+                    state,
+                    insn,
+                    "store",
+                    space=space,
+                    ureg_pair=[UREG_NAMES[item] for item in pair],
+                    values=[_json_value(value) for value in values],
+                    address=address,
+                    expression=rendered,
+                    access_width="long-word",
+                    concrete_write=concrete_write,
+                    simd_companion_possible=False,
+                )
+            else:
+                values = tuple(
+                    _dm_read(state, offset_address, 4) if space == "DM" else None
+                    for offset_address in offsets
+                )
+                for item, value in zip(pair, values):
+                    state.uregs[item] = value or Unknown(
+                        "memory-address " + rendered
+                    )
+                _event(
+                    state,
+                    insn,
+                    "load",
+                    space=space,
+                    ureg_pair=[UREG_NAMES[item] for item in pair],
+                    address=address,
+                    expression=rendered,
+                    concrete_values=[
+                        _json_value(value)
+                        if value is not None
+                        else {"unknown": "unavailable memory"}
+                        for value in values
+                    ],
+                    access_width="long-word",
+                    simd_companion_possible=False,
+                )
+            return _advance(state, insn)
+        code = _field(f, "ureg")
+        if _field(f, "d"):
+            value = _ureg(state.uregs, code)
+            _event(
+                state,
+                insn,
+                "store",
+                space=space,
+                ureg=UREG_NAMES[code],
+                value=value,
+                address=address,
+                expression=rendered,
+                simd_companion_possible=True,
+                concrete_write=_dm_write(state, address, 4, value)
+                if space == "DM"
+                else False,
+            )
+        else:
+            loaded = _load_normal_ureg(state, space, address, code)
+            _event(
+                state,
+                insn,
+                "load",
+                space=space,
+                ureg=UREG_NAMES[code],
+                address=address,
+                expression=rendered,
+                concrete_value=loaded,
+                simd_companion_possible=True,
             )
         return _advance(state, insn)
     if name in ("19a", "19a_scaled"):

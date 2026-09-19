@@ -59,6 +59,27 @@ PRM_VALUE_WINS = {"Type2b"}
 # independent public decoder.
 DROP_FIELDS = {"Type19a": {"sc[1:0]", "w"}}
 
+# Type7a's PRM figure (Figure 14-19) brackets bits 28 and 27 as breg/toby, the
+# names the Type7d ACONV figure uses for the same bits. Type7d is documented as
+# Type7a's own cond=11111, compute=0 case, so the two figures print the same
+# bits. For every other Type7a word the classic grid, and Type7b's own PRM
+# figure at the same position, make bits 29-27 the M register selector. The
+# merge loop cannot restore bit 29 on its own: the PRM has no bracket there and
+# the classic side is a live field rather than a blank.
+FIELD_OVERRIDE = {
+    "Type7a": {
+        "remove": ("breg", "toby"),
+        "add": [{"label": "m[2:0]", "hi": 29, "lo": 27}],
+    }
+}
+
+# PRM Table 14-22: Type 7d is the Type 7a word whose condition is 11111 and
+# whose compute field is empty, so those bits select the form and are not
+# free fields.
+PIN_FIELDS = {
+    "Type7d": {"cond[4:0]": 0x1F, "compute[22:16]": 0, "compute[15:0]": 0}
+}
+
 # Bits where a split branch form takes the PRM figure's digit although its own
 # classic table leaves that bit blank, listed per emitted form name. The generic
 # merge refuses this wholesale and is right to: filling every such gap on the
@@ -325,6 +346,14 @@ for f in prm:
         notes.append(f"{name}: PRM field declarations {dropped} dropped so the "
                       "classic grid's fixed values at those bits are used")
 
+    if name in FIELD_OVERRIDE:
+        override = FIELD_OVERRIDE[name]
+        fields = [fl for fl in fields if fl["label"] not in override["remove"]]
+        fields += [dict(fl) for fl in override["add"]]
+        fields.sort(key=lambda fl: -fl["hi"])
+        notes.append(f"{name}: PRM fields {sorted(override['remove'])} replaced "
+                      "with the classic grid's m[2:0], as in Type7b")
+
     fixed = {}
     unconfirmed = []
     if keys and name not in PRM_VALUE_WINS:
@@ -359,6 +388,20 @@ for f in prm:
         fixed = {b: (word >> b) & 1 for b in range(48 - full_width, 48)
                  if b not in free}
         source = "prm figure (every bit printed; the PGR grid leaves them blank)"
+    if name in PIN_FIELDS:
+        pinned = PIN_FIELDS[name]
+        for fl in [fl for fl in fields if fl["label"] in pinned]:
+            digits = pinned[fl["label"]]
+            for offset in range(fl["hi"] - fl["lo"] + 1):
+                fixed[fl["lo"] + offset] = (digits >> offset) & 1
+        fields = [fl for fl in fields if fl["label"] not in pinned]
+        unconfirmed = []
+        source = (
+            "prm figure and the Table 14-22 selector; the firmware cluster "
+            "matches the documented ACONV rows"
+        )
+        notes.append(f"{name}: PRM Table 14-22 pins {sorted(pinned)}; the form "
+                      "is Type 7a with condition 11111 and an empty compute")
     mask = sum(1 << b for b in fixed)
     value = sum(v << b for b, v in fixed.items())
     forms.append({

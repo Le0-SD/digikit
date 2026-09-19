@@ -935,13 +935,8 @@
      "lo": 30
     },
     {
-     "label": "breg",
-     "hi": 28,
-     "lo": 28
-    },
-    {
-     "label": "toby",
-     "hi": 27,
+     "label": "m[2:0]",
+     "hi": 29,
      "lo": 27
     },
     {
@@ -1017,19 +1012,14 @@
    "width": 48,
    "visa": true,
    "isa": true,
-   "mask": "0xff8020800000",
-   "value": "0x048000800000",
-   "fixed_bits": 11,
+   "mask": "0xffbe20ffffff",
+   "value": "0x04be00800000",
+   "fixed_bits": 39,
    "fields": [
     {
      "label": "g",
      "hi": 38,
      "lo": 38
-    },
-    {
-     "label": "cond[4:0]",
-     "hi": 37,
-     "lo": 33
     },
     {
      "label": "is[2:2]",
@@ -1055,21 +1045,11 @@
      "label": "idis[2:0]",
      "hi": 26,
      "lo": 24
-    },
-    {
-     "label": "compute[22:16]",
-     "hi": 22,
-     "lo": 16
-    },
-    {
-     "label": "compute[15:0]",
-     "hi": 15,
-     "lo": 0
     }
    ],
-   "source": "prm",
+   "source": "prm figure and the Table 14-22 selector; the firmware cluster matches the documented ACONV rows",
    "classic_keys": [],
-   "unconfirmed_bits": 11
+   "unconfirmed_bits": 0
   },
   {
    "name": "Type8a_abs",
@@ -2651,6 +2631,8 @@
  "notes": [
   "Type2b: fixed-bit values from PRM figure (overrides PGR; firmware-confirmed)",
   "Type3a: layout and values from PGR",
+  "Type7a: PRM fields ['breg', 'toby'] replaced with the classic grid's m[2:0], as in Type7b",
+  "Type7d: PRM Table 14-22 pins ['compute[15:0]', 'compute[22:16]', 'cond[4:0]']; the form is Type 7a with condition 11111 and an empty compute",
   "Type8a: split into Type8a_abs/Type8a_rel -- classic.json keeps these as separate absolute-or-indirect/PC-relative tables; see SPLIT_FORMS",
   "Type9a: split into Type9a_abs/Type9a_rel -- classic.json keeps these as separate absolute-or-indirect/PC-relative tables; see SPLIT_FORMS",
   "Type9b: split into Type9b_abs/Type9b_rel -- classic.json keeps these as separate absolute-or-indirect/PC-relative tables; see SPLIT_FORMS",
