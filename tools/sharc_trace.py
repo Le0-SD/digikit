@@ -14,7 +14,7 @@ import re
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -148,8 +148,75 @@ class Unknown:
     reason: str
 
 
-Value = Union[Const, Affine, Unknown]
+@dataclass(frozen=True)
+class PartialConst:
+    """A 32-bit value known only at some bit positions.
+
+    Used for ASTATX/ASTATY: different instruction classes each define a
+    disjoint group of bits (ALU flags, shifter flags, multiplier flags, BTF,
+    CACC), so full 32-bit knowledge is rare in practice, but bit-level
+    knowledge is common and is all the condition predicates ever need (each
+    reads at most a handful of specific bits). ``mask`` has a 1 at every
+    known bit position; ``bits`` holds the known value at those positions and
+    is canonicalized to 0 elsewhere so two PartialConst values with the same
+    knowledge compare and hash equal regardless of what an unknown position
+    happened to hold before.
+    """
+
+    mask: int
+    bits: int
+
+    def __post_init__(self):
+        object.__setattr__(self, "mask", self.mask & 0xFFFFFFFF)
+        object.__setattr__(self, "bits", self.bits & self.mask)
+
+
+Value = Union[Const, Affine, Unknown, PartialConst]
 _SYMBOL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+# ASTATX/ASTATY bit positions (SHARC+ PRM ch.4 REGF_ASTATX/REGF_ASTATY).
+AZ_BIT, AV_BIT, AN_BIT, AC_BIT, AS_BIT, AI_BIT = 0, 1, 2, 3, 4, 5
+MN_BIT, MV_BIT, MU_BIT, MI_BIT = 6, 7, 8, 9
+AF_BIT = 10
+SV_BIT, SZ_BIT, SS_BIT = 11, 12, 13
+BTF_BIT = 18
+ALUSAT_BIT = 13  # MODE1.ALUSAT
+
+# Bits every fixed-point ALU op (add/sub/inc/dec/pass/not/and/or/xor/compare)
+# defines: AZ/AV/AN/AC/AS/AI, plus AF which ch.19's intro says every
+# fixed-point ALU op clears (PRM p.439).
+ALU_FLAGS_MASK = (
+    (1 << AZ_BIT)
+    | (1 << AV_BIT)
+    | (1 << AN_BIT)
+    | (1 << AC_BIT)
+    | (1 << AS_BIT)
+    | (1 << AI_BIT)
+    | (1 << AF_BIT)
+)
+# Multiplier-result flags (MN/MV/MU/MI); the tracer does not model the
+# multiplier result format, so these are always left unknown except for the
+# MR data-move, which the PRM (p.493) documents as clearing all four.
+MULT_FLAGS_MASK = (1 << MN_BIT) | (1 << MV_BIT) | (1 << MU_BIT) | (1 << MI_BIT)
+
+# IF-condition codes (PGR Table 10-4) that read a single ASTATX bit,
+# optionally complemented.
+SIMPLE_COND_BITS = {
+    0x03: (AC_BIT, False),
+    0x13: (AC_BIT, True),
+    0x04: (AV_BIT, False),
+    0x14: (AV_BIT, True),
+    0x05: (MV_BIT, False),
+    0x15: (MV_BIT, True),
+    0x06: (MN_BIT, False),
+    0x16: (MN_BIT, True),
+    0x07: (SV_BIT, False),
+    0x17: (SV_BIT, True),
+    0x08: (SZ_BIT, False),
+    0x18: (SZ_BIT, True),
+    0x0D: (BTF_BIT, False),
+    0x1D: (BTF_BIT, True),
+}
 
 
 def _affine(constant: int, terms: tuple[tuple[str, int], ...]) -> Const | Affine:
@@ -173,6 +240,11 @@ class Pending:
     slots: int = 2
     return_from_call: bool = False
     return_sw: Optional[int] = None
+
+
+# Pending.return_sw placeholder for a delayed call: the return address is the
+# PC after the second delay slot, known only once both slots have executed.
+AFTER_DELAY_SLOTS = -1
 
 
 @dataclass(frozen=True)
@@ -252,6 +324,8 @@ def _render(value: Value | int) -> str:
         for sign, magnitude in parts[1:]:
             rendered += (" - " if sign < 0 else " + ") + magnitude
         return rendered
+    if isinstance(value, PartialConst):
+        return "partial(known=%#010x, bits=%#010x)" % (value.mask, value.bits)
     if isinstance(value, Unknown):
         return value.reason
     return ("-" if value < 0 else "") + hex(abs(value))
@@ -268,6 +342,8 @@ def _json_value(value: Value | int) -> int | dict:
                 "terms": [list(term) for term in value.terms],
             }
         }
+    if isinstance(value, PartialConst):
+        return {"partial": {"known_mask": value.mask, "known_bits": value.bits}}
     if isinstance(value, Unknown):
         return {"unknown": value.reason}
     return value
@@ -527,8 +603,36 @@ def _dossier(state: State, target: int, return_sw: int) -> dict:
     }
 
 
-def _ureg(values: Mapping[int, Value], code: int) -> Value:
+def _ureg_raw(values: Mapping[int, Value], code: int) -> Value:
+    """Read UREG CODE exactly as stored, including a PartialConst for
+    ASTATX/ASTATY. Only the flag/predicate code that understands
+    PartialConst (see the ``_astatx_*`` helpers, ``_apply_compute``,
+    ``_predicate``, the Type18a BTF writers, and the status-stack push) may
+    call this. Everything else — arithmetic, addressing, memory, UREG
+    moves, dossiers — must use ``_ureg``, which never lets a PartialConst
+    escape into generic code that only understands Const/Affine/Unknown
+    (``_terms``/``_add``/``_negate``/``_multiply``/``_bitwise`` would
+    otherwise crash or silently misbehave on one).
+    """
     return values.get(code, Unknown("uninitialized " + UREG_NAMES[code]))
+
+
+def _ureg(values: Mapping[int, Value], code: int) -> Value:
+    """Read UREG CODE as a value any generic consumer can handle.
+
+    A PartialConst (only ever stored at ASTATX/ASTATY) never escapes this
+    function: a fully-known one becomes Const, a partially-known one
+    becomes Unknown. This is what makes "R0 = ASTATX" (a Type5 UREG move),
+    an ASTATX value used as a compute operand or DM address, or a status
+    register read by a dossier all safe by construction, without each of
+    those call sites needing to know about PartialConst.
+    """
+    value = _ureg_raw(values, code)
+    if isinstance(value, PartialConst):
+        return Const(value.bits) if value.mask == 0xFFFFFFFF else Unknown(
+            "partially known ASTATx"
+        )
+    return value
 
 
 def _terms(value: Const | Affine) -> tuple[int, tuple[tuple[str, int], ...]]:
@@ -614,40 +718,62 @@ def _sync_pc_stack(state: State) -> None:
 
 def _shift_immediate(
     f: Mapping[str, int], values: Mapping[int, Value]
-) -> tuple[int, Value, str]:
+) -> tuple[int, Value, str, "Callable[[Value], Value]"]:
     """Execute the documented ShiftImm subset seen on qualifying paths."""
     field = (_field(f, "shiftimm[22:16]") << 16) | _field(f, "shiftimm[15:0]")
     opcode = (field >> 16) & 0x3F
     data8 = (field >> 8) & 0xFF
     rn, rx = (field >> 4) & 0xF, field & 0xF
     source = _ureg(values, rx)
-    if opcode in (0x00, 0x01):
+    if opcode in (0x00, 0x01, 0x08, 0x09):
         amount = _signed(data8, 8)
-        name = "lshift" if opcode == 0x00 else "ashift"
+        base = opcode & 0x01
+        name = "lshift" if base == 0x00 else "ashift"
         if amount == 0:
-            value = source
+            shifted = source
         elif not isinstance(source, Const):
-            value = Unknown("%s R%d by %d" % (name, rx, amount))
+            shifted = Unknown("%s R%d by %d" % (name, rx, amount))
         elif amount >= 32:
-            value = Const(0)
+            shifted = Const(0)
         elif amount <= -32:
-            value = (
+            shifted = (
                 Const(0xFFFFFFFF)
-                if opcode == 0x01 and source.value & 0x80000000
+                if base == 0x01 and source.value & 0x80000000
                 else Const(0)
             )
         elif amount > 0:
-            value = Const(source.value << amount)
-        elif opcode == 0x01:
-            value = Const(_signed32(source.value) >> -amount)
+            shifted = Const(source.value << amount)
+        elif base == 0x01:
+            shifted = Const(_signed32(source.value) >> -amount)
         else:
-            value = Const(source.value >> -amount)
-        operation = (
-            "logical-shift-immediate"
-            if opcode == 0x00
-            else "arithmetic-shift-immediate"
-        )
-        return rn, value, operation
+            shifted = Const(source.value >> -amount)
+        if opcode in (0x08, 0x09):
+            # PRM Table 17-9, shiftimm 001000/001001 (p. 17-10): RN = RN or
+            # (l/a)shift RX by DATA8.
+            value = _bitwise(
+                _ureg(values, rn),
+                shifted,
+                "R%d or %s R%d by %d" % (rn, name, rx, amount),
+                lambda a, b: a | b,
+            )
+            operation = (
+                "logical-shift-or-immediate"
+                if base == 0x00
+                else "arithmetic-shift-or-immediate"
+            )
+        else:
+            value = shifted
+            operation = (
+                "logical-shift-immediate"
+                if base == 0x00
+                else "arithmetic-shift-immediate"
+            )
+        # SZ is defined from the shifted value before any OR (PRM pp.509-510:
+        # "Set if the shifted result is zero"); SS is cleared for every one
+        # of these forms except OR-ashift (opcode 0x09), whose entry omits
+        # the SS line.
+        ss_mode = "forget" if opcode == 0x09 else "clear"
+        return rn, value, operation, _astatx_shift(amount, shifted, ss_mode)
     if opcode == 0x10:
         position = data8 & 0x3F
         length = (_field(f, "dataex[3:0]") << 2) | (data8 >> 6)
@@ -657,7 +783,7 @@ def _shift_immediate(
             value = Unknown("fext R%d by %d:%d" % (rx, position, length))
         else:
             value = Const((source.value >> position) & ((1 << min(length, 32)) - 1))
-        return rn, value, "field-extract-immediate"
+        return rn, value, "field-extract-immediate", _astatx_fext(position + length, value)
     if opcode in (0x30, 0x31):
         position = data8
         if position > 31:
@@ -674,7 +800,7 @@ def _shift_immediate(
                 calculate,
             )
         operation = "bit-set-immediate" if opcode == 0x30 else "bit-clear-immediate"
-        return rn, value, operation
+        return rn, value, operation, _astatx_bit_field(position, value)
     if opcode == 0x32:
         position = data8
         if position > 31:
@@ -686,7 +812,7 @@ def _shift_immediate(
                 "btgl R%d by %d" % (rx, position),
                 lambda a, b: a ^ b,
             )
-        return rn, value, "bit-toggle-immediate"
+        return rn, value, "bit-toggle-immediate", _astatx_bit_field(position, value)
     raise ValueError("unsupported ShiftImm opcode %#x" % opcode)
 
 
@@ -694,13 +820,36 @@ def _not(value: Value, expression: str) -> Value:
     return Const(~value.value) if isinstance(value, Const) else Unknown(expression)
 
 
+def _compare_flags(left: Value, right: Value, signed: bool, label: str) -> Value:
+    """Return AZ (bit 0), AN (bit 2) and the new CACC MSB (bit 31) of a compare.
+
+    PRM comp/compu (pp. 18-5, 18-6): AZ when RX equals RY, AN when RX is
+    smaller, and the CACC MSB when RX is greater.
+    """
+    if not isinstance(left, Const) or not isinstance(right, Const):
+        return Unknown(label)
+    x, y = left.value & 0xFFFFFFFF, right.value & 0xFFFFFFFF
+    if signed:
+        x, y = _signed32(x), _signed32(y)
+    return Const(
+        (0x1 if x == y else 0)
+        | (0x4 if x < y else 0)
+        | (0x80000000 if x > y else 0)
+    )
+
+
 def _compute(
     f: Mapping[str, int],
     short: bool,
     values: Mapping[int, Value],
     special: Optional[Mapping[str, Value]] = None,
-) -> Optional[tuple[int | str, Value, str]]:
-    """Decode the small public-table subset, reading every operand from VALUES."""
+) -> Optional[tuple[int | str, Value, str, "Callable[[Value], Value]"]]:
+    """Decode the small public-table subset, reading every operand from VALUES.
+
+    The 4th element of a non-None result is an ASTATX updater: a function
+    from the old ASTATX Value to the new one, computed here (where the
+    operands are in scope) and applied by ``_apply_compute``.
+    """
     field = (
         _field(f, "compute")
         if short
@@ -716,7 +865,7 @@ def _compute(
         rn = (field >> 8) & 0xF
         if direction != 1 or opcode != 0:
             raise ValueError("unsupported MR data move %#x" % field)
-        return "MR0F", _ureg(values, rn), "mr-data-move"
+        return "MR0F", _ureg(values, rn), "mr-data-move", _astatx_mult_clear
     # PRM multiplier compute table: MRF = MRF + RX * RY (MOD1).  Preserve
     # the accumulator separately from the UREG file so later MR transfers do
     # not masquerade as architectural UREGs.
@@ -730,6 +879,7 @@ def _compute(
             "MRF",
             _add(accumulator, product, "MRF + R%d * R%d" % (rx, ry)),
             "multiply-accumulate",
+            _astatx_mult_forget,
         )
     if not short and ((field >> 20) & 3) == 1 and ((field >> 12) & 0xFF) == 0xB0:
         rn, rx, ry = (field >> 8) & 0xF, (field >> 4) & 0xF, field & 0xF
@@ -741,70 +891,105 @@ def _compute(
             rn,
             _add(accumulator, product, "MRF + R%d * R%d" % (rx, ry)),
             "multiply-add-mrf",
+            _astatx_mult_forget,
         )
     if short:
         opcode, rn, rx = (field >> 8) & 0xF, (field >> 4) & 0xF, field & 0xF
         left, right = _ureg(values, rn), _ureg(values, rx)
+        # Each entry is (name, calculate, astatx_kind): astatx_kind is None
+        # for the value-only logical rule (pass/not/and/or/xor), an
+        # (a, b, subtract) triple for the arithmetic-flags rule, or "mult"
+        # to forget the (unmodelled) multiplier flags.
         operations = {
-            0: ("add", lambda: _add(left, right, "R%d + R%d" % (rn, rx))),
-            1: ("subtract", lambda: _subtract(left, right, "R%d - R%d" % (rn, rx))),
-            2: ("pass", lambda: right),
+            0: ("add", lambda: _add(left, right, "R%d + R%d" % (rn, rx)), (left, right, False)),
+            1: (
+                "subtract",
+                lambda: _subtract(left, right, "R%d - R%d" % (rn, rx)),
+                (left, right, True),
+            ),
+            2: ("pass", lambda: right, None),
             4: (
                 "not",
                 lambda: _not(right, "not R%d" % rx),
+                None,
             ),
-            5: ("increment", lambda: _add(right, Const(1), "R%d + 1" % rx)),
-            6: ("decrement", lambda: _add(right, Const(-1), "R%d - 1" % rx)),
+            5: ("increment", lambda: _add(right, Const(1), "R%d + 1" % rx), (right, Const(1), False)),
+            6: ("decrement", lambda: _add(right, Const(-1), "R%d - 1" % rx), (right, Const(1), True)),
             7: (
                 "multiply",
                 lambda: _multiply(left, right, "R%d * R%d" % (rn, rx)),
+                "mult",
             ),
             0xC: (
                 "and",
                 lambda: _bitwise(
                     left, right, "R%d and R%d" % (rn, rx), lambda a, b: a & b
                 ),
+                None,
             ),
             0xD: (
                 "or",
                 lambda: _bitwise(
                     left, right, "R%d or R%d" % (rn, rx), lambda a, b: a | b
                 ),
+                None,
             ),
             0xE: (
                 "xor",
                 lambda: _bitwise(
                     left, right, "R%d xor R%d" % (rn, rx), lambda a, b: a ^ b
                 ),
+                None,
             ),
         }
         if opcode == 3:
-            return rn, left, "compare"
+            # PRM ShortCompute table (p. 17-3): 0011 is the signed comp(RN, RX).
+            value = _compare_flags(left, right, True, "comp R%d, R%d" % (rn, rx))
+            return rn, value, "compare", _astatx_compare(value)
         if opcode not in operations:
             raise ValueError("unsupported short compute opcode %#x" % opcode)
-        operation, calculate = operations[opcode]
-        return rn, calculate(), operation
+        operation, calculate, astatx_kind = operations[opcode]
+        value = calculate()
+        if astatx_kind is None:
+            astatx_update = _astatx_alu_logical(value)
+        elif astatx_kind == "mult":
+            astatx_update = _astatx_mult_forget
+        else:
+            a, b, subtract = astatx_kind
+            astatx_update = _astatx_alu_arith(a, b, subtract)
+        return rn, value, operation, astatx_update
     cu, opcode = (field >> 20) & 3, (field >> 12) & 0xFF
     rn, rx, ry = (field >> 8) & 0xF, (field >> 4) & 0xF, field & 0xF
     left, right = _ureg(values, rx), _ureg(values, ry)
     # PRM Table 17-5: ALUOP 00000001/00000010 are add/subtract.
     if cu == 0 and opcode == 0x01:
         value = _add(left, right, "R%d + R%d" % (rx, ry))
-        return rn, value, "add"
+        return rn, value, "add", _astatx_alu_arith(left, right, False)
     if cu == 0 and opcode == 0x02:
         value = _subtract(left, right, "R%d - R%d" % (rx, ry))
-        return rn, value, "subtract"
-    # PRM Table 18-5: ALUOP 00001010 is signed comp(RX, RY). It updates
-    # status only, so the tracer records the comparison without writing RN.
-    if cu == 0 and opcode == 0x0A:
-        return rn, left, "compare"
+        return rn, value, "subtract", _astatx_alu_arith(left, right, True)
+    # PRM Table 18-5: ALUOP 00001010 is signed comp(RX, RY) and 00001011 is
+    # unsigned compu(RX, RY). Both update status only, so the tracer records
+    # the comparison without writing RN; the value carries the new flags.
+    if cu == 0 and opcode in (0x0A, 0x0B):
+        signed = opcode == 0x0A
+        label = "%s R%d, R%d" % ("comp" if signed else "compu", rx, ry)
+        value = _compare_flags(left, right, signed, label)
+        return rn, value, "compare", _astatx_compare(value)
     if cu == 0 and opcode == 0x21:
-        return rn, left, "pass"
+        return rn, left, "pass", _astatx_alu_logical(left)
+    # PRM Table 18-5 and p. 19-10: ALUOP 00100010 is RN = -RX, the two's
+    # complement, with the same flags as 0 - RX.
+    if cu == 0 and opcode == 0x22:
+        value = _subtract(Const(0), left, "-R%d" % rx)
+        return rn, value, "negate", _astatx_alu_arith(Const(0), left, True)
     if cu == 0 and opcode == 0x29:
-        return rn, _add(left, Const(1), "R%d + 1" % rx), "increment"
+        value = _add(left, Const(1), "R%d + 1" % rx)
+        return rn, value, "increment", _astatx_alu_arith(left, Const(1), False)
     # PRM Table 18-5 and p. 19-9: ALUOP 00101010 is RN = RX - 1.
     if cu == 0 and opcode == 0x2A:
-        return rn, _add(left, Const(-1), "R%d - 1" % rx), "decrement"
+        value = _add(left, Const(-1), "R%d - 1" % rx)
+        return rn, value, "decrement", _astatx_alu_arith(left, Const(1), True)
     # PRM Table 18-5: ALUOP 01000000..01000010 are the integer logical
     # operations AND, OR, and XOR.
     if cu == 0 and opcode in (0x40, 0x41, 0x42):
@@ -819,19 +1004,20 @@ def _compute(
             "R%d %s R%d" % (rx, name, ry),
             operation,
         )
-        return rn, value, name
+        return rn, value, name, _astatx_alu_logical(value)
     # PRM Table 17-7: MULOP 0000 F00x writes a saturated MRF value to RN.
     # The tracer does not model the full-width multiplier accumulator or MOD2
     # format bits, so preserve the documented data dependency conservatively.
     if cu == 1 and opcode == 0x00:
-        return rn, Unknown("saturated MRF (unmodeled MOD2)"), "saturate-mrf"
+        return rn, Unknown("saturated MRF (unmodeled MOD2)"), "saturate-mrf", _astatx_mult_forget
     if cu == 1 and opcode == 0x70:
         value = _multiply(left, right, "R%d * R%d" % (rx, ry))
-        return rn, value, "multiply"
+        return rn, value, "multiply", _astatx_mult_forget
     # PRM Table 17-9: SHIFTOP 00000000 is RN = LSHIFT RX by RY. The signed
     # low byte of RY selects a left (positive) or logical right (negative)
     # shift; magnitudes of 32 or more produce zero.
     if cu == 2 and opcode == 0x00:
+        amount: Optional[int] = None
         if not isinstance(right, Const):
             value = Unknown("lshift R%d by R%d" % (rx, ry))
         else:
@@ -846,7 +1032,7 @@ def _compute(
                 value = Const(left.value << amount)
             else:
                 value = Const(left.value >> -amount)
-        return rn, value, "logical-shift"
+        return rn, value, "logical-shift", _astatx_shift(amount, value, "clear")
     # PRM Table 17-9: SHIFTOP 10001000 is RN = leftz RX.
     if cu == 2 and opcode == 0x88:
         value = (
@@ -854,7 +1040,7 @@ def _compute(
             if isinstance(left, Const)
             else Unknown("leftz R%d" % rx)
         )
-        return rn, value, "leftz"
+        return rn, value, "leftz", _astatx_leftz(left, value)
     # PRM Table 18-9: SHIFTOP 11000000/11000100 are variable bit set/clear.
     if cu == 2 and opcode in (0xC0, 0xC4):
         name = "bset" if opcode == 0xC0 else "bclr"
@@ -872,7 +1058,12 @@ def _compute(
                 "%s R%d by R%d" % (name, rx, ry),
                 calculate,
             )
-        return rn, value, "bit-set" if opcode == 0xC0 else "bit-clear"
+        return (
+            rn,
+            value,
+            "bit-set" if opcode == 0xC0 else "bit-clear",
+            _astatx_bit_field(right, value),
+        )
     # PRM Table 17-9 and p. 23-5: SHIFTOP 11001000 is
     # RN = btgl RX by RY.  Positions outside the 32-bit field leave RX
     # unchanged.
@@ -888,18 +1079,284 @@ def _compute(
                 "btgl R%d by R%d" % (rx, ry),
                 lambda a, b: a ^ b,
             )
-        return rn, value, "bit-toggle"
+        return rn, value, "bit-toggle", _astatx_bit_field(right, value)
     # PRM Table 18-9 and pp. 24-5--24-6: SHIFTOP 11001100 is
     # btst RX by RY. It changes status flags only and has no RN result.
     if cu == 2 and opcode == 0xCC:
-        return rn, left, "bit-test"
+        return rn, left, "bit-test", _astatx_btst(left, right)
     raise ValueError("unsupported full compute cu=%#x opcode=%#x" % (cu, opcode))
 
 
+def _astatx_known_bit(value: Value, bit: int) -> Optional[bool]:
+    """Return ASTATX/ASTATY bit BIT if known, else None."""
+    if isinstance(value, Const):
+        return bool(value.value & (1 << bit))
+    if isinstance(value, PartialConst):
+        if value.mask & (1 << bit):
+            return bool(value.bits & (1 << bit))
+        return None
+    return None
+
+
+def _astatx_define(old: Value, mask: int, bits: int) -> Value:
+    """Return OLD with MASK's bits set definitively to BITS (masked to MASK);
+    bits outside MASK keep whatever knowledge OLD already carried."""
+    mask &= 0xFFFFFFFF
+    bits &= mask
+    if isinstance(old, Const):
+        return Const((old.value & ~mask) | bits)
+    if isinstance(old, PartialConst):
+        new_mask = old.mask | mask
+        new_bits = (old.bits & ~mask) | bits
+        return Const(new_bits) if new_mask == 0xFFFFFFFF else PartialConst(new_mask, new_bits)
+    # Unknown (or a stray non-ASTATX Value type): only MASK becomes known.
+    if not mask:
+        return old
+    return Const(bits) if mask == 0xFFFFFFFF else PartialConst(mask, bits)
+
+
+def _astatx_forget(old: Value, mask: int) -> Value:
+    """Return OLD with MASK's bits downgraded to unknown; other bits keep
+    whatever knowledge OLD already carried."""
+    mask &= 0xFFFFFFFF
+    if isinstance(old, Const):
+        new_mask = 0xFFFFFFFF & ~mask
+        new_bits = old.value & new_mask
+    elif isinstance(old, PartialConst):
+        new_mask = old.mask & ~mask
+        new_bits = old.bits & new_mask
+    else:
+        return old
+    return Unknown("astatx bits forgotten") if new_mask == 0 else PartialConst(new_mask, new_bits)
+
+
+def _astatx_apply_bits(old: Value, updates: Mapping[int, Optional[bool]]) -> Value:
+    """Apply per-bit updates to an ASTATX-like value: True/False defines that
+    bit, None forgets it (downgrades to unknown). Bits not mentioned in
+    UPDATES are left exactly as OLD had them."""
+    define_mask = define_bits = forget_mask = 0
+    for bit, known in updates.items():
+        if known is None:
+            forget_mask |= 1 << bit
+        else:
+            define_mask |= 1 << bit
+            if known:
+                define_bits |= 1 << bit
+    result = old
+    if define_mask:
+        result = _astatx_define(result, define_mask, define_bits)
+    if forget_mask:
+        result = _astatx_forget(result, forget_mask)
+    return result
+
+
+def _alu_result_bits(value: Const) -> int:
+    """AN/AZ for a pass/not/and/or/xor result (PRM pp.449-452); AC/AV/AS/AI
+    are always 0 for these."""
+    bits = 0
+    if value.value & 0x80000000:
+        bits |= 1 << AN_BIT
+    if value.value == 0:
+        bits |= 1 << AZ_BIT
+    return bits
+
+
+def _arith_flag_bits(a: Const, b: Const, subtract: bool) -> int:
+    """AC/AV/AN/AZ for add/subtract/increment/decrement (PRM pp.439-440,
+    446-447); AS/AI are always 0.
+
+    AC is the carry out of the MSB adder stage; AV is the XOR of the carries
+    into and out of the MSB adder stage (the standard two's-complement
+    signed-overflow test). Subtraction is modelled the way the ALU does it:
+    add the one's complement of B with a forced carry-in of 1 (so decrement,
+    RX - 1, is add(RX, 1, subtract=True), matching the PRM wording exactly).
+    """
+    A = a.value & 0xFFFFFFFF
+    if subtract:
+        b_eff, carry_in = (~b.value) & 0xFFFFFFFF, 1
+    else:
+        b_eff, carry_in = b.value & 0xFFFFFFFF, 0
+    low31 = (A & 0x7FFFFFFF) + (b_eff & 0x7FFFFFFF) + carry_in
+    carry_into_msb = (low31 >> 31) & 1
+    full = A + b_eff + carry_in
+    carry_out = (full >> 32) & 1
+    result = full & 0xFFFFFFFF
+    bits = 0
+    if carry_out:
+        bits |= 1 << AC_BIT
+    if carry_into_msb ^ carry_out:
+        bits |= 1 << AV_BIT
+    if result & 0x80000000:
+        bits |= 1 << AN_BIT
+    if result == 0:
+        bits |= 1 << AZ_BIT
+    return bits
+
+
+def _astatx_alu_logical(value: Value) -> "Callable[[Value], Value]":
+    """pass/not/and/or/xor: AC/AV/AS/AI/AF cleared; AN/AZ from VALUE."""
+
+    def update(astatx: Value) -> Value:
+        if isinstance(value, Const):
+            return _astatx_define(astatx, ALU_FLAGS_MASK, _alu_result_bits(value))
+        return _astatx_forget(astatx, ALU_FLAGS_MASK)
+
+    return update
+
+
+def _astatx_alu_arith(a: Value, b: Value, subtract: bool) -> "Callable[[Value], Value]":
+    """add/subtract/increment/decrement: AC/AV/AN/AZ from A and B; AS/AI/AF
+    cleared."""
+
+    def update(astatx: Value) -> Value:
+        if isinstance(a, Const) and isinstance(b, Const):
+            return _astatx_define(astatx, ALU_FLAGS_MASK, _arith_flag_bits(a, b, subtract))
+        return _astatx_forget(astatx, ALU_FLAGS_MASK)
+
+    return update
+
+
+def _astatx_compare(value: Value) -> "Callable[[Value], Value]":
+    """PRM comp/compu: AC/AV/AS/AI/AF clear; AZ/AN from VALUE (bits 0, 2);
+    CACC (bits 31:24) is an 8-bit shift register, newest bit (VALUE bit 31)
+    entering at bit 31. The shift needs the old CACC bits, so it is only
+    computed exactly when the old ASTATX is fully known; otherwise CACC
+    becomes unknown while the other newly defined bits do not.
+    """
+
+    def update(astatx: Value) -> Value:
+        if not isinstance(value, Const):
+            return _astatx_forget(_astatx_forget(astatx, ALU_FLAGS_MASK), 0xFF000000)
+        new_low = value.value & ((1 << AZ_BIT) | (1 << AN_BIT))
+        if isinstance(astatx, Const):
+            old = astatx.value
+            cacc = (old >> 1) & 0x7F000000
+            preserve = 0x00FFFFC0 & ~(1 << AF_BIT)  # bits 6-23 minus AF
+            return Const((old & preserve) | cacc | new_low | (value.value & 0x80000000))
+        result = _astatx_define(astatx, ALU_FLAGS_MASK, new_low)
+        return _astatx_forget(result, 0xFF000000)
+
+    return update
+
+
+def _astatx_mult_forget(astatx: Value) -> Value:
+    """multiply/multiply-add-mrf/saturate-mrf/multiply-accumulate: the
+    tracer does not model the multiplier result format, so MN/MV/MU/MI are
+    always unknown."""
+    return _astatx_forget(astatx, MULT_FLAGS_MASK)
+
+
+def _astatx_mult_clear(astatx: Value) -> Value:
+    """mr-data-move: PRM p.493 documents MU/MN/MI/MV all cleared."""
+    return _astatx_define(astatx, MULT_FLAGS_MASK, 0)
+
+
+def _astatx_bit_field(position: Value | int, result: Value) -> "Callable[[Value], Value]":
+    """bset/bclr/btgl reg and immediate (PRM pp.511-513): SS cleared; SZ =
+    output == 0; SV = bit position > 31."""
+    pos = position.value if isinstance(position, Const) else (
+        position if isinstance(position, int) else None
+    )
+
+    def update(astatx: Value) -> Value:
+        updates: Dict[int, Optional[bool]] = {SS_BIT: False}
+        if pos is None:
+            updates[SV_BIT] = None
+            updates[SZ_BIT] = None
+        else:
+            updates[SV_BIT] = pos > 31
+            updates[SZ_BIT] = (result.value == 0) if isinstance(result, Const) else None
+        return _astatx_apply_bits(astatx, updates)
+
+    return update
+
+
+def _astatx_fext(span: int, result: Value) -> "Callable[[Value], Value]":
+    """fext immediate (PRM pp.518-519): SS cleared; SZ = output == 0; SV =
+    len6 + bit6 > 32. SPAN is len6+bit6, always known from the immediate."""
+
+    def update(astatx: Value) -> Value:
+        updates: Dict[int, Optional[bool]] = {
+            SS_BIT: False,
+            SV_BIT: span > 32,
+            SZ_BIT: (result.value == 0) if isinstance(result, Const) else None,
+        }
+        return _astatx_apply_bits(astatx, updates)
+
+    return update
+
+
+def _astatx_leftz(source: Value, result: Value) -> "Callable[[Value], Value]":
+    """leftz (PRM p.521): SS cleared; SZ = MSB of RX is 1; SV = result == 32."""
+
+    def update(astatx: Value) -> Value:
+        updates: Dict[int, Optional[bool]] = {SS_BIT: False}
+        updates[SZ_BIT] = (
+            bool(source.value & 0x80000000) if isinstance(source, Const) else None
+        )
+        updates[SV_BIT] = (result.value == 32) if isinstance(result, Const) else None
+        return _astatx_apply_bits(astatx, updates)
+
+    return update
+
+
+def _astatx_btst(source: Value, position: Value) -> "Callable[[Value], Value]":
+    """btst reg (PRM p.513): SS cleared; SZ set if the tested bit is 0 or the
+    position is out of range, cleared if the tested bit is 1; SV = position >
+    31. BTF is unaffected."""
+
+    def update(astatx: Value) -> Value:
+        updates: Dict[int, Optional[bool]] = {SS_BIT: False}
+        if not isinstance(position, Const):
+            updates[SV_BIT] = None
+            updates[SZ_BIT] = None
+        else:
+            pos = position.value
+            out_of_range = pos > 31
+            updates[SV_BIT] = out_of_range
+            if out_of_range:
+                updates[SZ_BIT] = True
+            elif isinstance(source, Const):
+                updates[SZ_BIT] = not bool(source.value & (1 << pos))
+            else:
+                updates[SZ_BIT] = None
+        return _astatx_apply_bits(astatx, updates)
+
+    return update
+
+
+def _astatx_shift(
+    amount: Optional[int], shifted: Value, ss_mode: str
+) -> "Callable[[Value], Value]":
+    """lshift/ashift reg and immediate, OR-lshift/OR-ashift immediate (PRM
+    pp.508-510): SZ = the shifted value (before any OR) is zero; SV = the
+    shift amount is a left shift (> 0).
+
+    SS is cleared for every one of these forms except OR-ashift, whose PRM
+    entry omits an SS line entirely (unlike its OR-lshift sibling, which
+    repeats "SS Cleared"); pass ss_mode="forget" there so SS becomes unknown
+    instead of guessed, without touching any other already-known bit.
+    """
+
+    def update(astatx: Value) -> Value:
+        updates: Dict[int, Optional[bool]] = {
+            SS_BIT: False if ss_mode == "clear" else None,
+            SV_BIT: None if amount is None else amount > 0,
+            SZ_BIT: (shifted.value == 0) if isinstance(shifted, Const) else None,
+        }
+        return _astatx_apply_bits(astatx, updates)
+
+    return update
+
+
 def _apply_compute(
-    state: State, insn: Instruction, result: tuple[int | str, Value, str]
+    state: State,
+    insn: Instruction,
+    result: tuple[int | str, Value, str, "Callable[[Value], Value]"],
 ) -> None:
-    rn, value, operation = result
+    rn, value, operation, astatx_update = result
+    astatx_code = UREG_CODES["ASTATX"]
+    state.uregs[astatx_code] = astatx_update(_ureg_raw(state.uregs, astatx_code))
     if isinstance(rn, str):
         _event(
             state,
@@ -911,22 +1368,6 @@ def _apply_compute(
         )
         state.special["MRF"] = value
         return
-    if operation == "pass":
-        astatx_code = UREG_CODES["ASTATX"]
-        astatx = _ureg(state.uregs, astatx_code)
-        if isinstance(value, Const) and isinstance(astatx, Const):
-            # Fixed-point PASS updates the six ALU flags: AC/AI/AS/AV are
-            # cleared, AN reflects bit 31, and AZ reflects a zero result.
-            flags = (0x4 if value.value & 0x80000000 else 0) | (
-                0x1 if value.value == 0 else 0
-            )
-            state.uregs[astatx_code] = Const((astatx.value & ~0x3F) | flags)
-        else:
-            state.uregs[astatx_code] = Unknown("pass ASTATX flags")
-    elif operation == "compare":
-        # The value result is sufficient for dataflow, but the tracer does not
-        # yet model all subtraction flags. Do not let a stale AZ drive EQ/NE.
-        state.uregs[UREG_CODES["ASTATX"]] = Unknown("compare ASTATX flags")
     if operation in ("compare", "bit-test"):
         _event(state, insn, "compute", operation=operation, status_only=True)
     else:
@@ -1007,6 +1448,7 @@ def _advance(state: State, insn: Instruction) -> List[State]:
             if p.target is None:
                 return [_stop(state, insn, "call without target")]
             target = p.target
+            return_sw = next_pc if p.return_sw == AFTER_DELAY_SLOTS else p.return_sw
             loaded = False
             if (
                 state.follow_loaded_calls
@@ -1020,7 +1462,6 @@ def _advance(state: State, insn: Instruction) -> List[State]:
                 followed_depth = len(state.call_stack) - len(state.loops)
                 if followed_depth >= state.max_call_depth:
                     return [_stop(state, insn, "max-call-depth")]
-                return_sw = p.return_sw
                 if return_sw is None:
                     return [_stop(state, insn, "call without architectural return")]
                 state.call_stack.append(return_sw)
@@ -1036,7 +1477,6 @@ def _advance(state: State, insn: Instruction) -> List[State]:
                     return_sw=return_sw,
                 )
                 return [state]
-            return_sw = p.return_sw
             if return_sw is None:
                 return [_stop(state, insn, "call without architectural return")]
             dossier = _dossier(state, target, return_sw)
@@ -1072,6 +1512,47 @@ def _advance(state: State, insn: Instruction) -> List[State]:
     return [state]
 
 
+def _lt_ge_le_gt(state: State, cond: int) -> Optional[bool]:
+    """PGR Table 4-37 (p.4-93) / PRM p.4-53:
+
+    X = (NOT AF AND (AN XOR (AV AND NOT ALUSAT))) OR (AF AND AN) OR AZ
+    LE iff X, GT iff NOT X.
+    Y = (NOT AF AND (AN XOR (AV AND NOT ALUSAT))) OR (AF AND AN AND NOT AZ)
+    LT iff Y, GE iff NOT Y.
+
+    (At AF=0 this is X = Y OR AZ, i.e. LE = LT OR EQ, matching intuition.)
+    ALUSAT is only read when it would actually change the answer (AF=0 and
+    AV=1); this lets a comparison that clearly did not overflow resolve
+    without needing MODE1 to be known.
+    """
+    astatx = _ureg_raw(state.uregs, UREG_CODES["ASTATX"])
+    af = _astatx_known_bit(astatx, AF_BIT)
+    an = _astatx_known_bit(astatx, AN_BIT)
+    az = _astatx_known_bit(astatx, AZ_BIT)
+    if af is None or an is None or az is None:
+        return None
+    if af:
+        x = an or az
+        y = an and not az
+    else:
+        av = _astatx_known_bit(astatx, AV_BIT)
+        if av is None:
+            return None
+        if not av:
+            term = an  # AN xor (AV and not ALUSAT), with AV=0
+        else:
+            mode1 = _ureg(state.uregs, UREG_CODES["MODE1"])
+            if not isinstance(mode1, Const):
+                return None
+            alusat = bool(mode1.value & (1 << ALUSAT_BIT))
+            term = an != (not alusat)  # AN xor (True and not ALUSAT)
+        x = term or az
+        y = term
+    if cond in (0x02, 0x12):  # LE / GT
+        return x if cond == 0x02 else not x
+    return y if cond == 0x01 else not y  # LT / GE
+
+
 def _predicate(state: State, cond: int) -> Optional[bool]:
     if cond == 0x1F:
         return True
@@ -1080,27 +1561,36 @@ def _predicate(state: State, cond: int) -> Optional[bool]:
         # The tracer does not yet model the companion PASS, so only consume
         # AZ when execution is concretely SISD.
         mode1 = _ureg(state.uregs, UREG_CODES["MODE1"])
-        astatx = _ureg(state.uregs, UREG_CODES["ASTATX"])
-        if (
-            not isinstance(mode1, Const)
-            or mode1.value & (1 << 21)
-            or not isinstance(astatx, Const)
-        ):
+        astatx = _ureg_raw(state.uregs, UREG_CODES["ASTATX"])
+        equal = _astatx_known_bit(astatx, AZ_BIT)
+        if not isinstance(mode1, Const) or mode1.value & (1 << 21) or equal is None:
             return None
-        equal = bool(astatx.value & 1)
         return equal if cond == 0x00 else not equal
-    if cond in (0x0D, 0x1D):
-        astatx = _ureg(state.uregs, UREG_CODES["ASTATX"])
-        if not isinstance(astatx, Const):
+    if cond in (0x01, 0x02, 0x11, 0x12):
+        return _lt_ge_le_gt(state, cond)
+    if cond in SIMPLE_COND_BITS:
+        bit, negate = SIMPLE_COND_BITS[cond]
+        astatx = _ureg_raw(state.uregs, UREG_CODES["ASTATX"])
+        known = _astatx_known_bit(astatx, bit)
+        if known is None:
             return None
-        bit_test = bool(astatx.value & (1 << 18))
-        return bit_test if cond == 0x0D else not bit_test
-    if cond in (0x04, 0x14):
-        astatx = _ureg(state.uregs, UREG_CODES["ASTATX"])
-        if not isinstance(astatx, Const):
-            return None
-        overflow = bool(astatx.value & (1 << 1))
-        return overflow if cond == 0x04 else not overflow
+        return (not known) if negate else known
+    return None
+
+
+def _check_return_target(state: State) -> Optional[str]:
+    """The firmware returns through JUMP (M14, I12) (DB). When both registers
+    are known, the jump target must equal the recorded return address."""
+    index = _ureg(state.uregs, UREG_CODES["I12"])
+    modifier = _ureg(state.uregs, UREG_CODES["M14"])
+    if not isinstance(index, Const) or not isinstance(modifier, Const):
+        return None
+    target = (index.value + modifier.value) & 0xFFFFFF
+    if target != state.call_stack[-1]:
+        return "return target %#x differs from recorded return %#x" % (
+            target,
+            state.call_stack[-1],
+        )
     return None
 
 
@@ -1117,9 +1607,11 @@ def _transfer(
     if cond is False:
         state.pc_sw = fall
         return [state]
-    # A delayed CALL always records the seventh short-word address after the
-    # call as its return, independent of the widths of its two delay slots.
-    return_sw = state.pc_sw + 7 if call else None
+    # A delayed CALL returns to the instruction after its second delay slot.
+    # The firmware's CJUMP idiom stores that address - 1 in the second slot, so
+    # the short-word offset depends on the slot widths (7 after a 16-bit push,
+    # 9 after a 48-bit one). Resolve it when the slots complete.
+    return_sw = AFTER_DELAY_SLOTS if call else None
     if cond is True:
         state.pc_sw, state.pending = fall, Pending(target, call, return_sw=return_sw)
         return [state]
@@ -1252,6 +1744,8 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         bank = 8 if _field(f, "g") else 0
         index, modifier = _field(f, "i") + bank, _field(f, "m") + bank
         iv, mv = _ureg(old, 16 + index), _ureg(old, 32 + modifier)
+        scale = _access_modifier_scale("normal-word", state.assume_nw32)
+        scaled_mv = _multiply(mv, Const(scale), "M%d * %d" % (modifier, scale))
         space = "PM" if bank else "DM"
         dreg = _field(f, "dreg")
         if _field(f, "d"):
@@ -1285,7 +1779,9 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                 addressing_mode="post-modify",
                 access_width="normal-word",
             )
-        state.uregs[16 + index] = _add(iv, mv, "I%d + M%d" % (index, modifier))
+        state.uregs[16 + index] = _add(
+            iv, scaled_mv, "I%d + M%d * %d" % (index, modifier, scale)
+        )
         _apply_compute(state, insn, result)
         return _advance(state, insn)
     if name == "18a":
@@ -1305,12 +1801,12 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             mode1 = _ureg(state.uregs, UREG_CODES["MODE1"])
             simd = bool(mode1.value & (1 << 21)) if isinstance(mode1, Const) else None
             astatx_code = UREG_CODES["ASTATX"]
-            astatx = _ureg(state.uregs, astatx_code)
-            if result is None or not isinstance(astatx, Const):
-                state.uregs[astatx_code] = Unknown(operation + " BTF")
+            astatx = _ureg_raw(state.uregs, astatx_code)
+            if result is None:
+                state.uregs[astatx_code] = _astatx_forget(astatx, 1 << BTF_BIT)
             else:
-                state.uregs[astatx_code] = Const(
-                    (astatx.value & ~(1 << 18)) | ((1 << 18) if result else 0)
+                state.uregs[astatx_code] = _astatx_define(
+                    astatx, 1 << BTF_BIT, (1 << BTF_BIT) if result else 0
                 )
             # In SIMD mode the complementary STKY/ASTAT pair is evaluated
             # independently.  Preserve that uncertainty unless both MODE1
@@ -1329,13 +1825,12 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                 else:
                     complement_result = None
                 astaty_code = UREG_CODES["ASTATY"]
-                astaty = _ureg(state.uregs, astaty_code)
-                if complement_result is None or not isinstance(astaty, Const):
-                    state.uregs[astaty_code] = Unknown(operation + " PEy BTF")
+                astaty = _ureg_raw(state.uregs, astaty_code)
+                if complement_result is None:
+                    state.uregs[astaty_code] = _astatx_forget(astaty, 1 << BTF_BIT)
                 else:
-                    state.uregs[astaty_code] = Const(
-                        (astaty.value & ~(1 << 18))
-                        | ((1 << 18) if complement_result else 0)
+                    state.uregs[astaty_code] = _astatx_define(
+                        astaty, 1 << BTF_BIT, (1 << BTF_BIT) if complement_result else 0
                     )
             _event(
                 state,
@@ -1426,10 +1921,13 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         mode1_code = UREG_CODES["MODE1"]
         stkyx_code = UREG_CODES["STKYX"]
         if push_status:
+            # PUSH STS saves the exact ASTATX/ASTATY register, including any
+            # partial knowledge, not a value moved to a general register: use
+            # _ureg_raw so a PartialConst round-trips through POP STS intact.
             state.status_stack.append(
                 (
-                    _ureg(state.uregs, astatx_code),
-                    _ureg(state.uregs, astaty_code),
+                    _ureg_raw(state.uregs, astatx_code),
+                    _ureg_raw(state.uregs, astaty_code),
                     _ureg(state.uregs, mode1_code),
                 )
             )
@@ -1508,7 +2006,86 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             _predicate(state, _field(f, "cond")),
             bool(_field(f, "j")),
         )
-    # The verified compiler return is a TRUE 9b_abs jump through I4/M6,
+    if name == "9a_abs":
+        # PRM Type 9a (pp. 14-5, 14-8): JUMP/CALL (Md, Ic) with an optional
+        # compute. I pre-modified by M gives the target; I is unchanged.
+        if state.pending:
+            return [_stop(state, insn, "nested delayed transfer")]
+        if _field(f, "a") or _field(f, "ci"):
+            return [_stop(state, insn, "unsupported Type9a control modifier")]
+        pmi = (_field(f, "pmi[2:2]") << 2) | _field(f, "pmi[1:0]")
+        pmm = _field(f, "pmm")
+        cond = _field(f, "cond")
+        compute_when_taken = not bool(_field(f, "e"))
+
+        def apply_compute(executed: State) -> Optional[str]:
+            try:
+                compute = _compute(f, False, dict(executed.uregs), executed.special)
+            except ValueError as error:
+                return str(error)
+            if compute is not None:
+                _apply_compute(executed, insn, compute)
+            return None
+
+        if (
+            _field(f, "b") == 0
+            and cond == 0x1F
+            and pmi == 4
+            and pmm == 6
+            and _field(f, "j") == 1
+        ):
+            # The verified I12/M14 (DB) return idiom of 9b_abs, plus the compute.
+            if not state.call_stack:
+                return [_stop(state, insn, "return without followed call")]
+            mismatch = _check_return_target(state)
+            if mismatch:
+                return [_stop(state, insn, mismatch)]
+            if compute_when_taken:
+                error = apply_compute(state)
+                if error:
+                    return [_stop(state, insn, error)]
+            _event(state, insn, "return-branch", index="I12", modifier="M14")
+            state.steps += 1
+            state.pc_sw = state.pc_sw + insn.length_bytes // 2
+            state.pending = Pending(None, slots=2, return_from_call=True)
+            return [state]
+        # Type 9 indirect branches use DAG2: Ic is I8-I15 and Md is M8-M15.
+        i_value = _ureg(state.uregs, UREG_CODES["I%d" % (8 + pmi)])
+        m_value = _ureg(state.uregs, UREG_CODES["M%d" % (8 + pmm)])
+        if not isinstance(i_value, Const) or not isinstance(m_value, Const):
+            return [
+                _stop(
+                    state,
+                    insn,
+                    "unknown 9a_abs indirect target through I%d/M%d"
+                    % (8 + pmi, 8 + pmm),
+                )
+            ]
+        target = (i_value.value + m_value.value) & 0xFFFFFF
+        predicate = _predicate(state, cond)
+        call = bool(_field(f, "b"))
+        transfer = _transfer if _field(f, "j") else _immediate_transfer
+        if predicate is not None:
+            if predicate == compute_when_taken:
+                error = apply_compute(state)
+                if error:
+                    return [_stop(state, insn, error)]
+            return transfer(state, insn, target, call, predicate)
+        taken, not_taken = _copy(state), _copy(state)
+        compute_state = taken if compute_when_taken else not_taken
+        error = apply_compute(compute_state)
+        if error:
+            return [_stop(compute_state, insn, error)]
+        _event(
+            taken, insn, "predicate-assumption", condition=cond, predicate_assumption=True
+        )
+        _event(
+            not_taken, insn, "predicate-assumption", condition=cond, predicate_assumption=False
+        )
+        return transfer(taken, insn, target, call, True) + transfer(
+            not_taken, insn, target, call, False
+        )
+    # The verified compiler return is a TRUE 9b_abs jump through I12/M14,
     # with two delay slots, one of which is the confident 25c_rframe form.
     # Do not treat rframe alone, its provisional 48-bit sibling, or another
     # register-indirect jump as a return.
@@ -1524,12 +2101,39 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         ):
             if not state.call_stack:
                 return [_stop(state, insn, "return without followed call")]
-            _event(state, insn, "return-branch", index="I4", modifier="M6")
+            mismatch = _check_return_target(state)
+            if mismatch:
+                return [_stop(state, insn, mismatch)]
+            _event(state, insn, "return-branch", index="I12", modifier="M14")
             state.steps += 1
             state.pc_sw = state.pc_sw + insn.length_bytes // 2
             state.pending = Pending(None, slots=2, return_from_call=True)
             return [state]
-        return [_stop(state, insn, "unsupported 9b_abs indirect transfer")]
+        # Any other Type 9b JUMP/CALL (Md, Ic): DAG2 I(8+pmi) + M(8+pmm).
+        if state.pending:
+            return [_stop(state, insn, "nested delayed transfer")]
+        if _field(f, "a") or _field(f, "ci"):
+            return [_stop(state, insn, "unsupported Type9b control modifier")]
+        i_value = _ureg(state.uregs, UREG_CODES["I%d" % (8 + pmi)])
+        m_value = _ureg(state.uregs, UREG_CODES["M%d" % (8 + pmm)])
+        if not isinstance(i_value, Const) or not isinstance(m_value, Const):
+            return [
+                _stop(
+                    state,
+                    insn,
+                    "unknown 9b_abs indirect target through I%d/M%d"
+                    % (8 + pmi, 8 + pmm),
+                )
+            ]
+        target = (i_value.value + m_value.value) & 0xFFFFFF
+        transfer = _transfer if _field(f, "j") else _immediate_transfer
+        return transfer(
+            state,
+            insn,
+            target,
+            bool(_field(f, "b")),
+            _predicate(state, _field(f, "cond")),
+        )
     if name == "25c_rframe":
         if state.pending and state.pending.return_from_call:
             frame = _ureg(state.uregs, UREG_CODES["I6"])
@@ -1616,7 +2220,10 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         post_modify = bool(_field(f, "u"))
         space = "PM" if bank else "DM"
         iv, mv = _ureg(old, 16 + index), _ureg(old, 32 + modifier)
-        address = iv if post_modify else _add(iv, mv, "I%d + M%d" % (index, modifier))
+        scale = _access_modifier_scale("normal-word", state.assume_nw32)
+        scaled_mv = _multiply(mv, Const(scale), "M%d * %d" % (modifier, scale))
+        modified = _add(iv, scaled_mv, "I%d + M%d * %d" % (index, modifier, scale))
+        address = iv if post_modify else modified
         ureg = _field(f, "ureg")
         if _field(f, "d"):
             value = _ureg(old, ureg)
@@ -1650,7 +2257,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                 access_width="normal-word",
             )
         if post_modify:
-            state.uregs[16 + index] = _add(iv, mv, "I%d + M%d" % (index, modifier))
+            state.uregs[16 + index] = modified
         if compute is not None:
             _apply_compute(state, insn, compute)
         return _advance(state, insn)
@@ -1812,6 +2419,16 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             return [_stop(state, insn, str(error))]
         if compute is None:
             return [_stop(state, insn, "empty short compute")]
+        _apply_compute(state, insn, compute)
+        return _advance(state, insn)
+    if name == "2a_short":
+        # The 32-bit 0x01 form has no condition field: always execute.
+        try:
+            compute = _compute(f, False, dict(state.uregs), state.special)
+        except ValueError as error:
+            return [_stop(state, insn, str(error))]
+        if compute is None:
+            return [_stop(state, insn, "empty full compute")]
         _apply_compute(state, insn, compute)
         return _advance(state, insn)
     if name == "2a":
@@ -2402,6 +3019,24 @@ def _seed_code(key: str | int) -> int:
     return key
 
 
+def _dedupe_key(state: State) -> tuple:
+    """Everything that decides a state's future; history (trace, steps) and the
+    run-wide settings shared by every state are left out."""
+    return (
+        state.pc_sw,
+        state.pending,
+        tuple(state.call_stack),
+        tuple(state.loops),
+        tuple(sorted(state.uregs.items())),
+        tuple(sorted(state.special.items())),
+        tuple(sorted(state.overlay.items())),
+        tuple(sorted(state.mmrs.items())),
+        tuple(state.status_stack),
+        state.data_memory_tainted,
+        state.at_loaded_entry,
+    )
+
+
 def trace(
     data: bytes | LoadedMemory,
     base_sw: Optional[int],
@@ -2449,28 +3084,27 @@ def trace(
         if core_reset_state
         else {}
     )
-    active, done = (
-        [
-            State(
-                start,
-                uregs,
-                concrete=concrete,
-                base_sw=base_sw,
-                follow_loaded_calls=follow_loaded_calls,
-                continue_external_calls=continue_external_calls,
-                dossier_bytes=dossier_bytes,
-                max_call_depth=max_call_depth,
-                skip_provisional_entries=skip_provisional_entries,
-                at_loaded_entry=skip_provisional_entries,
-                assume_nw32=assume_nw32,
-                core_reset_state=core_reset_state,
-                mmrs=mmrs,
-            )
-        ],
-        [],
+    start_state = State(
+        start,
+        uregs,
+        concrete=concrete,
+        base_sw=base_sw,
+        follow_loaded_calls=follow_loaded_calls,
+        continue_external_calls=continue_external_calls,
+        dossier_bytes=dossier_bytes,
+        max_call_depth=max_call_depth,
+        skip_provisional_entries=skip_provisional_entries,
+        at_loaded_entry=skip_provisional_entries,
+        assume_nw32=assume_nw32,
+        core_reset_state=core_reset_state,
+        mmrs=mmrs,
     )
+    # FIFO of distinct live states. Paths that reconverge on an identical state
+    # behave identically from there, so only one is kept.
+    active: Dict[tuple, State] = {_dedupe_key(start_state): start_state}
+    done: List[State] = []
     while active:
-        state = active.pop(0)
+        state = active.pop(next(iter(active)))
         if state.pc_sw in breakpoint_set:
             done.append(
                 _stop(state, decode_at(data, base_sw, state.pc_sw), "breakpoint")
@@ -2483,10 +3117,17 @@ def trace(
         for child in out:
             if child.stopped:
                 done.append(child)
+                continue
+            key = _dedupe_key(child)
+            existing = active.get(key)
+            if existing is not None:
+                # Keep the copy that has used less of --max-steps.
+                if child.steps < existing.steps:
+                    active[key] = child
             elif len(active) + len(done) >= max_states:
                 done.append(_stop(child, None, "max-states"))
             else:
-                active.append(child)
+                active[key] = child
     return done
 
 

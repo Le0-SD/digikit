@@ -88,9 +88,9 @@ class TraceTest(unittest.TestCase):
         stopped = self.run_one(T.State(0x10), insn("6b_shiftimm", base, length=6))
         self.assertEqual(stopped.stopped, "unsupported Type6b predicate")
         base["cond[4:0]"] = 0x1F
-        base["shiftimm[22:16]"] = 0x08
+        base["shiftimm[22:16]"] = 0x11
         stopped = self.run_one(T.State(0x10), insn("6b_shiftimm", base, length=6))
-        self.assertEqual(stopped.stopped, "unsupported ShiftImm opcode 0x8")
+        self.assertEqual(stopped.stopped, "unsupported ShiftImm opcode 0x11")
 
     def test_type11c_immediate_conditional_and_delayed_rts(self):
         immediate = {"x": 0, "j": 0, "cond[4:0]": 0x1F, "lr": 0}
@@ -149,7 +149,9 @@ class TraceTest(unittest.TestCase):
             insn("5a_move", pass_zero, length=6),
         )
         self.assertEqual(state.uregs[24], T.Const(0))
-        self.assertEqual(state.uregs[astatx], T.Const(0xFFFFFFC1))
+        # AZ (bit0) sets, AC/AV/AN/AS/AI (bits1-5) and AF (bit10) all clear;
+        # bits outside the ALU-flags mask are untouched from 0xFFFFFFFF.
+        self.assertEqual(state.uregs[astatx], T.Const(0xFFFFFBC1))
         self.assertTrue(T._predicate(state, 0x00))
         self.assertFalse(T._predicate(state, 0x10))
 
@@ -188,7 +190,14 @@ class TraceTest(unittest.TestCase):
             T.State(0x10, {astatx: T.Const(0), mode1: T.Const(0)}),
             insn("2c", short_pass, length=2),
         )
-        self.assertIsInstance(unknown.uregs[astatx], T.Unknown)
+        # PASS of an uninitialized register only invalidates the bits PASS
+        # itself defines (the ALU-flags group); the other, previously-known
+        # bits of ASTATX (all 0 here) are not thrown away with them.
+        self.assertEqual(
+            unknown.uregs[astatx], T.PartialConst(0xFFFFFFFF & ~T.ALU_FLAGS_MASK, 0)
+        )
+        self.assertIsNone(T._astatx_known_bit(unknown.uregs[astatx], T.AZ_BIT))
+        self.assertEqual(T._astatx_known_bit(unknown.uregs[astatx], T.MN_BIT), False)
         self.assertIsNone(T._predicate(unknown, 0x00))
         self.assertIsNone(T._predicate(unknown, 0x10))
 
@@ -469,7 +478,7 @@ class TraceTest(unittest.TestCase):
         moved = self.run_one(
             T.State(
                 1,
-                {16: T.Const(0x80), 32: T.Const(4), 2: T.Const(0xAABBCCDD)},
+                {16: T.Const(0x80), 32: T.Const(1), 2: T.Const(0xAABBCCDD)},
                 concrete=memory,
                 assume_nw32=True,
             ),
@@ -801,7 +810,8 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(s.uregs[0], T.Const(99))
         self.assertEqual(s.trace[0]["operation"], "compare")
         self.assertTrue(s.trace[0]["status_only"])
-        self.assertIsInstance(s.uregs[T.UREG_CODES["ASTATX"]], T.Unknown)
+        # comp(R12=4, R2=4) with ASTATX=1: AZ set, AN and CACC MSB clear.
+        self.assertEqual(s.uregs[T.UREG_CODES["ASTATX"]], T.Const(1))
 
         s = self.run_one(
             T.State(1, {0: T.Const(0x10), 2: T.Const(4)}),
@@ -933,6 +943,298 @@ class TraceTest(unittest.TestCase):
         )
         self.assertEqual(toggled.uregs[T.UREG_CODES["R0"]], T.Const(0x80000001))
         self.assertEqual(toggled.trace[-1]["operation"], "bit-toggle-immediate")
+
+    def test_type2a_short_executes_unconditionally(self):
+        state = T.State(1, {T.UREG_CODES["R8"]: T.Const(0x00FFFFFF)})
+        results = T._execute(
+            state,
+            insn("2a_short", {"compute[22:16]": 0x28, "compute[15:0]": 0x8280}),
+        )
+        self.assertEqual(len(results), 1)
+        advanced = results[0]
+        self.assertEqual(advanced.pc_sw, 3)
+        self.assertEqual(advanced.uregs[T.UREG_CODES["R2"]], T.Const(8))
+        self.assertEqual(advanced.trace[-1]["operation"], "leftz")
+
+    def test_full_compute_compu_is_status_only(self):
+        state = self.run_one(
+            T.State(
+                1,
+                {T.UREG_CODES["R4"]: T.Const(5), T.UREG_CODES["R2"]: T.Const(7)},
+            ),
+            insn("2a_short", {"compute[22:16]": 0x00, "compute[15:0]": 0xB042}),
+        )
+        self.assertEqual(state.trace[-1]["operation"], "compare")
+        self.assertTrue(state.trace[-1]["status_only"])
+        # Compare's own bits (AC/AI/AS/AV/AF clear, AZ/AN from the operands)
+        # become known even starting from a wholly-uninitialized ASTATX; only
+        # CACC (not modelled from an unknown starting shift register) stays
+        # unknown.
+        astatx = state.uregs[T.UREG_CODES["ASTATX"]]
+        self.assertEqual(astatx, T.PartialConst(T.ALU_FLAGS_MASK, 1 << T.AN_BIT))
+        self.assertEqual(T._astatx_known_bit(astatx, T.AN_BIT), True)
+        self.assertEqual(T._astatx_known_bit(astatx, T.AZ_BIT), False)
+        self.assertIsNone(T._astatx_known_bit(astatx, 24))
+
+    def test_type6b_or_shift_immediate_ors_into_destination(self):
+        cases = (
+            ("or-lshift-pos", 0x08, 3, 5, 4, 0x1, 0x1, 0x11),
+            ("or-lshift-neg", 0x08, 2, 4, 0xF8, 0x1, 0xFF00, 0xFF),
+            ("or-ashift-neg", 0x09, 6, 7, 0xFC, 0x0, 0x80000000, 0xF8000000),
+        )
+        for label, opcode, rn, rx, data8, rn_init, rx_init, expected in cases:
+            with self.subTest(label=label):
+                fields = {
+                    "cond[4:0]": 31,
+                    "dataex[3:0]": 0,
+                    "shiftimm[22:16]": opcode,
+                    "shiftimm[15:0]": (data8 << 8) | (rn << 4) | rx,
+                }
+                state = T.State(1, {rn: T.Const(rn_init), rx: T.Const(rx_init)})
+                advanced = self.run_one(state, insn("6b_shiftimm", fields, 6))
+                self.assertEqual(advanced.uregs[rn], T.Const(expected))
+
+    def test_full_compute_compare_sets_flags_and_shifts_cacc(self):
+        astatx = T.UREG_CODES["ASTATX"]
+        compu_r4_r2 = {"compute[22:16]": 0x00, "compute[15:0]": 0xB042}
+        state = self.run_one(
+            T.State(
+                1,
+                {
+                    T.UREG_CODES["R4"]: T.Const(5),
+                    T.UREG_CODES["R2"]: T.Const(7),
+                    astatx: T.Const((1 << 18) | 0x3A),
+                },
+            ),
+            insn("2a_short", compu_r4_r2),
+        )
+        self.assertEqual(state.uregs[astatx], T.Const((1 << 18) | (1 << 2)))
+        comp_r1_r2 = {"compute[22:16]": 0x00, "compute[15:0]": 0xA012}
+        equal = self.run_one(
+            T.State(
+                1,
+                {
+                    T.UREG_CODES["R1"]: T.Const(3),
+                    T.UREG_CODES["R2"]: T.Const(3),
+                    astatx: T.Const(0xFF000000),
+                },
+            ),
+            insn("2a_short", comp_r1_r2),
+        )
+        self.assertEqual(equal.uregs[astatx], T.Const(0x7F000001))
+
+    def test_full_compute_compare_signed_vs_unsigned(self):
+        astatx = T.UREG_CODES["ASTATX"]
+        regs = {
+            T.UREG_CODES["R1"]: T.Const(0xFFFFFFFF),
+            T.UREG_CODES["R2"]: T.Const(1),
+            astatx: T.Const(0),
+        }
+        signed = self.run_one(
+            T.State(1, dict(regs)),
+            insn("2a_short", {"compute[22:16]": 0x00, "compute[15:0]": 0xA012}),
+        )
+        self.assertEqual(signed.uregs[astatx], T.Const(1 << 2))
+        unsigned = self.run_one(
+            T.State(1, dict(regs)),
+            insn("2a_short", {"compute[22:16]": 0x00, "compute[15:0]": 0xB012}),
+        )
+        self.assertEqual(unsigned.uregs[astatx], T.Const(0x80000000))
+
+    def test_short_compute_compare_sets_flags(self):
+        fields = {"compute[11:0]": (3 << 8) | (1 << 4) | 2}
+        state = self.run_one(
+            T.State(1, {1: T.Const(3), 2: T.Const(5), T.UREG_CODES["ASTATX"]: T.Const(0)}),
+            insn("2c", fields, 2),
+        )
+        self.assertEqual(state.uregs[T.UREG_CODES["ASTATX"]], T.Const(1 << 2))
+
+    def test_concrete_compare_resolves_eq_branch(self):
+        equal = self.run_one(
+            T.State(
+                1,
+                {
+                    T.UREG_CODES["R1"]: T.Const(1),
+                    T.UREG_CODES["R2"]: T.Const(1),
+                    T.UREG_CODES["ASTATX"]: T.Const(0),
+                    T.UREG_CODES["MODE1"]: T.Const(0),
+                },
+            ),
+            insn("2a_short", {"compute[22:16]": 0x00, "compute[15:0]": 0xA012}),
+        )
+        self.assertEqual(equal.uregs[T.UREG_CODES["ASTATX"]], T.Const(1))
+        branch = insn(
+            "8a_rel",
+            {"b": 0, "j": 0, "cond[4:0]": 0x00, "reladdr[23:16]": 0, "reladdr[15:0]": 30},
+            6,
+        )
+        results = T._execute(equal, branch)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].pc_sw, 33)
+        unresolved = T.State(1, {T.UREG_CODES["MODE1"]: T.Const(0)})
+        self.assertEqual(len(T._execute(unresolved, branch)), 2)
+
+    def _type9a_abs_fields(self, **changes):
+        fields = {
+            "b": 0,
+            "a": 0,
+            "cond[4:0]": 31,
+            "pmi[2:2]": 1,
+            "pmi[1:0]": 0,
+            "pmm[2:0]": 5,
+            "j": 0,
+            "e": 0,
+            "ci": 0,
+            "compute[22:16]": 0,
+            "compute[15:0]": 0,
+        }
+        fields.update(changes)
+        return fields
+
+    def test_type9a_abs_rejects_la_and_ci_modifiers(self):
+        stopped = self.run_one(
+            T.State(10), insn("9a_abs", self._type9a_abs_fields(a=1), 6)
+        )
+        self.assertEqual(stopped.stopped, "unsupported Type9a control modifier")
+
+    def test_type9a_abs_stops_on_unknown_indirect_target(self):
+        stopped = self.run_one(T.State(10), insn("9a_abs", self._type9a_abs_fields(), 6))
+        self.assertEqual(
+            stopped.stopped, "unknown 9a_abs indirect target through I12/M13"
+        )
+
+    def test_type9a_abs_immediate_jump_with_known_registers(self):
+        state = T.State(
+            10, {T.UREG_CODES["I12"]: T.Const(0x2000), T.UREG_CODES["M13"]: T.Const(4)}
+        )
+        advanced = self.run_one(state, insn("9a_abs", self._type9a_abs_fields(), 6))
+        self.assertEqual(advanced.pc_sw, 0x2004)
+        self.assertIsNone(advanced.pending)
+
+    def test_type9a_abs_delayed_jump_with_compute(self):
+        fields = self._type9a_abs_fields(
+            **{"pmm[2:0]": 7, "j": 1, "compute[22:16]": 0x02, "compute[15:0]": 0x9220}
+        )
+        state = T.State(
+            10,
+            {
+                T.UREG_CODES["I12"]: T.Const(0x30000),
+                T.UREG_CODES["M15"]: T.Const(0),
+                T.UREG_CODES["R2"]: T.Const(4),
+            },
+        )
+        advanced = self.run_one(state, insn("9a_abs", fields, 6))
+        self.assertEqual(advanced.uregs[T.UREG_CODES["R2"]], T.Const(5))
+        self.assertEqual(advanced.pending.target, 0x30000)
+
+    def test_type9a_abs_i4_m6_delayed_is_return_with_compute(self):
+        fields = self._type9a_abs_fields(
+            **{"pmm[2:0]": 6, "j": 1, "compute[22:16]": 0x02, "compute[15:0]": 0x9220}
+        )
+        state = T.State(0x10, {T.UREG_CODES["R2"]: T.Const(4)}, call_stack=[0x200])
+        returned = self.run_one(state, insn("9a_abs", fields, 6))
+        self.assertEqual(returned.uregs[T.UREG_CODES["R2"]], T.Const(5))
+        self.assertTrue(returned.pending.return_from_call)
+        stopped = self.run_one(T.State(0x10), insn("9a_abs", fields, 6))
+        self.assertEqual(stopped.stopped, "return without followed call")
+
+    def test_delayed_call_returns_after_variable_width_delay_slots(self):
+        for push_length, expected in ((2, 17), (6, 19)):
+            with self.subTest(push_length=push_length):
+                state = T._transfer(
+                    T.State(10), insn("25a_direct", {}, 6), 99, True, True
+                )[0]
+                state = T._advance(state, insn("3a", {}, push_length))[0]
+                state = T._advance(state, insn("16a", {}, 6))[0]
+                self.assertEqual(state.stopped, "external-call")
+                self.assertEqual(state.trace[-1]["return_sw"], expected)
+
+    def test_dedupe_key_ignores_history_but_not_future_state(self):
+        a = T.State(5, {1: T.Const(2)}, steps=3)
+        b = T.State(5, {1: T.Const(2)}, steps=9)
+        b.trace.append({"action": "compute"})
+        self.assertEqual(T._dedupe_key(a), T._dedupe_key(b))
+        c = T.State(5, {1: T.Const(2)}, at_loaded_entry=True)
+        self.assertNotEqual(T._dedupe_key(a), T._dedupe_key(c))
+        d = T.State(5, {1: T.Const(3)})
+        self.assertNotEqual(T._dedupe_key(a), T._dedupe_key(d))
+
+    def test_return_idiom_checks_known_i12_m14_target(self):
+        fields = {
+            "b": 0,
+            "cond[4:0]": 0x1F,
+            "pmi[2:2]": 1,
+            "pmi[1:0]": 0,
+            "pmm[2:0]": 6,
+            "j": 1,
+        }
+        regs = {T.UREG_CODES["I12"]: T.Const(0x1FF), T.UREG_CODES["M14"]: T.Const(1)}
+        ok = self.run_one(
+            T.State(0x10, dict(regs), call_stack=[0x200]), insn("9b_abs", fields)
+        )
+        self.assertIsNone(ok.stopped)
+        self.assertTrue(ok.pending.return_from_call)
+        regs[T.UREG_CODES["I12"]] = T.Const(0x2FF)
+        bad = self.run_one(
+            T.State(0x10, regs, call_stack=[0x200]), insn("9b_abs", fields)
+        )
+        self.assertEqual(
+            bad.stopped, "return target 0x300 differs from recorded return 0x200"
+        )
+
+    def test_type3a_post_modify_scales_normal_word_modifier(self):
+        fields = {
+            "u": 1,
+            "i": 7,
+            "m": 7,
+            "g": 0,
+            "d": 1,
+            "l": 0,
+            "ureg": 2,
+            "cond": 31,
+            "compute[22:16]": 0,
+            "compute[15:0]": 0,
+        }
+        state = T.State(
+            1,
+            {
+                T.UREG_CODES["I7"]: T.Const(0x1000),
+                T.UREG_CODES["M7"]: T.Const(0xFFFFFFFF),
+                2: T.Const(5),
+            },
+            assume_nw32=True,
+        )
+        stored = self.run_one(state, insn("3a", fields, 6))
+        self.assertEqual(stored.uregs[T.UREG_CODES["I7"]], T.Const(0x1000 - 4))
+
+    def test_type9b_abs_indirect_jump_uses_dag2_registers(self):
+        fields = {
+            "b": 0,
+            "a": 0,
+            "cond[4:0]": 0x1F,
+            "pmi[2:2]": 1,
+            "pmi[1:0]": 1,
+            "pmm[2:0]": 5,
+            "j": 1,
+            "ci": 0,
+        }
+        state = T.State(
+            0x10, {T.UREG_CODES["I13"]: T.Const(0x300), T.UREG_CODES["M13"]: T.Const(0)}
+        )
+        jumped = self.run_one(state, insn("9b_abs", fields))
+        self.assertEqual(jumped.pending.target, 0x300)
+        stopped = self.run_one(T.State(0x10), insn("9b_abs", fields))
+        self.assertEqual(
+            stopped.stopped, "unknown 9b_abs indirect target through I13/M13"
+        )
+
+    def test_full_compute_negate(self):
+        state = self.run_one(
+            T.State(1, {2: T.Const(5), T.UREG_CODES["ASTATX"]: T.Const(0)}),
+            insn("2a_short", {"compute[22:16]": 0x02, "compute[15:0]": 0x2120}),
+        )
+        self.assertEqual(state.uregs[1], T.Const(0xFFFFFFFB))
+        self.assertEqual(state.trace[-1]["operation"], "negate")
 
     def test_full_compute_register_to_mr_move_is_recorded(self):
         state = self.run_one(
@@ -1591,7 +1893,7 @@ class TraceTest(unittest.TestCase):
         for result, assumed in ((executed, True), (skipped, False)):
             self.assertEqual(result.stopped, "external-call")
             self.assertEqual(
-                (result.trace[-1]["return_sw"], result.trace[-1]["target_sw"]), (17, 99)
+                (result.trace[-1]["return_sw"], result.trace[-1]["target_sw"]), (16, 99)
             )
             self.assertEqual(result.trace[-2]["predicate_assumption"], assumed)
         self.assertIn(2, executed.uregs)
@@ -2258,8 +2560,8 @@ class TraceTest(unittest.TestCase):
         # 0x083f343f, a normal delay slot, then Type25c_rframe raw 0x1901.
         start, target = 0x100, 0x110
         call = encode("25a_direct", target)
-        # Two 16-bit slots end at start+5, while delayed CALL must return to
-        # the architectural start+7 rather than to the byte after slot two.
+        # Two 16-bit slots end at start+5, and the call returns to the
+        # instruction after its second delay slot.
         slot = bytes.fromhex("f29f")
         return_branch = struct.pack("<HH", 0x083F, 0x343F)
         rframe = struct.pack("<H", 0x1901)
@@ -2289,7 +2591,7 @@ class TraceTest(unittest.TestCase):
         self.assertIn("loaded-call-enter", actions)
         self.assertIn("return-branch", actions)
         self.assertIn("loaded-call-return", actions)
-        self.assertEqual(returned.pc_sw, start + 7)
+        self.assertEqual(returned.pc_sw, start + 5)
 
         stopped = T.trace(
             memory,
@@ -2497,6 +2799,598 @@ class TraceTest(unittest.TestCase):
             json.loads(out)
         finally:
             os.unlink(path)
+
+
+def full_compute(cu, opcode, rn, rx, ry):
+    """A full-compute field dict for _compute(f, short=False, ...)."""
+    field = (cu << 20) | (opcode << 12) | (rn << 8) | (rx << 4) | ry
+    return {"compute[22:16]": field >> 16, "compute[15:0]": field & 0xFFFF}
+
+
+def short_compute(opcode, rn, rx):
+    """A short-compute field dict for _compute(f, short=True, ...)."""
+    return {"compute[11:0]": (opcode << 8) | (rn << 4) | rx}
+
+
+def shiftimm_fields(opcode, data8, rn, rx, dataex=0):
+    """A ShiftImm field dict for _shift_immediate."""
+    field = (opcode << 16) | (data8 << 8) | (rn << 4) | rx
+    return {
+        "shiftimm[22:16]": field >> 16,
+        "shiftimm[15:0]": field & 0xFFFF,
+        "dataex[3:0]": dataex,
+    }
+
+
+class AstatxFlagsTest(unittest.TestCase):
+    """Focused tests for each op's ASTATX flags and the LT/GE/LE/GT/etc.
+    condition predicates, from the verified per-instruction PRM table
+    (docs/FINDINGS.md-style citations inline)."""
+
+    def astatx_after(self, fields, short, values, old_astatx, special=None):
+        rn, value, operation, update = T._compute(fields, short, values, special)
+        return rn, value, operation, update(old_astatx)
+
+    # -- add/subtract/increment/decrement (PRM pp.439-440, 446-447) --------
+
+    def test_add_flags_plain_no_carry_no_overflow(self):
+        _, value, op, astatx = self.astatx_after(
+            full_compute(0, 0x01, 0, 1, 2),
+            False,
+            {1: T.Const(5), 2: T.Const(7)},
+            T.Unknown("start"),
+        )
+        self.assertEqual(op, "add")
+        self.assertEqual(value, T.Const(12))
+        self.assertEqual(astatx, T.PartialConst(T.ALU_FLAGS_MASK, 0))
+
+    def test_add_flags_carry_and_zero(self):
+        _, value, _, astatx = self.astatx_after(
+            full_compute(0, 0x01, 0, 1, 2),
+            False,
+            {1: T.Const(0xFFFFFFFF), 2: T.Const(1)},
+            T.Unknown("start"),
+        )
+        self.assertEqual(value, T.Const(0))
+        self.assertEqual(
+            astatx, T.PartialConst(T.ALU_FLAGS_MASK, (1 << T.AZ_BIT) | (1 << T.AC_BIT))
+        )
+
+    def test_add_flags_signed_overflow(self):
+        _, value, _, astatx = self.astatx_after(
+            full_compute(0, 0x01, 0, 1, 2),
+            False,
+            {1: T.Const(0x7FFFFFFF), 2: T.Const(1)},
+            T.Unknown("start"),
+        )
+        self.assertEqual(value, T.Const(0x80000000))
+        self.assertEqual(
+            astatx, T.PartialConst(T.ALU_FLAGS_MASK, (1 << T.AV_BIT) | (1 << T.AN_BIT))
+        )
+
+    def test_subtract_flags_negative_result_no_carry(self):
+        _, value, _, astatx = self.astatx_after(
+            full_compute(0, 0x02, 0, 1, 2),
+            False,
+            {1: T.Const(5), 2: T.Const(7)},
+            T.Unknown("start"),
+        )
+        self.assertEqual(value, T.Const(0xFFFFFFFE))
+        self.assertEqual(astatx, T.PartialConst(T.ALU_FLAGS_MASK, 1 << T.AN_BIT))
+
+    def test_subtract_flags_equal_sets_az_and_ac(self):
+        _, _, _, astatx = self.astatx_after(
+            full_compute(0, 0x02, 0, 1, 2),
+            False,
+            {1: T.Const(7), 2: T.Const(7)},
+            T.Unknown("start"),
+        )
+        self.assertEqual(
+            astatx, T.PartialConst(T.ALU_FLAGS_MASK, (1 << T.AZ_BIT) | (1 << T.AC_BIT))
+        )
+
+    def test_increment_matches_add_by_one_flags(self):
+        _, value, op, astatx = self.astatx_after(
+            full_compute(0, 0x29, 0, 1, 0),
+            False,
+            {1: T.Const(0x7FFFFFFF)},
+            T.Unknown("start"),
+        )
+        self.assertEqual(op, "increment")
+        self.assertEqual(value, T.Const(0x80000000))
+        self.assertEqual(
+            astatx, T.PartialConst(T.ALU_FLAGS_MASK, (1 << T.AV_BIT) | (1 << T.AN_BIT))
+        )
+
+    def test_decrement_is_rx_minus_1_flags(self):
+        # RX=0: 0 - 1 = -1, AN set, no carry (borrow), no AZ.
+        _, value, op, astatx = self.astatx_after(
+            full_compute(0, 0x2A, 0, 1, 0), False, {1: T.Const(0)}, T.Unknown("start")
+        )
+        self.assertEqual(op, "decrement")
+        self.assertEqual(value, T.Const(0xFFFFFFFF))
+        self.assertEqual(astatx, T.PartialConst(T.ALU_FLAGS_MASK, 1 << T.AN_BIT))
+        # RX=1: 1 - 1 = 0, AZ and AC (no borrow) set.
+        _, _, _, astatx = self.astatx_after(
+            full_compute(0, 0x2A, 0, 1, 0), False, {1: T.Const(1)}, T.Unknown("start")
+        )
+        self.assertEqual(
+            astatx, T.PartialConst(T.ALU_FLAGS_MASK, (1 << T.AZ_BIT) | (1 << T.AC_BIT))
+        )
+
+    def test_arith_flags_unknown_when_operand_not_const(self):
+        old = T.Const(0xFFFFFFFF)
+        _, value, _, astatx = self.astatx_after(
+            full_compute(0, 0x01, 0, 1, 2), False, {1: T.symbol("x"), 2: T.Const(1)}, old
+        )
+        self.assertIsInstance(value, T.Affine)
+        # Only the ALU-flags bits are forgotten; everything else in OLD
+        # (here, all 1s) stays known at its old value.
+        kept = 0xFFFFFFFF & ~T.ALU_FLAGS_MASK
+        self.assertEqual(astatx, T.PartialConst(kept, kept))
+
+    # -- pass/not/and/or/xor (PRM pp.449-452) --------------------------------
+
+    def test_pass_not_and_or_xor_flags_from_result(self):
+        cases = (
+            (0x21, 1, 2, {1: T.Const(0)}, T.Const(0), 1 << T.AZ_BIT),  # pass
+            (0x40, 1, 2, {1: T.Const(5), 2: T.Const(3)}, T.Const(1), 0),  # and
+            (
+                0x41,
+                1,
+                2,
+                {1: T.Const(0x80000000), 2: T.Const(0)},
+                T.Const(0x80000000),
+                1 << T.AN_BIT,
+            ),  # or
+            (0x42, 1, 2, {1: T.Const(5), 2: T.Const(5)}, T.Const(0), 1 << T.AZ_BIT),  # xor
+        )
+        for opcode, rx, ry, values, expected_value, expected_bits in cases:
+            with self.subTest(opcode=hex(opcode)):
+                _, value, _, astatx = self.astatx_after(
+                    full_compute(0, opcode, 0, rx, ry),
+                    False,
+                    values,
+                    T.Const(0xFFFFFFFF),
+                )
+                self.assertEqual(value, expected_value)
+                self.assertEqual(
+                    astatx,
+                    T.Const((0xFFFFFFFF & ~T.ALU_FLAGS_MASK) | expected_bits),
+                )
+
+    def test_not_flags_unknown_operand_forgets_only_alu_bits(self):
+        old = T.Const(0)  # every bit known, all clear
+        _, value, op, astatx = self.astatx_after(
+            short_compute(4, 0, 1), True, {1: T.Unknown("uninit")}, old
+        )
+        self.assertEqual(op, "not")
+        self.assertIsInstance(value, T.Unknown)
+        self.assertEqual(astatx, T.PartialConst(0xFFFFFFFF & ~T.ALU_FLAGS_MASK, 0))
+        self.assertIsNone(T._astatx_known_bit(astatx, T.AZ_BIT))
+        self.assertEqual(T._astatx_known_bit(astatx, T.MN_BIT), False)
+
+    # -- comp/compu (PRM pp.18-5,18-6; CACC shift) ---------------------------
+
+    def test_compare_signed_sets_an_when_less_and_clears_af(self):
+        _, value, op, astatx = self.astatx_after(
+            full_compute(0, 0x0A, 0, 1, 2),
+            False,
+            {1: T.Const(5), 2: T.Const(7)},
+            T.Const(0xFFFFFFFF),
+        )
+        self.assertEqual(op, "compare")
+        preserve = 0x00FFFFC0 & ~(1 << T.AF_BIT)
+        cacc = (0xFFFFFFFF >> 1) & 0x7F000000  # CACC (bits 31:24) shifts in from old
+        expected = (0xFFFFFFFF & preserve) | cacc | (1 << T.AN_BIT)
+        self.assertEqual(astatx, T.Const(expected))
+        self.assertFalse(bool(expected & (1 << T.AF_BIT)))
+
+    def test_compare_cacc_shifts_and_new_msb_enters_bit31(self):
+        # Old CACC (bits 31:24) = 0b10101010; compu(7,5) -> x>y -> new MSB=1.
+        old = T.Const(0b10101010 << 24)
+        _, value, _, astatx = self.astatx_after(
+            full_compute(0, 0x0B, 0, 1, 2), False, {1: T.Const(7), 2: T.Const(5)}, old
+        )
+        expected_cacc = (0b10101010 >> 1) | 0b10000000
+        self.assertEqual((astatx.value >> 24) & 0xFF, expected_cacc)
+
+    def test_compare_partial_when_old_astatx_not_fully_known(self):
+        # Old ASTATX unknown entirely: AZ/AN/AC/AV/AS/AI/AF become known (the
+        # compare's own bits), but CACC cannot be shifted without the old
+        # CACC bits, so it stays unknown.
+        _, value, _, astatx = self.astatx_after(
+            full_compute(0, 0x0A, 0, 1, 2),
+            False,
+            {1: T.Const(5), 2: T.Const(7)},
+            T.Unknown("start"),
+        )
+        self.assertEqual(astatx, T.PartialConst(T.ALU_FLAGS_MASK, 1 << T.AN_BIT))
+        self.assertIsNone(T._astatx_known_bit(astatx, 31))
+
+    # -- multiplier ops (PRM p.493 for mr-data-move) -------------------------
+
+    def test_multiply_family_forgets_multiplier_flags(self):
+        old = T.Const(0xFFFFFFFF)
+        for opcode, cu in ((0x70, 1),):
+            _, _, op, astatx = self.astatx_after(
+                full_compute(cu, opcode, 0, 1, 2),
+                False,
+                {1: T.Const(3), 2: T.Const(4)},
+                old,
+            )
+            self.assertEqual(op, "multiply")
+            self.assertEqual(astatx, T.PartialConst(0xFFFFFFFF & ~T.MULT_FLAGS_MASK, 0xFFFFFFFF & ~T.MULT_FLAGS_MASK))
+
+    def test_mr_data_move_clears_multiplier_flags(self):
+        field = (0b100000 << 17) | (1 << 16) | (0 << 12) | (3 << 8)
+        fields = {"compute[22:16]": field >> 16, "compute[15:0]": field & 0xFFFF}
+        _, _, op, astatx = self.astatx_after(
+            fields, False, {3: T.Const(5)}, T.Const(0xFFFFFFFF)
+        )
+        self.assertEqual(op, "mr-data-move")
+        self.assertEqual(astatx, T.Const(0xFFFFFFFF & ~T.MULT_FLAGS_MASK))
+
+    # -- leftz (PRM p.521) ----------------------------------------------------
+
+    def test_leftz_flags(self):
+        cases = (
+            (0, 32, False, True),
+            (1, 31, False, False),
+            (0x80000000, 0, True, False),
+        )
+        for rx_value, expected_result, expected_sz, expected_sv in cases:
+            with self.subTest(rx=hex(rx_value)):
+                _, value, op, astatx = self.astatx_after(
+                    full_compute(2, 0x88, 0, 1, 0),
+                    False,
+                    {1: T.Const(rx_value)},
+                    T.Unknown("start"),
+                )
+                self.assertEqual(op, "leftz")
+                self.assertEqual(value, T.Const(expected_result))
+                self.assertEqual(T._astatx_known_bit(astatx, T.SS_BIT), False)
+                self.assertEqual(T._astatx_known_bit(astatx, T.SZ_BIT), expected_sz)
+                self.assertEqual(T._astatx_known_bit(astatx, T.SV_BIT), expected_sv)
+
+    # -- btst reg (PRM p.513) -------------------------------------------------
+
+    def test_btst_flags_tested_bit_and_out_of_range(self):
+        # Bit 0 of 0b1 is 1 -> SZ cleared.
+        _, _, op, astatx = self.astatx_after(
+            full_compute(2, 0xCC, 0, 1, 2),
+            False,
+            {1: T.Const(0b1), 2: T.Const(0)},
+            T.Unknown("start"),
+        )
+        self.assertEqual(op, "bit-test")
+        self.assertEqual(T._astatx_known_bit(astatx, T.SS_BIT), False)
+        self.assertEqual(T._astatx_known_bit(astatx, T.SZ_BIT), False)
+        self.assertEqual(T._astatx_known_bit(astatx, T.SV_BIT), False)
+
+        # Bit 1 of 0b1 is 0 -> SZ set.
+        _, _, _, astatx = self.astatx_after(
+            full_compute(2, 0xCC, 0, 1, 2),
+            False,
+            {1: T.Const(0b1), 2: T.Const(1)},
+            T.Unknown("start"),
+        )
+        self.assertEqual(T._astatx_known_bit(astatx, T.SZ_BIT), True)
+
+        # Position 32 is out of range -> SZ and SV both set.
+        _, _, _, astatx = self.astatx_after(
+            full_compute(2, 0xCC, 0, 1, 2),
+            False,
+            {1: T.Const(0), 2: T.Const(32)},
+            T.Unknown("start"),
+        )
+        self.assertEqual(T._astatx_known_bit(astatx, T.SZ_BIT), True)
+        self.assertEqual(T._astatx_known_bit(astatx, T.SV_BIT), True)
+
+    def test_btst_sv_known_even_when_source_unknown(self):
+        # SV only needs the position, so it is known even when the tested
+        # register is not; SZ needs the source too, so it stays unknown.
+        _, _, _, astatx = self.astatx_after(
+            full_compute(2, 0xCC, 0, 1, 2),
+            False,
+            {1: T.Unknown("uninit"), 2: T.Const(3)},
+            T.Unknown("start"),
+        )
+        self.assertEqual(T._astatx_known_bit(astatx, T.SV_BIT), False)
+        self.assertIsNone(T._astatx_known_bit(astatx, T.SZ_BIT))
+
+    # -- bset/bclr/btgl reg and immediate (PRM pp.511-513) -------------------
+
+    def test_bit_field_reg_flags(self):
+        _, value, op, astatx = self.astatx_after(
+            full_compute(2, 0xC0, 0, 1, 2),
+            False,
+            {1: T.Const(0), 2: T.Const(0)},
+            T.Unknown("start"),
+        )
+        self.assertEqual(op, "bit-set")
+        self.assertEqual(value, T.Const(1))
+        self.assertEqual(T._astatx_known_bit(astatx, T.SS_BIT), False)
+        self.assertEqual(T._astatx_known_bit(astatx, T.SZ_BIT), False)
+        self.assertEqual(T._astatx_known_bit(astatx, T.SV_BIT), False)
+
+        # Position > 31: value passes through unchanged, SV set, SZ from the
+        # (unchanged) value.
+        _, value, _, astatx = self.astatx_after(
+            full_compute(2, 0xC4, 0, 1, 2),
+            False,
+            {1: T.Const(0), 2: T.Const(99)},
+            T.Unknown("start"),
+        )
+        self.assertEqual(value, T.Const(0))
+        self.assertEqual(T._astatx_known_bit(astatx, T.SV_BIT), True)
+        self.assertEqual(T._astatx_known_bit(astatx, T.SZ_BIT), True)
+
+    def test_bit_set_clear_toggle_immediate_flags(self):
+        # bset RX by 0 -> output nonzero, SZ cleared, SV cleared (0 <= 31).
+        rn, value, op, astatx4 = T._shift_immediate(
+            shiftimm_fields(0x30, 0, 0, 1), {1: T.Const(0)}
+        )
+        update = astatx4
+        astatx = update(T.Unknown("start"))
+        self.assertEqual(op, "bit-set-immediate")
+        self.assertEqual(value, T.Const(1))
+        self.assertEqual(T._astatx_known_bit(astatx, T.SS_BIT), False)
+        self.assertEqual(T._astatx_known_bit(astatx, T.SZ_BIT), False)
+        self.assertEqual(T._astatx_known_bit(astatx, T.SV_BIT), False)
+
+        # bclr position 40 (> 31): passthrough, SV set.
+        rn, value, op, update = T._shift_immediate(
+            shiftimm_fields(0x31, 40, 0, 1), {1: T.Const(0xFF)}
+        )
+        astatx = update(T.Unknown("start"))
+        self.assertEqual(value, T.Const(0xFF))
+        self.assertEqual(T._astatx_known_bit(astatx, T.SV_BIT), True)
+
+    # -- fext immediate (PRM pp.518-519) -------------------------------------
+
+    def test_fext_immediate_sv_set_when_span_exceeds_32(self):
+        # position=30, length=8 (encoded via dataex/data8) -> span=38 > 32.
+        position, length = 30, 8
+        data8 = ((length & 0x3) << 6) | position
+        dataex = (length >> 2) & 0xF
+        rn, value, op, update = T._shift_immediate(
+            shiftimm_fields(0x10, data8, 0, 1, dataex), {1: T.Const(0xFFFFFFFF)}
+        )
+        astatx = update(T.Unknown("start"))
+        self.assertEqual(op, "field-extract-immediate")
+        self.assertEqual(T._astatx_known_bit(astatx, T.SS_BIT), False)
+        self.assertEqual(T._astatx_known_bit(astatx, T.SV_BIT), True)
+        self.assertEqual(T._astatx_known_bit(astatx, T.SZ_BIT), False)
+
+    def test_fext_immediate_sv_clear_when_span_within_32(self):
+        position, length = 0, 8
+        data8 = ((length & 0x3) << 6) | position
+        dataex = (length >> 2) & 0xF
+        rn, value, op, update = T._shift_immediate(
+            shiftimm_fields(0x10, data8, 0, 1, dataex), {1: T.Const(0)}
+        )
+        astatx = update(T.Unknown("start"))
+        self.assertEqual(value, T.Const(0))
+        self.assertEqual(T._astatx_known_bit(astatx, T.SV_BIT), False)
+        self.assertEqual(T._astatx_known_bit(astatx, T.SZ_BIT), True)
+
+    # -- lshift/ashift reg and immediate, OR-forms (PRM pp.508-510) ----------
+
+    def test_logical_shift_reg_flags(self):
+        # RY encodes amount=4 in its low byte; RX=1 -> shifted=16, SV set
+        # (left shift), SZ from the shifted value (nonzero).
+        rn, value, op, update = T._compute(
+            full_compute(2, 0x00, 0, 1, 2), False, {1: T.Const(1), 2: T.Const(4)}
+        )
+        astatx = update(T.Unknown("start"))
+        self.assertEqual(op, "logical-shift")
+        self.assertEqual(value, T.Const(16))
+        self.assertEqual(T._astatx_known_bit(astatx, T.SS_BIT), False)
+        self.assertEqual(T._astatx_known_bit(astatx, T.SV_BIT), True)
+        self.assertEqual(T._astatx_known_bit(astatx, T.SZ_BIT), False)
+
+    def test_shift_immediate_or_forms_sz_uses_pre_or_value(self):
+        # RN already has bit0 set; OR-lshift RX=0b10 by 1 -> shifted=0b100
+        # (nonzero) even though it is OR'd into a nonzero RN. SZ must reflect
+        # the shifted value alone, per the PRM text.
+        rn, value, op, update = T._shift_immediate(
+            shiftimm_fields(0x08, 1, 0, 1), {0: T.Const(1), 1: T.Const(0b10)}
+        )
+        astatx = update(T.Unknown("start"))
+        self.assertEqual(op, "logical-shift-or-immediate")
+        self.assertEqual(value, T.Const(0b101))  # 1 | (0b10 << 1)
+        self.assertEqual(T._astatx_known_bit(astatx, T.SZ_BIT), False)
+        self.assertEqual(T._astatx_known_bit(astatx, T.SS_BIT), False)
+
+    def test_or_ashift_immediate_leaves_ss_unknown(self):
+        # PRM p.510: OR-ashift's ASTATx/y block omits the SS line (its
+        # OR-lshift sibling repeats "SS Cleared"); model that gap as SS
+        # becoming unknown rather than guessing it is cleared.
+        rn, value, op, update = T._shift_immediate(
+            shiftimm_fields(0x09, 1, 0, 1), {0: T.Const(0), 1: T.Const(1)}
+        )
+        astatx = update(T.Const(0xFFFFFFFF))  # SS previously known (=1)
+        self.assertEqual(op, "arithmetic-shift-or-immediate")
+        self.assertIsNone(T._astatx_known_bit(astatx, T.SS_BIT))
+        # SZ/SV are still defined for OR-ashift.
+        self.assertIsNotNone(T._astatx_known_bit(astatx, T.SZ_BIT))
+        self.assertIsNotNone(T._astatx_known_bit(astatx, T.SV_BIT))
+
+    def test_ashift_immediate_plain_still_clears_ss(self):
+        rn, value, op, update = T._shift_immediate(
+            shiftimm_fields(0x01, 1, 0, 1), {1: T.Const(1)}
+        )
+        astatx = update(T.Const(0xFFFFFFFF))
+        self.assertEqual(op, "arithmetic-shift-immediate")
+        self.assertEqual(T._astatx_known_bit(astatx, T.SS_BIT), False)
+
+
+class PredicateTruthTableTest(unittest.TestCase):
+    """LT/GE/LE/GT truth tables (PGR Table 4-37 p.4-93 / PRM p.4-53)."""
+
+    def astatx_state(self, af, an, az, av=None):
+        bits = 0
+        mask = (1 << T.AF_BIT) | (1 << T.AN_BIT) | (1 << T.AZ_BIT)
+        if af:
+            bits |= 1 << T.AF_BIT
+        if an:
+            bits |= 1 << T.AN_BIT
+        if az:
+            bits |= 1 << T.AZ_BIT
+        if av is not None:
+            mask |= 1 << T.AV_BIT
+            if av:
+                bits |= 1 << T.AV_BIT
+        return T.PartialConst(mask, bits)
+
+    def test_af0_alusat0_truth_table(self):
+        astatx_code = T.UREG_CODES["ASTATX"]
+        mode1_code = T.UREG_CODES["MODE1"]
+        # AF=0, ALUSAT=0: cross = AN xor AV. Enumerate AN, AV, AZ.
+        for an in (False, True):
+            for av in (False, True):
+                for az in (False, True):
+                    state = T.State(
+                        0,
+                        {
+                            astatx_code: self.astatx_state(False, an, az, av),
+                            mode1_code: T.Const(0),
+                        },
+                    )
+                    cross = an != av
+                    expect_lt = cross
+                    expect_le = cross or az
+                    with self.subTest(an=an, av=av, az=az):
+                        self.assertEqual(T._predicate(state, 0x01), expect_lt)
+                        self.assertEqual(T._predicate(state, 0x11), not expect_lt)
+                        self.assertEqual(T._predicate(state, 0x02), expect_le)
+                        self.assertEqual(T._predicate(state, 0x12), not expect_le)
+
+    def test_af0_alusat1_flips_the_av_term(self):
+        astatx_code = T.UREG_CODES["ASTATX"]
+        mode1_code = T.UREG_CODES["MODE1"]
+        state = T.State(
+            0,
+            {
+                astatx_code: self.astatx_state(False, an=False, az=False, av=True),
+                mode1_code: T.Const(1 << T.ALUSAT_BIT),
+            },
+        )
+        # AV and not ALUSAT = False (ALUSAT set) -> cross = AN xor False = AN = False.
+        self.assertFalse(T._predicate(state, 0x01))  # LT
+        self.assertTrue(T._predicate(state, 0x11))  # GE
+
+    def test_af0_av_unknown_returns_none(self):
+        # AV itself must be known to answer LT/GE/LE/GT at all.
+        astatx_code = T.UREG_CODES["ASTATX"]
+        state = T.State(
+            0,
+            {
+                astatx_code: self.astatx_state(False, an=True, az=False, av=None),
+                T.UREG_CODES["MODE1"]: T.Unknown("mode1"),
+            },
+        )
+        self.assertIsNone(T._predicate(state, 0x01))
+
+    def test_af0_av_false_does_not_need_alusat(self):
+        # AV and not ALUSAT is 0 regardless of ALUSAT when AV=0, so MODE1
+        # need not be known to resolve the predicate.
+        astatx_code = T.UREG_CODES["ASTATX"]
+        state = T.State(
+            0,
+            {
+                astatx_code: self.astatx_state(False, an=True, az=False, av=False),
+                T.UREG_CODES["MODE1"]: T.Unknown("mode1"),
+            },
+        )
+        self.assertTrue(T._predicate(state, 0x01))  # LT: cross = AN xor 0 = True
+        self.assertFalse(T._predicate(state, 0x11))  # GE
+
+    def test_af1_truth_table(self):
+        astatx_code = T.UREG_CODES["ASTATX"]
+        for an in (False, True):
+            for az in (False, True):
+                state = T.State(0, {astatx_code: self.astatx_state(True, an, az)})
+                expect_le = an or az
+                expect_lt = an and not az
+                with self.subTest(an=an, az=az):
+                    self.assertEqual(T._predicate(state, 0x02), expect_le)
+                    self.assertEqual(T._predicate(state, 0x12), not expect_le)
+                    self.assertEqual(T._predicate(state, 0x01), expect_lt)
+                    self.assertEqual(T._predicate(state, 0x11), not expect_lt)
+
+    def test_unknown_bits_return_none(self):
+        astatx_code = T.UREG_CODES["ASTATX"]
+        state = T.State(0, {astatx_code: T.Unknown("uninitialized")})
+        for cond in (0x01, 0x02, 0x11, 0x12):
+            self.assertIsNone(T._predicate(state, cond))
+
+    def test_simple_single_bit_conditions(self):
+        astatx_code = T.UREG_CODES["ASTATX"]
+        for cond, bit in T.SIMPLE_COND_BITS.items():
+            bit_pos, negate = bit
+            with self.subTest(cond=hex(cond)):
+                state_true = T.State(
+                    0, {astatx_code: T.PartialConst(1 << bit_pos, 1 << bit_pos)}
+                )
+                state_false = T.State(0, {astatx_code: T.PartialConst(1 << bit_pos, 0)})
+                self.assertEqual(T._predicate(state_true, cond), not negate)
+                self.assertEqual(T._predicate(state_false, cond), negate)
+
+
+class UregMovePartialConstTest(unittest.TestCase):
+    """A PartialConst must never leak out of ASTATX/ASTATY into a general
+    register: `R0 = ASTATX` (a Type5a UREG move) has to downgrade it, since
+    generic consumers (_add/_negate/_multiply/_terms, DM stores, dossiers)
+    only understand Const/Affine/Unknown. `_ureg` does this downgrade for
+    every caller except the flag/predicate code, which reads the raw
+    register through `_ureg_raw`."""
+
+    def move_astatx_to_r0(self, astatx_value, extra_uregs=None):
+        astatx_code = T.UREG_CODES["ASTATX"]
+        fields = {
+            "srcureghigh[4:0]": astatx_code >> 2,
+            "srcureglow[1:1]": (astatx_code >> 1) & 1,
+            "srcureglow[0:0]": astatx_code & 1,
+            "dstureg[6:0]": 0,
+            "cond[4:0]": 0x1F,
+            "compute[22:16]": 0,
+            "compute[15:0]": 0,
+        }
+        uregs = {astatx_code: astatx_value}
+        uregs.update(extra_uregs or {})
+        state = T.State(0x10, uregs)
+        record = insn("5a_move", fields, length=6)
+        return T._execute(state, record)[0]
+
+    def test_partially_known_astatx_move_gives_unknown_in_r0_without_crashing(self):
+        partial = T.PartialConst(T.ALU_FLAGS_MASK, 1 << T.AZ_BIT)
+        moved = self.move_astatx_to_r0(partial)
+        self.assertIsInstance(moved.uregs[0], T.Unknown)
+        # Using the downgraded value generically (arithmetic, the path the
+        # coordinator flagged) must not crash and must stay Unknown.
+        incremented = T._add(moved.uregs[0], T.Const(1), "R0 + 1")
+        self.assertIsInstance(incremented, T.Unknown)
+        negated = T._negate(moved.uregs[0], "-R0")
+        self.assertIsInstance(negated, T.Unknown)
+        multiplied = T._multiply(moved.uregs[0], T.Const(2), "R0 * 2")
+        self.assertIsInstance(multiplied, T.Unknown)
+
+    def test_fully_known_astatx_move_gives_const(self):
+        moved = self.move_astatx_to_r0(T.Const(0x00000001))
+        self.assertEqual(moved.uregs[0], T.Const(1))
+        self.assertEqual(T._add(moved.uregs[0], T.Const(1), "R0 + 1"), T.Const(2))
+
+    def test_astatx_register_and_its_predicate_are_unaffected_by_the_move(self):
+        partial = T.PartialConst(1 << T.AZ_BIT, 1 << T.AZ_BIT)  # AZ known set
+        moved = self.move_astatx_to_r0(
+            partial, extra_uregs={T.UREG_CODES["MODE1"]: T.Const(0)}
+        )
+        # The move reads ASTATX out; it does not consume or clear it.
+        self.assertEqual(moved.uregs[T.UREG_CODES["ASTATX"]], partial)
+        self.assertTrue(T._predicate(moved, 0x00))  # EQ still resolves True
+        self.assertIsInstance(moved.uregs[0], T.Unknown)
 
 
 if __name__ == "__main__":

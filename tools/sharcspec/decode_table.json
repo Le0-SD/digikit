@@ -2519,6 +2519,30 @@
    "unconfirmed_bits": 0
   },
   {
+   "name": "Type2a_short",
+   "width": 32,
+   "visa": true,
+   "isa": false,
+   "mask": "0xff8000000000",
+   "value": "0x018000000000",
+   "fixed_bits": 9,
+   "fields": [
+    {
+     "label": "compute[22:16]",
+     "hi": 38,
+     "lo": 32
+    },
+    {
+     "label": "compute[15:0]",
+     "hi": 31,
+     "lo": 16
+    }
+   ],
+   "source": "public Selache VISA width rule + PRM compute tables; firmware-checked",
+   "classic_keys": [],
+   "unconfirmed_bits": 0
+  },
+  {
    "name": "Type21p_undoc16",
    "width": 16,
    "visa": true,
@@ -2635,6 +2659,7 @@
   "Type25c_rframe: 16-bit form from PGR",
   "Type6b_shiftimm: public decoder selects 48 bits for the 0x02 prefix; the PRM Type6a no-memory mask and ShiftImm fields then decode the operation",
   "Type19a_scaled: PRM Type19a BH sc=01 form; bit 39 selects SW/NW scaling",
+  "Type2a_short: 0x01 prefix with bit 39 set is a 32-bit unconditional compute (Selache VISA width rule); bit 39 clear keeps 48-bit Type2a",
   "Type21p_undoc16: provisional, from firmware only (the old Type21a prefix; 95% of its matches are not the all-zero NOP word)",
   "Type22p_undoc48: provisional, from firmware only (the old Type22a prefix; its strict word occurs in neither image; 48 bits as the loose Type22a read them -- a 16-bit reading strands the other two words)",
   "Type26p_undoc48: provisional, from firmware only (the old Type26a prefix; one instance per image, too few to judge)",

@@ -426,6 +426,37 @@ notes.append(
     "Type19a_scaled: PRM Type19a BH sc=01 form; bit 39 selects SW/NW scaling"
 )
 
+# VISA width for the 0x01 prefix: bit 39 (bit 7 of the first parcel) selects a
+# 32-bit single-function compute; bit 39 = 0 keeps the 48-bit conditional
+# Type2a.  The public Selache decoder implements this rule for every 0x01
+# instruction, and its 32-bit compute field is ((parcel1 & 0x7f) << 16) |
+# parcel2, the same bits 38:16 as the PRM Type2b figure.  In Digitakt II 1.16,
+# 1,880 of 2,396 aligned Type2a words have bit 39 set; 99.1% of those are
+# followed by a confident instruction 4 bytes later, against 49.0% 6 bytes
+# later.  This is not the PRM's Type2b (prefix 0xc0), which keeps its name.
+# The longer fixed lead wins over Type2a in VISA decode; classic ISA keeps
+# Type2a.  See docs/sharc/SPEC-FINDINGS.md and docs/FINDINGS.md.
+forms.append({
+    "name": "Type2a_short",
+    "width": 32,
+    "visa": True,
+    "isa": False,
+    "mask": "0xff8000000000",
+    "value": "0x018000000000",
+    "fixed_bits": 9,
+    "fields": [
+        {"label": "compute[22:16]", "hi": 38, "lo": 32},
+        {"label": "compute[15:0]", "hi": 31, "lo": 16},
+    ],
+    "source": "public Selache VISA width rule + PRM compute tables; firmware-checked",
+    "classic_keys": [],
+    "unconfirmed_bits": 0,
+})
+notes.append(
+    "Type2a_short: 0x01 prefix with bit 39 set is a 32-bit unconditional "
+    "compute (Selache VISA width rule); bit 39 clear keeps 48-bit Type2a"
+)
+
 def undocumented_form(entry):
     prefix_bits = entry["prefix_bits"]
     mask = 0

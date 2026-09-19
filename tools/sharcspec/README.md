@@ -101,7 +101,10 @@ the confident `Type19a_scaled` form; `w=1` selects `(NW)` and `w=0` selects
   decoding. Short forms reuse long-form prefixes with a marker field (e.g. 1b
   = 1a with bits 22–16 = `0111111`). A public independent decoder establishes
   that first byte `0x02` selects a 48-bit immediate-shift form; its field layout
-  matches the PRM Type6a no-memory ShiftImm figure.
+  matches the PRM Type6a no-memory ShiftImm figure. The same decoder selects
+  32 bits for first byte `0x01` with bit 39 set; the table emits that as
+  `Type2a_short`. A whole-image comparison with that decoder found no other
+  width it gets right and this table gets wrong.
 - Classic 5a/6a pattern details differ slightly between the PRM and PGR in
   blank-vs-gray bits: must-be-zero or don't-care?
 

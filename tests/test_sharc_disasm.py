@@ -63,6 +63,25 @@ class DisasmTest(unittest.TestCase):
             'shiftimm[15:0]': 0x8022,
         })
 
+    def test_01_prefix_bit39_selects_32bit_compute(self):
+        data = bytes.fromhex("a8018082" "0e0700001d00")
+        recs = list(sharc_disasm.disassemble(data))
+        self.assertEqual(
+            (recs[0].type_name, recs[0].length_bytes, recs[0].kind),
+            ("2a_short", 4, "confident"),
+        )
+        self.assertEqual(
+            recs[0].fields, {"compute[22:16]": 0x28, "compute[15:0]": 0x8280}
+        )
+        self.assertEqual(recs[1].type_name, "8a_rel")
+
+    def test_01_prefix_bit39_clear_stays_48bit_type2a(self):
+        rec = next(sharc_disasm.disassemble(bytes.fromhex("280180820e07")))
+        self.assertEqual(
+            (rec.type_name, rec.length_bytes, rec.kind), ("2a", 6, "confident")
+        )
+        self.assertEqual(rec.fields["cond[4:0]"], 20)
+
     def test_15_prefix_is_documented_scaled_type19_modify(self):
         data = bytes.fromhex("8715fffffeff")
         rec = next(sharc_disasm.disassemble(data))
