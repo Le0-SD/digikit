@@ -24,6 +24,12 @@ DT2_116_BLOB_SHA256 = (
 MACHINE_OFFSET = 0x94
 TRACKS = 16
 TX_FRAME_BYTES = 0x802
+SPORT_CALLER_PROBES = (
+    (0x1C78E9, 0x1C78F6, 0x2618D0, 0x261960),
+    (0x1C7978, 0x1C798B, 0x261918, 0x261964),
+    (0x1C7A54, 0x1C7A5F, 0x261970, 0x261A00),
+    (0x1C7B00, 0x1C7B12, 0x2619B8, 0x261A04),
+)
 
 
 CHECKS: tuple[tuple[int, str, Mapping[str, int], str], ...] = (
@@ -114,6 +120,19 @@ CHECKS: tuple[tuple[int, str, Mapping[str, int], str], ...] = (
         "store 32 at state+0xb0",
     ),
     (
+        0x1C76E5,
+        "19a_scaled",
+        {
+            "w": 1,
+            "g": 0,
+            "is[2:0]": 6,
+            "idis[2:0]": 3,
+            "data[31:16]": 0xFFFF,
+            "data[15:0]": 0xFFF2,
+        },
+        "form reader local I5=I6-14 normal words",
+    ),
+    (
         0x1C7719,
         "5b_move",
         {"srcureghigh[4:0]": 5, "srcureglow[1:1]": 0, "srcureglow[0:0]": 1, "dstureg[6:0]": 8},
@@ -124,6 +143,128 @@ CHECKS: tuple[tuple[int, str, Mapping[str, int], str], ...] = (
         "25a_direct",
         {"addr[23:16]": 0x1C, "addr[15:0]": 0x2B24},
         "caller invokes frame processor",
+    ),
+    (
+        0x1C78E9,
+        "17a",
+        {"ureg[6:0]": 2, "data[31:16]": 0x26, "data[15:0]": 0x1960},
+        "first SPORT caller materializes destination slot",
+    ),
+    (
+        0x1C78EC,
+        "3c",
+        {"dmi[2:0]": 7, "dmm[2:0]": 7, "d": 1, "dreg[3:0]": 2},
+        "first SPORT caller pushes destination slot",
+    ),
+    (
+        0x1C78EE,
+        "17a",
+        {"ureg[6:0]": 2, "data[31:16]": 0x26, "data[15:0]": 0x18D0},
+        "first SPORT caller materializes object pointer",
+    ),
+    (
+        0x1C78F1,
+        "3c",
+        {"dmi[2:0]": 7, "dmm[2:0]": 7, "d": 1, "dreg[3:0]": 2},
+        "first SPORT caller pushes object pointer",
+    ),
+    (
+        0x1C78F2,
+        "16b",
+        {"i[2:0]": 7, "m[2:0]": 7, "g": 0, "data[15:0]": 2},
+        "first SPORT caller pushes selector",
+    ),
+    (
+        0x1C78F6,
+        "25a_direct",
+        {"addr[23:16]": 0x1C, "addr[15:0]": 0xA58A},
+        "compiler CJUMP into SPORT setup",
+    ),
+    (
+        0x1C78F9,
+        "3c",
+        {"dmi[2:0]": 7, "dmm[2:0]": 7, "d": 1, "dreg[3:0]": 2},
+        "CJUMP delay slot saves prior I6 from R2",
+    ),
+    (
+        0x1C78FA,
+        "16a",
+        {
+            "i[2:0]": 7,
+            "m[2:0]": 7,
+            "g": 0,
+            "sl": 0,
+            "by": 0,
+            "data[31:16]": 0x1C,
+            "data[15:0]": 0x78FC,
+        },
+        "CJUMP delay slot saves return-address-minus-one",
+    ),
+    (
+        0x1CA5C9,
+        "15b",
+        {"i[2:0]": 6, "d": 0, "ureg[6:0]": 21, "data[6:0]": 4},
+        "load SPORT setup I5 from frame+0x10",
+    ),
+    (
+        0x1CA5D1,
+        "5a_move",
+        {
+            "srcureghigh[4:0]": 4,
+            "srcureglow[1:1]": 1,
+            "srcureglow[0:0]": 1,
+            "dstureg[6:0]": 9,
+        },
+        "copy incoming I3 to SPORT setup R9",
+    ),
+    (
+        0x1CA6A6,
+        "15b",
+        {"i[2:0]": 2, "d": 0, "ureg[6:0]": 18, "data[6:0]": 5},
+        "load first software-object link into I2",
+    ),
+    (
+        0x1CA6C3,
+        "15b",
+        {"i[2:0]": 4, "d": 0, "ureg[6:0]": 0, "data[6:0]": 5},
+        "load DMA base from selected record+0x14",
+    ),
+    (
+        0x1CA6C9,
+        "15b",
+        {"i[2:0]": 2, "d": 0, "ureg[6:0]": 20, "data[6:0]": 5},
+        "load first linked destination pointer into I4",
+    ),
+    (
+        0x1CA6CE,
+        "3c",
+        {"dmi[2:0]": 4, "dmm[2:0]": 5, "d": 1, "dreg[3:0]": 1},
+        "store SPORT base R1 through first linked object",
+    ),
+    (
+        0x1CA6D1,
+        "15b",
+        {"i[2:0]": 4, "d": 0, "ureg[6:0]": 20, "data[6:0]": 5},
+        "load second linked destination pointer into I4",
+    ),
+    (
+        0x1CA6D6,
+        "3c",
+        {"dmi[2:0]": 4, "dmm[2:0]": 5, "d": 1, "dreg[3:0]": 0},
+        "store DMA base R0 through linked I4/M5 destination",
+    ),
+    (
+        0x1CA6F9,
+        "6a_mem",
+        {
+            "i[2:0]": 5,
+            "m[2:0]": 5,
+            "cond[4:0]": 31,
+            "g": 0,
+            "d": 1,
+            "dreg[3:0]": 9,
+        },
+        "store incoming I3 value R9 through frame-supplied I5/M5",
     ),
     (0x1C2CC1, "19a", {"is[2:0]": 4, "data[15:0]": 0x75C}, "sibling frame offset 0x75c"),
     (0x1C2CCB, "19a", {"is[2:0]": 1, "data[15:0]": 0x94}, "I1 += machine offset 0x94"),
@@ -303,6 +444,68 @@ def _probe_track(memory: LoadedMemory, track: int) -> dict[str, Any]:
     }
 
 
+def _probe_sport_caller(
+    memory: LoadedMemory,
+    start: int,
+    call_pc: int,
+    expected_object: int,
+    expected_slot: int,
+) -> dict[str, Any]:
+    """Replay one compiler frame with a disposable stack to recover arguments."""
+    states = trace.trace(
+        memory,
+        None,
+        start,
+        sets={
+            "I7": 0x261F00,
+            "I6": 0x262000,
+            "M7": -1,
+            "M6": 1,
+            "M5": 0,
+        },
+        max_steps=48,
+        max_states=16,
+        concrete_memory=True,
+        follow_loaded_calls=True,
+        assume_nw32=True,
+    )
+    observed: set[tuple[int, int]] = set()
+    for state in states:
+        objects = [
+            event.get("concrete_value")
+            for event in state.trace
+            if event.get("pc_sw") == 0x1CA5C7 and event.get("action") == "load"
+        ]
+        slots = [
+            event.get("concrete_value")
+            for event in state.trace
+            if event.get("pc_sw") == 0x1CA5C9 and event.get("action") == "load"
+        ]
+        observed.update(
+            (object_value, slot_value)
+            for object_value in objects
+            for slot_value in slots
+            if isinstance(object_value, int) and isinstance(slot_value, int)
+        )
+    expected = (expected_object, expected_slot)
+    if expected not in observed:
+        raise ValueError(
+            f"{call_pc:#x}: compiler-frame probe missed {expected!r}; "
+            f"observed {sorted(observed)!r}"
+        )
+    return {
+        "start_pc_sw": start,
+        "call_pc_sw": call_pc,
+        "callee_pc_sw": 0x1CA58A,
+        "object_loaded_into_i3": expected_object,
+        "slot_loaded_into_i5": expected_slot,
+        "m5": 0,
+        "conditional_store": f"DM({expected_slot:#x})={expected_object:#x}",
+        "calibration": "disposable stack I7=0x261f00, I6=0x262000; frame-relative values are invariant",
+        "qualifying": False,
+    }
+
+
 def build_report(blob_path: Path, frame_path: Path | None = None) -> dict[str, Any]:
     blob = blob_path.read_bytes()
     digest = hashlib.sha256(blob).hexdigest()
@@ -323,6 +526,10 @@ def build_report(blob_path: Path, frame_path: Path | None = None) -> dict[str, A
         },
         "static_chain": _verify_static(memory),
         "calibrated_track_probes": [_probe_track(memory, i) for i in (0, 1, 15)],
+        "calibrated_sport_caller_probes": [
+            _probe_sport_caller(memory, *arguments)
+            for arguments in SPORT_CALLER_PROBES
+        ],
         "result": {
             "reader_function_sw": 0x1C2B24,
             "load_pc_sw": 0x1C33D2,
@@ -352,6 +559,34 @@ def build_report(blob_path: Path, frame_path: Path | None = None) -> dict[str, A
                 "reader_i5_alias": "not proven",
             },
         ],
+        "interface_boundaries": {
+            "reader_i5": {
+                "construction": "0x1c76e5 sets I5=I6-14 normal words (I6-0x38 under the 32-bit normal-word model)",
+                "use": "0x1c7719 copies I5 to R8 for the 0x1c2b24 call",
+                "candidate_frame_values": {
+                    "for_0x261bac": 0x261BE4,
+                    "for_0x261aa4": 0x261ADC,
+                },
+                "runtime_i6": "not proven",
+            },
+            "dma10_store": {
+                "base_load": "0x1ca6c3 loads selected-record+0x14 into R0",
+                "destination_chain": "L1=DM(P+0x14) at 0x1ca6a6; L2=DM(L1+0x14) at 0x1ca6c9; DM(L2)=SPORT base at 0x1ca6ce; L3=DM(L2+0x14) at 0x1ca6d1; DM(L3)=DMA base at 0x1ca6d6 (M5=0)",
+                "destination": "not proven",
+            },
+            "sport_setup_store": {
+                "destination_base": "0x1ca5c9 loads I5 from frame+0x10",
+                "value": "0x1ca5d1 copies incoming I3 to R9",
+                "store": "0x1ca6f9 stores R9 through I5/M5",
+                "caller_pairs": [
+                    {"slot": slot, "object": object_value}
+                    for _, _, object_value, slot in SPORT_CALLER_PROBES
+                ],
+                "m5": "initialized to zero at 0x1c0f44 and not written on these caller/callee paths",
+                "effect_if_path_executes": "stores each object pointer in its paired global slot",
+                "dma10_alias": "disproved for these four caller pairs",
+            },
+        },
     }
     if frame_path is not None:
         frame = frame_path.read_bytes()

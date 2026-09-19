@@ -1875,7 +1875,42 @@ aliased to `I5`. Callers `0x1c7dae` and `0x1c7c14` pass selectors 1 and 2 with
 
 No byte-backed reference or pointer constant yet equates either candidate
 buffer with the frame-reader's runtime `I5`, so these remain descriptor/buffer
-candidates rather than established ownership. **[V][O]**
+candidates rather than established ownership. The reader-side `I5` is now
+bounded more tightly: `0x1c76e5` computes `I5=I6-14` normal words, or
+`I5=I6-0x38` under the established 32-bit normal-word model, before
+`0x1c7719` copies it to `R8`. Equality with `0x261bac` or `0x261aa4` would
+therefore require runtime frame pointer `I6=0x261be4` or `I6=0x261adc`,
+respectively. No static path establishes either frame value. The smallest
+decisive runtime observation is now `I6/I5` at `0x1c76e5`, not a broad buffer
+watch. The surrounding task setup does not close the gap: `0x1c7770` loads
+callback `0x1c7749`, with `R8=0x25f7c0` and `R12=1000`, before the
+task-create-shaped L2 call at `0xb8615d`. That service reserves its own frame
+and calls deeper L2 code; its resulting task stack/TCB and the later reader
+`I6` are runtime products. The callback begins by calling `0xb86b1e`, whose
+supported chain reaches application `0x1c0ee8`. The formerly unsupported
+instruction at `0x1c0eed` is documented Type9a:
+`IF TF JUMP(PC,+7)(DB), R2=R2+1`. Its two delay slots at `0x1c0ef0` and
+`0x1c0ef3` converge with the false path at `0x1c0ef4`. The following
+conditional Type2a at `0x1c0ef7` is documented `IF NOT AV R7=SAT MRF
+(MOD2)`; because the tracer does not model the full multiplier accumulator,
+it preserves the result as unknown rather than fabricating saturation.
+
+A target-guided calibrated callback replay now crosses both documented forms
+and stops before `0x1c0efa` after 18 instructions and three loaded calls.
+Bytes `00 00` at `0x1c0efa` and `06 00` at `0x1c0efb` remain the provisional,
+firmware-only `Type21p_undoc16` form: no public source gives them semantics,
+so they remain a hard boundary and the replay does not reach `0x1c76e5`.
+New repeatable `--break-pc`/`--watch-dm` snapshots record the register file
+and selected DM words before a target instruction. Artifacts:
+`out/experiments/sharc-runtime-probe/callback-break-c0eed-001-summary.json`,
+`callback-break-c0efa-001-summary.json`, and
+`callback-target-c76e5-001-summary.json`. These runs seed the callback frame,
+modifiers and circular state, so they are exploratory and do not qualify A2;
+their `I6/I7` values and zero candidate-buffer reads are not runtime ownership
+evidence. A qualifying run still needs the reader observation at
+`0x1c76e5`; an additional breakpoint at `0xb8615d` can attest which task
+allocation preceded it but does not itself prove the later frame identity.
+**[V][O]**
 
 #### The per-track TX frame map **[D]**
 
@@ -5141,12 +5176,42 @@ calibration-only `I4=-0x13c`, `0x1ca6c1` reads SPORT4A control base
 `0x31002400` from `0x26969c`, and `0x1ca6c3` reads DMA10 base `0x31023000`
 from `0x2696a0`.
 No path state performs a concrete peripheral access: the store at `0x1ca6f9`
-is `DM(I5,M5)=R9` in parallel with `R2=BCLR R2 BY 11`, and `I5`, `M5`, and
-`R9` remain unproven runtime inputs. Seeding `I5` with the DMA10 base would
-therefore fabricate the missing ownership join rather than discover it.
+is `DM(I5,M5)=R9` in parallel with `R2=BCLR R2 BY 11`. It is not the DMA10
+base store: `0x1ca5c9` loads its `I5` destination base from frame slot
+`DM(I6+0x10)`, while `0x1ca5d1` copies incoming `I3` to its `R9` value.
+The DMA10 base instead flows through `R0`: `0x1ca6c9` and `0x1ca6d1` load a
+two-stage linked destination through `I4`, and `0x1ca6d6` stores `R0` through
+that `I4/M5` address.
+
+The compiler frame removes the earlier uncertainty around `0x1ca6f9`.
+Type25a `CJUMP` executes `R2=I6, I6=I7`; its two delay slots save the prior
+frame and return address. Replaying the four exact caller push sequences with
+the documented 32-bit normal-word scaling makes the callee loads at
+`0x1ca5c7` (`I3=DM(I6+0x8)`) and `0x1ca5c9`
+(`I5=DM(I6+0x10)`) concrete:
+
+| call | `I3`, copied to `R9` | `I5` | `0x1ca6f9` effect when reached |
+|---:|---:|---:|---:|
+| `0x1c78f6` | `0x2618d0` | `0x261960` | `DM(0x261960)=0x2618d0` |
+| `0x1c798b` | `0x261918` | `0x261964` | `DM(0x261964)=0x261918` |
+| `0x1c7a5f` | `0x261970` | `0x261a00` | `DM(0x261a00)=0x261970` |
+| `0x1c7b12` | `0x2619b8` | `0x261a04` | `DM(0x261a04)=0x2619b8` |
+
+`M5` is initialized to zero at `0x1c0f44` and is not reassigned on these
+caller/callee paths, so `0x1ca6f9` installs four software-object pointers in
+four global slots; it is not a DMA10 register or descriptor store. The DMA10
+destination remains a different chain. If entry `I2` is `P`, then
+`0x1ca6a6` gives `L1=DM(P+0x14)` and `0x1ca6c9` gives
+`L2=DM(L1+0x14)`. With `M5=0`, `0x1ca6ce` installs SPORT4A base
+`0x31002400` at `DM(L2)`. Then `0x1ca6d1` gives `L3=DM(L2+0x14)` and
+`0x1ca6d6` installs DMA10 base `0x31023000` at `DM(L3)`. `P`, `L1`, `L2`,
+and `L3` remain runtime inputs. Seeding `I5` with the DMA10 base would
+therefore fabricate the wrong ownership join rather than discover it.
 Artifacts:
 `out/experiments/sharc-runtime-probe/sport4a-consumer-supported-002-summary.json`
-and `sport4a-consumer-supported-002-trace.json`. This removes the remaining
+and `sport4a-consumer-supported-002-trace.json`; the deterministic compiler
+frame replay and exact-byte assertions are in `tools/sharc_interface_probe.py`.
+This removes the remaining
 decoder stop in the calibrated suffix but does not establish natural
 `I4=-0x13c`, DMA10 ownership/descriptors, an application buffer, a first-word
 writer, or production of `0x007fffff`. The natural marker chain and numeric

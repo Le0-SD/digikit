@@ -12,9 +12,9 @@ import json
 import os
 import re
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Union
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -820,6 +820,11 @@ def _compute(
             operation,
         )
         return rn, value, name
+    # PRM Table 17-7: MULOP 0000 F00x writes a saturated MRF value to RN.
+    # The tracer does not model the full-width multiplier accumulator or MOD2
+    # format bits, so preserve the documented data dependency conservatively.
+    if cu == 1 and opcode == 0x00:
+        return rn, Unknown("saturated MRF (unmodeled MOD2)"), "saturate-mrf"
     if cu == 1 and opcode == 0x70:
         value = _multiply(left, right, "R%d * R%d" % (rx, ry))
         return rn, value, "multiply"
@@ -859,9 +864,7 @@ def _compute(
             value = left
         else:
             calculate = (
-                (lambda a, b: a | b)
-                if opcode == 0xC0
-                else (lambda a, b: a & ~b)
+                (lambda a, b: a | b) if opcode == 0xC0 else (lambda a, b: a & ~b)
             )
             value = _bitwise(
                 left,
@@ -1092,6 +1095,12 @@ def _predicate(state: State, cond: int) -> Optional[bool]:
             return None
         bit_test = bool(astatx.value & (1 << 18))
         return bit_test if cond == 0x0D else not bit_test
+    if cond in (0x04, 0x14):
+        astatx = _ureg(state.uregs, UREG_CODES["ASTATX"])
+        if not isinstance(astatx, Const):
+            return None
+        overflow = bool(astatx.value & (1 << 1))
+        return overflow if cond == 0x04 else not overflow
     return None
 
 
@@ -1523,6 +1532,27 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         return [_stop(state, insn, "unsupported 9b_abs indirect transfer")]
     if name == "25c_rframe":
         if state.pending and state.pending.return_from_call:
+            frame = _ureg(state.uregs, UREG_CODES["I6"])
+            state.uregs[UREG_CODES["I7"]] = frame
+            if isinstance(frame, Const):
+                restored = _dm_read(state, frame.value, 4)
+                if restored is None:
+                    state.uregs[UREG_CODES["I6"]] = Unknown(
+                        "RFRAME load from unavailable memory"
+                    )
+                else:
+                    state.uregs[UREG_CODES["I6"]] = restored
+            else:
+                state.uregs[UREG_CODES["I6"]] = Unknown(
+                    "RFRAME load through nonconcrete I6"
+                )
+            _event(
+                state,
+                insn,
+                "rframe",
+                frame=_json_value(frame),
+                restored_i6=_json_value(_ureg(state.uregs, UREG_CODES["I6"])),
+            )
             return _advance(state, insn)
         return [_stop(state, insn, "rframe outside verified return delay slots")]
     if name in ("17a", "17b"):
@@ -2053,8 +2083,12 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         index, modifier = _field(f, "dmi"), _field(f, "dmm")
         old = dict(state.uregs)
         iv, mv = _ureg(old, 16 + index), _ureg(old, 32 + modifier)
+        scale = _access_modifier_scale("normal-word", state.assume_nw32)
+        scaled_mv = _multiply(mv, Const(scale), "M%d * %d" % (modifier, scale))
         address = iv
-        state.uregs[16 + index] = _add(iv, mv, "I%d + M%d" % (index, modifier))
+        state.uregs[16 + index] = _add(
+            iv, scaled_mv, "I%d + M%d * %d" % (index, modifier, scale)
+        )
         code = _field(f, "dreg")
         if _field(f, "d"):
             value = _ureg(old, code)
@@ -2083,8 +2117,8 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                 concrete_value=loaded,
             )
         return _advance(state, insn)
-    if name == "16a":
-        if _field(f, "by") or _field(f, "sl"):
+    if name in ("16a", "16b"):
+        if name == "16a" and (_field(f, "by") or _field(f, "sl")):
             return [_stop(state, insn, "unsupported Type16a by/sl")]
         index, modifier = (
             _field(f, "i") + (8 if _field(f, "g") else 0),
@@ -2092,7 +2126,14 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         )
         old = dict(state.uregs)
         iv, mv = _ureg(old, 16 + index), _ureg(old, 32 + modifier)
+        scale = _access_modifier_scale(
+            "normal-word", state.assume_nw32 and not bool(_field(f, "g"))
+        )
+        scaled_mv = _multiply(mv, Const(scale), "M%d * %d" % (modifier, scale))
         address = iv
+        value = Const(
+            _wide(f, "data") if name == "16a" else _signed(_field(f, "data[15:0]"), 16)
+        )
         _event(
             state,
             insn,
@@ -2100,11 +2141,16 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             space="PM" if _field(f, "g") else "DM",
             address=address,
             expression=_render(address),
-            value=_wide(f, "data"),
-            by=_field(f, "by"),
-            sl=_field(f, "sl"),
+            value=value,
+            by=_field(f, "by") if name == "16a" else 0,
+            sl=_field(f, "sl") if name == "16a" else 0,
+            concrete_write=_dm_write(state, address, 4, value)
+            if not _field(f, "g")
+            else False,
         )
-        state.uregs[16 + index] = _add(iv, mv, "I%d + M%d" % (index, modifier))
+        state.uregs[16 + index] = _add(
+            iv, scaled_mv, "I%d + M%d * %d" % (index, modifier, scale)
+        )
         return _advance(state, insn)
     if name == "15b":
         index = _field(f, "i") + (8 if _field(f, "g") else 0)
@@ -2206,6 +2252,54 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             wrapped=wrapped,
         )
         return _advance(state, insn)
+    if name == "9a_rel":
+        if state.pending:
+            return [_stop(state, insn, "nested delayed transfer")]
+        if _field(f, "a") or _field(f, "ci") or not _field(f, "j"):
+            return [_stop(state, insn, "unsupported Type9a control modifier")]
+        relative = (_field(f, "reladdr[5:5]") << 5) | _field(f, "reladdr[4:0]")
+        target = (state.pc_sw + _signed(relative, 6)) & 0xFFFFFF
+        predicate = _predicate(state, _field(f, "cond"))
+
+        def apply_compute(executed: State) -> Optional[str]:
+            try:
+                compute = _compute(f, False, dict(executed.uregs), executed.special)
+            except ValueError as error:
+                return str(error)
+            if compute is not None:
+                _apply_compute(executed, insn, compute)
+            return None
+
+        compute_when_taken = not bool(_field(f, "e"))
+        if predicate is not None:
+            if predicate == compute_when_taken:
+                error = apply_compute(state)
+                if error:
+                    return [_stop(state, insn, error)]
+            return _transfer(state, insn, target, bool(_field(f, "b")), predicate)
+
+        taken, not_taken = _copy(state), _copy(state)
+        compute_state = taken if compute_when_taken else not_taken
+        error = apply_compute(compute_state)
+        if error:
+            return [_stop(compute_state, insn, error)]
+        _event(
+            taken,
+            insn,
+            "predicate-assumption",
+            condition=_field(f, "cond"),
+            predicate_assumption=True,
+        )
+        _event(
+            not_taken,
+            insn,
+            "predicate-assumption",
+            condition=_field(f, "cond"),
+            predicate_assumption=False,
+        )
+        return _transfer(taken, insn, target, bool(_field(f, "b")), True) + _transfer(
+            not_taken, insn, target, bool(_field(f, "b")), False
+        )
     if name in ("25a_direct", "25a_pcrel", "8a_abs", "8a_rel"):
         stem = "addr" if name.endswith("direct") or name.endswith("abs") else "reladdr"
         raw = (_field(f, stem + "[23:16]") << 16) | _field(f, stem + "[15:0]")
@@ -2217,6 +2311,18 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             else (state.pc_sw + _signed(raw, 24)) & 0xFFFFFF
         )
         call = name.startswith("25a") or bool(_field(f, "b"))
+        if name.startswith("25a"):
+            previous_i6 = _ureg(state.uregs, UREG_CODES["I6"])
+            new_i6 = _ureg(state.uregs, UREG_CODES["I7"])
+            state.uregs[UREG_CODES["R2"]] = previous_i6
+            state.uregs[UREG_CODES["I6"]] = new_i6
+            _event(
+                state,
+                insn,
+                "cjump-frame",
+                saved_i6=_json_value(previous_i6),
+                frame=_json_value(new_i6),
+            )
         cond = True if name.startswith("25a") else _predicate(state, _field(f, "cond"))
         delayed = name.startswith("25a") or bool(_field(f, "j"))
         transfer = _transfer if delayed else _immediate_transfer
@@ -2261,6 +2367,7 @@ def trace(
     skip_provisional_entries: bool = False,
     assume_nw32: bool = False,
     core_reset_state: bool = False,
+    breakpoints: Sequence[int] = (),
 ) -> List[State]:
     uregs: Dict[int, Value] = (
         {
@@ -2282,6 +2389,9 @@ def trace(
         raise ValueError("dossier_bytes must be between 0 and 256")
     if max_call_depth < 1 or max_call_depth > 32:
         raise ValueError("max_call_depth must be between 1 and 32")
+    if any(not isinstance(pc, int) or not 0 <= pc <= 0xFFFFFF for pc in breakpoints):
+        raise ValueError("breakpoints must be 24-bit short-word addresses")
+    breakpoint_set = frozenset(breakpoints)
     concrete = data if isinstance(data, LoadedMemory) and concrete_memory else None
     mmrs: Dict[int, Value] = (
         {address: Const(value) for address, value in CORE_MMR_RESET_VALUES.items()}
@@ -2310,6 +2420,11 @@ def trace(
     )
     while active:
         state = active.pop(0)
+        if state.pc_sw in breakpoint_set:
+            done.append(
+                _stop(state, decode_at(data, base_sw, state.pc_sw), "breakpoint")
+            )
+            continue
         if state.steps >= max_steps:
             done.append(_stop(state, None, "max-steps"))
             continue
@@ -2324,7 +2439,26 @@ def trace(
     return done
 
 
-def summarize(states: Sequence[State], start_sw: int) -> dict:
+def _register_snapshot(state: State) -> dict[str, Any]:
+    return {
+        UREG_NAMES[code]: _json_value(value)
+        for code, value in sorted(state.uregs.items())
+    }
+
+
+def _watched_dm_snapshot(state: State, addresses: Sequence[int]) -> dict[str, Any]:
+    snapshot: dict[str, Any] = {}
+    for address in addresses:
+        value = _dm_read(state, address, 4)
+        snapshot[f"{address:#x}"] = (
+            _json_value(value) if value is not None else {"unavailable": True}
+        )
+    return snapshot
+
+
+def summarize(
+    states: Sequence[State], start_sw: int, watch_dm: Sequence[int] = ()
+) -> dict:
     """Return a bounded machine-readable runtime-probe summary."""
     summaries = []
     for state in states:
@@ -2363,25 +2497,27 @@ def summarize(states: Sequence[State], start_sw: int) -> dict:
                     access[key] = event[key]
             peripheral_accesses.append(access)
         stop_event = state.trace[-1] if state.trace else {}
-        summaries.append(
-            {
-                "stopped": state.stopped,
-                "stop_pc_sw": stop_event.get("pc_sw", state.pc_sw),
-                "stop_form": stop_event.get("form"),
-                "steps": state.steps,
-                "events": len(state.trace),
-                "loaded_calls": sum(
-                    event.get("action") == "loaded-call-enter" for event in state.trace
-                ),
-                "opaque_calls": sum(
-                    event.get("action") == "opaque-external-call"
-                    for event in state.trace
-                ),
-                "loop_setups": loop_setups,
-                "peripheral_accesses": peripheral_accesses,
-                "last_events": state.trace[-5:],
-            }
-        )
+        summary = {
+            "stopped": state.stopped,
+            "stop_pc_sw": stop_event.get("pc_sw", state.pc_sw),
+            "stop_form": stop_event.get("form"),
+            "steps": state.steps,
+            "events": len(state.trace),
+            "loaded_calls": sum(
+                event.get("action") == "loaded-call-enter" for event in state.trace
+            ),
+            "opaque_calls": sum(
+                event.get("action") == "opaque-external-call"
+                for event in state.trace
+            ),
+            "loop_setups": loop_setups,
+            "peripheral_accesses": peripheral_accesses,
+            "last_events": state.trace[-5:],
+        }
+        if state.stopped == "breakpoint":
+            summary["registers"] = _register_snapshot(state)
+            summary["watched_dm"] = _watched_dm_snapshot(state, watch_dm)
+        summaries.append(summary)
     return {"start_sw": start_sw, "states": summaries}
 
 
@@ -2394,6 +2530,20 @@ def main(argv=None) -> int:
     p.add_argument("--set", dest="sets", action="append", default=[])
     p.add_argument("--max-steps", type=int, default=100)
     p.add_argument("--max-states", type=int, default=32)
+    p.add_argument(
+        "--break-pc",
+        action="append",
+        default=[],
+        type=lambda x: int(x, 0),
+        help="stop before executing this short-word PC (repeatable)",
+    )
+    p.add_argument(
+        "--watch-dm",
+        action="append",
+        default=[],
+        type=lambda x: int(x, 0),
+        help="include this 32-bit DM value in breakpoint snapshots (repeatable)",
+    )
     p.add_argument(
         "--concrete-memory",
         action="store_true",
@@ -2463,6 +2613,10 @@ def main(argv=None) -> int:
         p.error("--dossier-bytes must be between 0 and 256")
     if not 1 <= a.max_call_depth <= 32:
         p.error("--max-call-depth must be between 1 and 32")
+    if any(not 0 <= pc <= 0xFFFFFF for pc in a.break_pc):
+        p.error("--break-pc must be a 24-bit short-word address")
+    if any(not 0 <= address <= 0xFFFFFFFF for address in a.watch_dm):
+        p.error("--watch-dm must be a 32-bit address")
     if a.blob and a.base_sw is not None:
         p.error("--base-sw is ambiguous with --blob")
     if not a.blob and a.base_sw is None:
@@ -2496,6 +2650,7 @@ def main(argv=None) -> int:
         skip_provisional_entries=a.skip_provisional_entries,
         assume_nw32=a.assume_32bit_normal_words,
         core_reset_state=a.core_reset_state,
+        breakpoints=a.break_pc,
     )
     result = [
         {
@@ -2506,6 +2661,8 @@ def main(argv=None) -> int:
                 + (["documented core/MMR reset values"] if s.core_reset_state else [])
             ),
             "trace": s.trace,
+            "registers": _register_snapshot(s),
+            "watched_dm": _watched_dm_snapshot(s, a.watch_dm),
         }
         for s in states
     ]
@@ -2517,7 +2674,11 @@ def main(argv=None) -> int:
         except OSError as error:
             p.error("cannot write trace JSON: " + str(error))
     if a.summary:
-        print(json.dumps(summarize(states, a.start), separators=(",", ":")))
+        print(
+            json.dumps(
+                summarize(states, a.start, a.watch_dm), separators=(",", ":")
+            )
+        )
     elif a.json:
         print(json.dumps(result, indent=2))
     else:

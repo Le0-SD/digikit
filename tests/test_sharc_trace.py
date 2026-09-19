@@ -195,7 +195,10 @@ class TraceTest(unittest.TestCase):
     def test_type11c_rejects_rti_and_loop_reentry(self):
         for fields, reason in (
             ({"x": 1, "j": 0, "cond[4:0]": 0x1F, "lr": 0}, "unsupported Type11c RTI"),
-            ({"x": 0, "j": 0, "cond[4:0]": 0x1F, "lr": 1}, "unsupported Type11c loop reentry"),
+            (
+                {"x": 0, "j": 0, "cond[4:0]": 0x1F, "lr": 1},
+                "unsupported Type11c loop reentry",
+            ),
         ):
             with self.subTest(reason=reason):
                 stopped = self.run_one(T.State(0x10), insn("11c", fields, length=2))
@@ -297,7 +300,10 @@ class TraceTest(unittest.TestCase):
         self.assertIsNone(T._predicate(unknown, 0x0D))
 
     def test_type20a_pushes_and_pops_status_registers(self):
-        codes = {name: T.UREG_CODES[name] for name in ("ASTATX", "ASTATY", "MODE1", "MMASK", "STKYX")}
+        codes = {
+            name: T.UREG_CODES[name]
+            for name in ("ASTATX", "ASTATY", "MODE1", "MMASK", "STKYX")
+        }
         state = T.State(
             0x10,
             {
@@ -381,15 +387,11 @@ class TraceTest(unittest.TestCase):
             state = self.run_one(state, nop)
             self.assertEqual(state.pc_sw, 0x13)
             self.assertEqual(state.loops[-1].remaining, remaining)
-            self.assertEqual(
-                state.uregs[T.UREG_CODES["CURLCNTR"]], T.Const(remaining)
-            )
+            self.assertEqual(state.uregs[T.UREG_CODES["CURLCNTR"]], T.Const(remaining))
         state = self.run_one(state, nop)
         self.assertEqual(state.pc_sw, 0x16)
         self.assertEqual(state.loops, [])
-        self.assertEqual(
-            state.uregs[T.UREG_CODES["CURLCNTR"]], T.Const(0xFFFFFFFF)
-        )
+        self.assertEqual(state.uregs[T.UREG_CODES["CURLCNTR"]], T.Const(0xFFFFFFFF))
         self.assertEqual(
             state.uregs[T.UREG_CODES["STKYX"]], T.Const((1 << 26) | (1 << 22))
         )
@@ -423,9 +425,7 @@ class TraceTest(unittest.TestCase):
             insn("12a_ureg", ureg_fields, length=6),
         )
         self.assertEqual(ureg.loops, [T.Loop(0x13, 0x13, 23, 1)])
-        unknown = self.run_one(
-            T.State(0x10), insn("12a_ureg", ureg_fields, length=6)
-        )
+        unknown = self.run_one(T.State(0x10), insn("12a_ureg", ureg_fields, length=6))
         self.assertEqual(unknown.stopped, "nonconcrete Type12a UREG loop count")
 
     def test_17_signed_and_assembled(self):
@@ -554,15 +554,9 @@ class TraceTest(unittest.TestCase):
             "l": 0,
             "ureg[6:0]": T.UREG_CODES["PX"],
         }
-        loaded = self.run_one(
-            T.State(10, concrete=memory), insn("14a", fields, 6)
-        )
-        self.assertEqual(
-            loaded.uregs[T.UREG_CODES["PX1"]], T.Const(0x9ABC0000)
-        )
-        self.assertEqual(
-            loaded.uregs[T.UREG_CODES["PX2"]], T.Const(0x12345678)
-        )
+        loaded = self.run_one(T.State(10, concrete=memory), insn("14a", fields, 6))
+        self.assertEqual(loaded.uregs[T.UREG_CODES["PX1"]], T.Const(0x9ABC0000))
+        self.assertEqual(loaded.uregs[T.UREG_CODES["PX2"]], T.Const(0x12345678))
         self.assertIsInstance(loaded.uregs[T.UREG_CODES["PX"]], T.Unknown)
         self.assertEqual(
             loaded.trace[-1]["concrete_value"],
@@ -593,12 +587,8 @@ class TraceTest(unittest.TestCase):
             T.State(10, concrete=memory),
             insn("14a", {**fields, "g": 0}, 6),
         )
-        self.assertEqual(
-            dm_loaded.uregs[T.UREG_CODES["PX1"]], T.Const(0x9ABC0000)
-        )
-        self.assertEqual(
-            dm_loaded.uregs[T.UREG_CODES["PX2"]], T.Const(0x12345678)
-        )
+        self.assertEqual(dm_loaded.uregs[T.UREG_CODES["PX1"]], T.Const(0x9ABC0000))
+        self.assertEqual(dm_loaded.uregs[T.UREG_CODES["PX2"]], T.Const(0x12345678))
 
     def test_type3b_pm_px_load_uses_normal_word_alias_and_post_modifies(self):
         address = T.L1_BLOCK3_NW_BASE + 0x21
@@ -626,12 +616,8 @@ class TraceTest(unittest.TestCase):
         )
         loaded = self.run_one(state, insn("3b", fields))
         self.assertEqual(loaded.uregs[24], T.Const(address + 1))
-        self.assertEqual(
-            loaded.uregs[T.UREG_CODES["PX1"]], T.Const(0x45670000)
-        )
-        self.assertEqual(
-            loaded.uregs[T.UREG_CODES["PX2"]], T.Const(0xABCD0123)
-        )
+        self.assertEqual(loaded.uregs[T.UREG_CODES["PX1"]], T.Const(0x45670000))
+        self.assertEqual(loaded.uregs[T.UREG_CODES["PX2"]], T.Const(0xABCD0123))
         self.assertEqual(loaded.trace[-1]["access_width"], "normal-word")
 
     def test_type25_negative_pcrel_target_wraps_24bit_current_sw_address(self):
@@ -892,7 +878,11 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(state.uregs[T.UREG_CODES["R2"]], T.Const(0xF7FF))
         self.assertEqual(state.uregs[T.UREG_CODES["I5"]], T.Const(address + 4))
         self.assertEqual(
-            (state.trace[0]["action"], state.trace[0]["address"], state.trace[0]["value"]),
+            (
+                state.trace[0]["action"],
+                state.trace[0]["address"],
+                state.trace[0]["value"],
+            ),
             ("store", address, 0x12345678),
         )
         self.assertEqual(state.trace[1]["operation"], "bit-clear-immediate")
@@ -1160,6 +1150,15 @@ class TraceTest(unittest.TestCase):
             insn("3c", {"dmi[2:0]": 7, "dmm[2:0]": 7, "d": 0, "dreg[3:0]": 3}, 2),
         )
         self.assertEqual((s.trace[0]["address"], s.uregs[23]), (0x90, T.Const(0x94)))
+        s = self.run_one(
+            T.State(
+                1,
+                {23: T.Const(0x90), 39: T.Const(1)},
+                assume_nw32=True,
+            ),
+            insn("3c", {"dmi[2:0]": 7, "dmm[2:0]": 7, "d": 0, "dreg[3:0]": 3}, 2),
+        )
+        self.assertEqual((s.trace[0]["address"], s.uregs[23]), (0x90, T.Const(0x94)))
 
     def test_type16a_store_and_unknown_postmodify(self):
         f = {
@@ -1178,6 +1177,15 @@ class TraceTest(unittest.TestCase):
             (s.trace[0]["space"], s.trace[0]["value"], s.uregs[26]),
             ("PM", 0x12345678, T.Const(0x94)),
         )
+        pm_with_nw32_dm = self.run_one(
+            T.State(
+                1,
+                {26: T.Const(0x90), 43: T.Const(4)},
+                assume_nw32=True,
+            ),
+            insn("16a", f, 6),
+        )
+        self.assertEqual(pm_with_nw32_dm.uregs[26], T.Const(0x94))
         s = self.run_one(T.State(1), insn("16a", f, 6))
         self.assertIsInstance(s.uregs[26], T.Unknown)
 
@@ -1556,7 +1564,7 @@ class TraceTest(unittest.TestCase):
             )
             self.assertEqual(result.trace[-2]["predicate_assumption"], assumed)
         self.assertIn(2, executed.uregs)
-        self.assertNotIn(2, skipped.uregs)
+        self.assertIsInstance(skipped.uregs[2], T.Unknown)
 
     def test_19a_constant_and_unknown(self):
         f = {
@@ -1700,7 +1708,153 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(s.stopped, "external-call")
         self.assertEqual(s.trace[-1]["return_sw"], 17)
         self.assertEqual(s.trace[-1]["target_sw"], 99)
-        self.assertEqual([e["pc_sw"] for e in s.trace[:-1]], [10, 12, 14])
+        self.assertEqual([e["pc_sw"] for e in s.trace[:-1]], [10, 10, 12, 14])
+
+    def test_type9a_relative_branch_applies_compute_on_true_bit_test(self):
+        branch = insn(
+            "9a_rel",
+            {
+                "b": 0,
+                "a": 0,
+                "cond[4:0]": 0x0D,
+                "j": 1,
+                "e": 0,
+                "ci": 0,
+                "compute[22:16]": 0x02,
+                "compute[15:0]": 0x9220,
+                "reladdr[5:5]": 0,
+                "reladdr[4:0]": 7,
+            },
+            6,
+        )
+        true_state = self.run_one(
+            T.State(
+                10,
+                {
+                    T.UREG_CODES["R2"]: T.Const(4),
+                    T.UREG_CODES["ASTATX"]: T.Const(1 << 18),
+                },
+            ),
+            branch,
+        )
+        self.assertEqual(true_state.uregs[T.UREG_CODES["R2"]], T.Const(5))
+        self.assertEqual(true_state.pending.target, 17)
+
+        false_state = self.run_one(
+            T.State(
+                10,
+                {
+                    T.UREG_CODES["R2"]: T.Const(4),
+                    T.UREG_CODES["ASTATX"]: T.Const(0),
+                },
+            ),
+            branch,
+        )
+        self.assertEqual(false_state.uregs[T.UREG_CODES["R2"]], T.Const(4))
+        self.assertIsNone(false_state.pending)
+        self.assertEqual(false_state.pc_sw, 13)
+
+        taken, not_taken = T._execute(
+            T.State(10, {T.UREG_CODES["R2"]: T.Const(4)}), branch
+        )
+        self.assertEqual(taken.uregs[T.UREG_CODES["R2"]], T.Const(5))
+        self.assertEqual(taken.pending.target, 17)
+        self.assertEqual(not_taken.uregs[T.UREG_CODES["R2"]], T.Const(4))
+        self.assertIsNone(not_taken.pending)
+
+    def test_type2a_not_av_saturate_mrf_preserves_unknown_dependency(self):
+        saturate = insn(
+            "2a",
+            {
+                "cond[4:0]": 0x14,
+                "compute[22:16]": 0x10,
+                "compute[15:0]": 0x072E,
+            },
+            6,
+        )
+        executed = self.run_one(
+            T.State(10, {T.UREG_CODES["ASTATX"]: T.Const(0)}), saturate
+        )
+        self.assertIsInstance(executed.uregs[T.UREG_CODES["R7"]], T.Unknown)
+        self.assertEqual(executed.trace[-1]["operation"], "saturate-mrf")
+        skipped = self.run_one(
+            T.State(10, {T.UREG_CODES["ASTATX"]: T.Const(1 << 1)}), saturate
+        )
+        self.assertNotIn(T.UREG_CODES["R7"], skipped.uregs)
+        self.assertEqual(skipped.trace[-1]["action"], "compute-skipped")
+
+    def test_cjump_frame_and_rframe_restore_compiler_frame(self):
+        call = insn("25a_direct", {"addr[23:16]": 0, "addr[15:0]": 99}, 4)
+        state = self.run_one(
+            T.State(
+                10,
+                {
+                    T.UREG_CODES["I6"]: T.Const(0x200),
+                    T.UREG_CODES["I7"]: T.Const(0x100),
+                },
+            ),
+            call,
+        )
+        self.assertEqual(state.uregs[T.UREG_CODES["R2"]], T.Const(0x200))
+        self.assertEqual(state.uregs[T.UREG_CODES["I6"]], T.Const(0x100))
+        self.assertEqual(state.trace[-2]["action"], "cjump-frame")
+
+        restoring = T.State(
+            30,
+            {
+                T.UREG_CODES["I6"]: T.Const(0x100),
+                T.UREG_CODES["I7"]: T.Const(0x80),
+            },
+            pending=T.Pending(None, slots=2, return_from_call=True),
+            call_stack=[40],
+            concrete=loader_memory(loader_block(0, 0x100, 4, payload=b"\0" * 4)),
+            assume_nw32=True,
+        )
+        self.assertTrue(T._dm_write(restoring, 0x100, 4, T.Const(0x200)))
+        restored = self.run_one(restoring, insn("25c_rframe", {}, 2))
+        self.assertEqual(restored.uregs[T.UREG_CODES["I7"]], T.Const(0x100))
+        self.assertEqual(restored.uregs[T.UREG_CODES["I6"]], T.Const(0x200))
+        self.assertEqual(restored.trace[-1]["action"], "rframe")
+
+    def test_type16_immediate_stores_scale_normal_word_postmodify(self):
+        memory = loader_memory(loader_block(0, 0xF8, 16, payload=b"\0" * 16))
+        state = T.State(
+            1,
+            {
+                T.UREG_CODES["I7"]: T.Const(0x100),
+                T.UREG_CODES["M7"]: T.Const(0xFFFFFFFF),
+            },
+            concrete=memory,
+            assume_nw32=True,
+        )
+        stored16 = self.run_one(
+            state,
+            insn(
+                "16b",
+                {"i[2:0]": 7, "m[2:0]": 7, "g": 0, "data[15:0]": 2},
+                4,
+            ),
+        )
+        self.assertEqual(T._dm_read(stored16, 0x100, 4), T.Const(2))
+        self.assertEqual(stored16.uregs[T.UREG_CODES["I7"]], T.Const(0xFC))
+        stored32 = self.run_one(
+            stored16,
+            insn(
+                "16a",
+                {
+                    "i[2:0]": 7,
+                    "m[2:0]": 7,
+                    "g": 0,
+                    "sl": 0,
+                    "by": 0,
+                    "data[31:16]": 0x1234,
+                    "data[15:0]": 0x5678,
+                },
+                6,
+            ),
+        )
+        self.assertEqual(T._dm_read(stored32, 0xFC, 4), T.Const(0x12345678))
+        self.assertEqual(stored32.uregs[T.UREG_CODES["I7"]], T.Const(0xF8))
 
     def test_provisional_stop(self):
         self.assertIn(
@@ -2233,11 +2387,34 @@ class TraceTest(unittest.TestCase):
             ],
         )
 
+    def test_breakpoint_captures_registers_and_watched_dm_before_execution(self):
+        memory = loader_memory(
+            loader_block(0, T.sw_to_byte(0x100), 2, payload=b"\x01\x00"),
+            loader_block(1, 0x200, 4, payload=b"\x78\x56\x34\x12"),
+        )
+        states = T.trace(
+            memory,
+            None,
+            0x100,
+            sets={"I6": 0x261BE4},
+            concrete_memory=True,
+            assume_nw32=True,
+            breakpoints=[0x100],
+        )
+        self.assertEqual(len(states), 1)
+        self.assertEqual((states[0].stopped, states[0].steps), ("breakpoint", 0))
+        summary = T.summarize(states, 0x100, [0x200])["states"][0]
+        self.assertEqual(summary["stop_pc_sw"], 0x100)
+        self.assertEqual(summary["registers"]["I6"], 0x261BE4)
+        self.assertEqual(summary["watched_dm"]["0x200"], 0x12345678)
+
     def test_bounds_and_json_has_no_raw_bytes(self):
         data = b"\x00\x00"
         self.assertEqual(T.trace(data, 0, 0, max_steps=0)[0].stopped, "max-steps")
         with self.assertRaisesRegex(ValueError, "max_states must be between"):
             T.trace(data, 0, 0, max_states=0)
+        with self.assertRaisesRegex(ValueError, "24-bit short-word"):
+            T.trace(data, 0, 0, breakpoints=[0x1000000])
         branch = insn(
             "8a_abs",
             {"b": 0, "j": 0, "cond[4:0]": 1, "addr[23:16]": 0, "addr[15:0]": 20},
@@ -2251,6 +2428,28 @@ class TraceTest(unittest.TestCase):
             f.write(data)
             path = f.name
         try:
+            for option, value, message in (
+                ("--break-pc", "0x1000000", "24-bit short-word"),
+                ("--watch-dm", "0x100000000", "32-bit address"),
+            ):
+                invalid = subprocess.run(
+                    [
+                        sys.executable,
+                        "tools/sharc_trace.py",
+                        path,
+                        "--base-sw",
+                        "0",
+                        "--start",
+                        "0",
+                        option,
+                        value,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(invalid.returncode, 2)
+                self.assertIn(message, invalid.stderr)
             out = subprocess.check_output(
                 [
                     sys.executable,
