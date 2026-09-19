@@ -1859,14 +1859,23 @@ reader. It does **not** yet prove the physical DSPI2 transport, the SHARC DMA
 buffer owning `I5`, natural execution from strict entry, cadence, or the
 non-`EQ` downstream machine-selection behavior. Those remain open. **[O]**
 
-The strongest candidate receive-state construction is now exact but still not
-aliased to `I5`. At `0x1ca03d`, `I4=I3+0x94`; `0x1ca040` copies that pointer to
-`R4`; `0x1ca042` stores it at state offset `+0x20`; `0x1ca044` sets `I12=32`;
-and `0x1ca046` stores 32 at state offset `+0xb0` before calling `0x1c9f9c` at
-`0x1ca048`. A calibrated symbolic slice therefore gives
-`state[0x20]=state+0x94` and `state[0xb0]=32`. No byte-backed reference or
-pointer constant yet equates `state+0x94` with the frame-reader's `I5`, so this
-is a descriptor/buffer candidate rather than established ownership. **[D][O]**
+The two strongest candidate receive states are now concrete but still not
+aliased to `I5`. Callers `0x1c7dae` and `0x1c7c14` pass selectors 1 and 2 with
+`R12=0x261b18` and `R12=0x261a10`, respectively, to `0x1c9fd5`.
+`0x1c9fed` copies `R12` to `R14` and `0x1c9ff3` copies `R14` to state base
+`I3`. At `0x1ca03d`, `I4=I3+0x94`; `0x1ca040` copies that pointer to `R4`;
+`0x1ca042` stores it at state offset `+0x20`; `0x1ca044` sets `I12=32`; and
+`0x1ca046` stores 32 at state offset `+0xb0` before calling `0x1c9f9c` at
+`0x1ca048`. The resulting candidates are:
+
+| selector | state | `state+0x20` points to | count at `state+0xb0` |
+|---:|---:|---:|---:|
+| 1 | `0x261b18` | `0x261bac` | 32 |
+| 2 | `0x261a10` | `0x261aa4` | 32 |
+
+No byte-backed reference or pointer constant yet equates either candidate
+buffer with the frame-reader's runtime `I5`, so these remain descriptor/buffer
+candidates rather than established ownership. **[V][O]**
 
 #### The per-track TX frame map **[D]**
 
@@ -5121,15 +5130,28 @@ resulting PCG read/mask/write events, but remains non-qualifying because its
 entry and branch state are not established from reset. Artifact:
 `out/experiments/sharc-runtime-probe/pcg-type6b-001-summary.json`. **[C][V][O]**
 
-Likewise, calibrated SPORT4A record selection now crosses `0x1ca6e9` as
-`R2 = BCLR R2 BY 25` and continues to `0x1ca6f6`, where another documented
-compute operation is not yet implemented. This removes the claimed
-unknown-opcode dependency but does not establish the natural `I4=-0x13c`
-selection, DMA10 ownership/descriptors, an application buffer, a first-word
-writer, or production of `0x007fffff`. Artifact:
-`out/experiments/sharc-runtime-probe/sport4a-type6b-calibration-001-summary.json`.
-The natural marker chain and numeric SSI cadence therefore remain open, and
-final A2 is still unqualified. **[C][V][O]**
+Likewise, calibrated SPORT4A record selection now crosses the complete
+`0x1ca698..0x1ca71b` suffix and reaches its return using documented semantics.
+In addition to `0x1ca6e9: R2 = BCLR R2 BY 25`, the supported slice now covers
+fixed-point AND/OR/XOR, variable and immediate BSET/BCLR/BTGL, Type6a's
+parallel ShiftImm plus post-modify memory access. Selected MR/MRF data-move
+and multiply-accumulate forms were also added for the earlier `0x1ca58a`
+entry path, but do not establish the runtime inputs to this suffix. With
+calibration-only `I4=-0x13c`, `0x1ca6c1` reads SPORT4A control base
+`0x31002400` from `0x26969c`, and `0x1ca6c3` reads DMA10 base `0x31023000`
+from `0x2696a0`.
+No path state performs a concrete peripheral access: the store at `0x1ca6f9`
+is `DM(I5,M5)=R9` in parallel with `R2=BCLR R2 BY 11`, and `I5`, `M5`, and
+`R9` remain unproven runtime inputs. Seeding `I5` with the DMA10 base would
+therefore fabricate the missing ownership join rather than discover it.
+Artifacts:
+`out/experiments/sharc-runtime-probe/sport4a-consumer-supported-002-summary.json`
+and `sport4a-consumer-supported-002-trace.json`. This removes the remaining
+decoder stop in the calibrated suffix but does not establish natural
+`I4=-0x13c`, DMA10 ownership/descriptors, an application buffer, a first-word
+writer, or production of `0x007fffff`. The natural marker chain and numeric
+SSI cadence therefore remain open, and final A2 is still unqualified.
+**[C][V][O]**
 
 ## The first strict-startup PM/PX loss is concrete; the next PM source is absent **[C][V][O]**
 

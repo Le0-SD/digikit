@@ -31,6 +31,89 @@ CHECKS: tuple[tuple[int, str, Mapping[str, int], str], ...] = (
     (0x1C0F40, "17b", {"ureg[6:0]": 38, "data[15:0]": 1}, "M6=1"),
     (0x1C0F44, "17b", {"ureg[6:0]": 37, "data[15:0]": 0}, "M5=0"),
     (
+        0x1C7C0F,
+        "17a",
+        {"ureg[6:0]": 12, "data[31:16]": 0x26, "data[15:0]": 0x1A10},
+        "candidate state 2 base in R12",
+    ),
+    (0x1C7C12, "17b", {"ureg[6:0]": 4, "data[15:0]": 2}, "selector 2"),
+    (
+        0x1C7C14,
+        "25a_direct",
+        {"addr[23:16]": 0x1C, "addr[15:0]": 0x9FD5},
+        "construct candidate state 2",
+    ),
+    (
+        0x1C7DA9,
+        "17a",
+        {"ureg[6:0]": 12, "data[31:16]": 0x26, "data[15:0]": 0x1B18},
+        "candidate state 1 base in R12",
+    ),
+    (
+        0x1C7DAC,
+        "5b_move",
+        {
+            "srcureghigh[4:0]": 9,
+            "srcureglow[1:1]": 1,
+            "srcureglow[0:0]": 0,
+            "dstureg[6:0]": 4,
+        },
+        "copy fixed M6=1 to selector R4",
+    ),
+    (
+        0x1C7DAE,
+        "25a_direct",
+        {"addr[23:16]": 0x1C, "addr[15:0]": 0x9FD5},
+        "construct candidate state 1",
+    ),
+    (
+        0x1C9FED,
+        "4a",
+        {"compute[22:16]": 2, "compute[15:0]": 0x1EC0},
+        "copy caller R12 base to R14",
+    ),
+    (
+        0x1C9FF3,
+        "5b_move",
+        {
+            "srcureghigh[4:0]": 3,
+            "srcureglow[1:1]": 1,
+            "srcureglow[0:0]": 0,
+            "dstureg[6:0]": 19,
+        },
+        "copy R14 base to I3",
+    ),
+    (
+        0x1CA03D,
+        "19a",
+        {"is[2:0]": 3, "idis[2:0]": 7, "data[15:0]": 0x94},
+        "form candidate buffer I4=I3+0x94",
+    ),
+    (
+        0x1CA040,
+        "5b_move",
+        {
+            "srcureghigh[4:0]": 5,
+            "srcureglow[1:1]": 0,
+            "srcureglow[0:0]": 0,
+            "dstureg[6:0]": 4,
+        },
+        "copy candidate buffer I4 to R4",
+    ),
+    (
+        0x1CA042,
+        "15b",
+        {"i[2:0]": 3, "d": 1, "ureg[6:0]": 4, "data[6:0]": 8},
+        "store candidate buffer at state+0x20",
+    ),
+    (0x1CA044, "17b", {"ureg[6:0]": 28, "data[15:0]": 32}, "I12=32"),
+    (
+        0x1CA046,
+        "15b",
+        {"i[2:0]": 3, "d": 1, "ureg[6:0]": 28, "data[6:0]": 44},
+        "store 32 at state+0xb0",
+    ),
+    (
         0x1C7719,
         "5b_move",
         {"srcureghigh[4:0]": 5, "srcureglow[1:1]": 0, "srcureglow[0:0]": 1, "dstureg[6:0]": 8},
@@ -249,6 +332,26 @@ def build_report(blob_path: Path, frame_path: Path | None = None) -> dict[str, A
             "behavior": "compare received word with cached per-track word; EQ skips the M14 overwrite at DM(I5+0xc4)",
             "non_eq_first_effect": "0x1c33e7 stores M14 to DM(I5+0xc4)",
         },
+        "candidate_receive_states": [
+            {
+                "selector": 1,
+                "state_base": 0x261B18,
+                "buffer": 0x261BAC,
+                "pointer_field": 0x261B38,
+                "count_field": 0x261BC8,
+                "count": 32,
+                "reader_i5_alias": "not proven",
+            },
+            {
+                "selector": 2,
+                "state_base": 0x261A10,
+                "buffer": 0x261AA4,
+                "pointer_field": 0x261A30,
+                "count_field": 0x261AC0,
+                "count": 32,
+                "reader_i5_alias": "not proven",
+            },
+        ],
     }
     if frame_path is not None:
         frame = frame_path.read_bytes()

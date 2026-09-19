@@ -713,6 +713,17 @@ class TraceTest(unittest.TestCase):
             ),
         )
         self.assertEqual((s.uregs[3], s.uregs[4]), (T.Const(0), T.Const(99)))
+        for opcode, expected, operation in (
+            (0x40, 0x0A00, "and"),
+            (0x41, 0xAFAF, "or"),
+            (0x42, 0xA5AF, "xor"),
+        ):
+            s = self.run_one(
+                T.State(1, {1: T.Const(0x0F0F), 2: T.Const(0xAAA0)}),
+                insn("2a", {"cond[4:0]": 31, **full(0, opcode, 3, 1, 2)}, 6),
+            )
+            self.assertEqual(s.uregs[3], T.Const(expected))
+            self.assertEqual(s.trace[-1]["operation"], operation)
         s = self.run_one(
             T.State(1, {5: T.Const(11)}),
             insn(
@@ -828,6 +839,17 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(s.uregs[0], T.Const(0x10))
         self.assertEqual(s.trace[0]["operation"], "logical-shift")
 
+        for opcode, expected, operation in (
+            (0xC0, 0x80000001, "bit-set"),
+            (0xC4, 0x00000001, "bit-clear"),
+        ):
+            s = self.run_one(
+                T.State(1, {1: T.Const(0x80000001), 2: T.Const(31)}),
+                insn("2a", {"cond[4:0]": 31, **full(2, opcode, 0, 1, 2)}, 6),
+            )
+            self.assertEqual(s.uregs[0], T.Const(expected))
+            self.assertEqual(s.trace[-1]["operation"], operation)
+
         s = self.run_one(
             T.State(1, {1: T.Const(0x80000000), 2: T.Const(0xFFFFFFFC)}),
             insn("2a", {"cond[4:0]": 31, **full(2, 0x00, 0, 1, 2)}, 6),
@@ -842,6 +864,104 @@ class TraceTest(unittest.TestCase):
         )
         self.assertIn("unsupported short compute", s.stopped)
         self.assertEqual(s.uregs, {1: T.Const(2)})
+
+    def test_type6a_shift_store_and_post_modify_use_old_values(self):
+        address = 0x1000
+        fields = {
+            "cond[4:0]": 31,
+            "g": 0,
+            "i[2:0]": 5,
+            "m[2:0]": 5,
+            "d": 1,
+            "dreg[3:0]": 9,
+            "dataex[3:0]": 0,
+            # R2 = BCLR R2 BY 11
+            "shiftimm[22:16]": 0x31,
+            "shiftimm[15:0]": 0x0B22,
+        }
+        state = T.State(
+            1,
+            {
+                T.UREG_CODES["R2"]: T.Const(0xFFFF),
+                T.UREG_CODES["R9"]: T.Const(0x12345678),
+                T.UREG_CODES["I5"]: T.Const(address),
+                T.UREG_CODES["M5"]: T.Const(4),
+            },
+        )
+        state = self.run_one(state, insn("6a_mem", fields, 6))
+        self.assertEqual(state.uregs[T.UREG_CODES["R2"]], T.Const(0xF7FF))
+        self.assertEqual(state.uregs[T.UREG_CODES["I5"]], T.Const(address + 4))
+        self.assertEqual(
+            (state.trace[0]["action"], state.trace[0]["address"], state.trace[0]["value"]),
+            ("store", address, 0x12345678),
+        )
+        self.assertEqual(state.trace[1]["operation"], "bit-clear-immediate")
+
+        toggled = self.run_one(
+            T.State(1, {T.UREG_CODES["R1"]: T.Const(1)}),
+            insn(
+                "6b_shiftimm",
+                {
+                    "cond[4:0]": 31,
+                    "dataex[3:0]": 0,
+                    "shiftimm[22:16]": 0x32,
+                    "shiftimm[15:0]": 0x1F01,
+                },
+                6,
+            ),
+        )
+        self.assertEqual(toggled.uregs[T.UREG_CODES["R0"]], T.Const(0x80000001))
+        self.assertEqual(toggled.trace[-1]["operation"], "bit-toggle-immediate")
+
+    def test_full_compute_register_to_mr_move_is_recorded(self):
+        state = self.run_one(
+            T.State(1, {T.UREG_CODES["R2"]: T.Const(0x1234)}),
+            insn(
+                "2a",
+                {
+                    "cond[4:0]": 31,
+                    "compute[22:16]": 0x41,
+                    "compute[15:0]": 0x0200,
+                },
+                6,
+            ),
+        )
+        self.assertEqual(state.uregs[T.UREG_CODES["R2"]], T.Const(0x1234))
+        self.assertEqual(
+            (state.trace[-1]["operation"], state.trace[-1]["result_register"]),
+            ("mr-data-move", "MR0F"),
+        )
+        state.uregs[T.UREG_CODES["R10"]] = T.Const(3)
+        state = self.run_one(
+            state,
+            insn(
+                "2a",
+                {
+                    "cond[4:0]": 31,
+                    "compute[22:16]": 0x1B,
+                    "compute[15:0]": 0x40A2,
+                },
+                6,
+            ),
+        )
+        self.assertEqual(state.special["MRF"], T.Const(0x1234 + 3 * 0x1234))
+        self.assertEqual(state.trace[-1]["operation"], "multiply-accumulate")
+        state.uregs[T.UREG_CODES["R6"]] = T.Const(2)
+        state.uregs[T.UREG_CODES["R11"]] = T.Const(4)
+        state = self.run_one(
+            state,
+            insn(
+                "2a",
+                {
+                    "cond[4:0]": 31,
+                    "compute[22:16]": 0x1B,
+                    "compute[15:0]": 0x07B6,
+                },
+                6,
+            ),
+        )
+        self.assertEqual(state.uregs[T.UREG_CODES["R7"]], T.Const(0x48D8))
+        self.assertEqual(state.trace[-1]["operation"], "multiply-add-mrf")
 
     def test_type2a_increment_unconditional_and_affine(self):
         def full(opcode, rn, rx, ry=0):

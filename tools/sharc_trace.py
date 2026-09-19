@@ -209,6 +209,7 @@ class State:
     core_reset_state: bool = False
     mmrs: Dict[int, Value] = field(default_factory=dict)
     data_memory_tainted: bool = False
+    special: Dict[str, Value] = field(default_factory=dict)
 
 
 def _signed(value: int, bits: int) -> int:
@@ -314,6 +315,7 @@ def _copy(state: State) -> State:
         state.core_reset_state,
         dict(state.mmrs),
         state.data_memory_tainted,
+        dict(state.special),
     )
 
 
@@ -673,6 +675,18 @@ def _shift_immediate(
             )
         operation = "bit-set-immediate" if opcode == 0x30 else "bit-clear-immediate"
         return rn, value, operation
+    if opcode == 0x32:
+        position = data8
+        if position > 31:
+            value = source
+        else:
+            value = _bitwise(
+                source,
+                Const(1 << position),
+                "btgl R%d by %d" % (rx, position),
+                lambda a, b: a ^ b,
+            )
+        return rn, value, "bit-toggle-immediate"
     raise ValueError("unsupported ShiftImm opcode %#x" % opcode)
 
 
@@ -681,8 +695,11 @@ def _not(value: Value, expression: str) -> Value:
 
 
 def _compute(
-    f: Mapping[str, int], short: bool, values: Mapping[int, Value]
-) -> Optional[tuple[int, Value, str]]:
+    f: Mapping[str, int],
+    short: bool,
+    values: Mapping[int, Value],
+    special: Optional[Mapping[str, Value]] = None,
+) -> Optional[tuple[int | str, Value, str]]:
     """Decode the small public-table subset, reading every operand from VALUES."""
     field = (
         _field(f, "compute")
@@ -691,6 +708,40 @@ def _compute(
     )
     if not short and field == 0:
         return None
+    # PRM Table 18-29: fixed bits 22:17=100000 select an MR data move.
+    # The target-guided SPORT setup path uses the register-to-MR direction.
+    if not short and field >> 17 == 0b100000:
+        direction = (field >> 16) & 1
+        opcode = (field >> 12) & 0xF
+        rn = (field >> 8) & 0xF
+        if direction != 1 or opcode != 0:
+            raise ValueError("unsupported MR data move %#x" % field)
+        return "MR0F", _ureg(values, rn), "mr-data-move"
+    # PRM multiplier compute table: MRF = MRF + RX * RY (MOD1).  Preserve
+    # the accumulator separately from the UREG file so later MR transfers do
+    # not masquerade as architectural UREGs.
+    if not short and ((field >> 20) & 3) == 1 and ((field >> 12) & 0xFF) == 0xB4:
+        rx, ry = (field >> 4) & 0xF, field & 0xF
+        accumulator = (special or {}).get("MRF", Unknown("uninitialized MRF"))
+        product = _multiply(
+            _ureg(values, rx), _ureg(values, ry), "R%d * R%d" % (rx, ry)
+        )
+        return (
+            "MRF",
+            _add(accumulator, product, "MRF + R%d * R%d" % (rx, ry)),
+            "multiply-accumulate",
+        )
+    if not short and ((field >> 20) & 3) == 1 and ((field >> 12) & 0xFF) == 0xB0:
+        rn, rx, ry = (field >> 8) & 0xF, (field >> 4) & 0xF, field & 0xF
+        accumulator = (special or {}).get("MRF", Unknown("uninitialized MRF"))
+        product = _multiply(
+            _ureg(values, rx), _ureg(values, ry), "R%d * R%d" % (rx, ry)
+        )
+        return (
+            rn,
+            _add(accumulator, product, "MRF + R%d * R%d" % (rx, ry)),
+            "multiply-add-mrf",
+        )
     if short:
         opcode, rn, rx = (field >> 8) & 0xF, (field >> 4) & 0xF, field & 0xF
         left, right = _ureg(values, rn), _ureg(values, rx)
@@ -754,6 +805,21 @@ def _compute(
     # PRM Table 18-5 and p. 19-9: ALUOP 00101010 is RN = RX - 1.
     if cu == 0 and opcode == 0x2A:
         return rn, _add(left, Const(-1), "R%d - 1" % rx), "decrement"
+    # PRM Table 18-5: ALUOP 01000000..01000010 are the integer logical
+    # operations AND, OR, and XOR.
+    if cu == 0 and opcode in (0x40, 0x41, 0x42):
+        name, operation = {
+            0x40: ("and", lambda a, b: a & b),
+            0x41: ("or", lambda a, b: a | b),
+            0x42: ("xor", lambda a, b: a ^ b),
+        }[opcode]
+        value = _bitwise(
+            left,
+            right,
+            "R%d %s R%d" % (rx, name, ry),
+            operation,
+        )
+        return rn, value, name
     if cu == 1 and opcode == 0x70:
         value = _multiply(left, right, "R%d * R%d" % (rx, ry))
         return rn, value, "multiply"
@@ -784,6 +850,26 @@ def _compute(
             else Unknown("leftz R%d" % rx)
         )
         return rn, value, "leftz"
+    # PRM Table 18-9: SHIFTOP 11000000/11000100 are variable bit set/clear.
+    if cu == 2 and opcode in (0xC0, 0xC4):
+        name = "bset" if opcode == 0xC0 else "bclr"
+        if not isinstance(right, Const):
+            value = Unknown("%s R%d by R%d" % (name, rx, ry))
+        elif right.value > 31:
+            value = left
+        else:
+            calculate = (
+                (lambda a, b: a | b)
+                if opcode == 0xC0
+                else (lambda a, b: a & ~b)
+            )
+            value = _bitwise(
+                left,
+                Const(1 << right.value),
+                "%s R%d by R%d" % (name, rx, ry),
+                calculate,
+            )
+        return rn, value, "bit-set" if opcode == 0xC0 else "bit-clear"
     # PRM Table 17-9 and p. 23-5: SHIFTOP 11001000 is
     # RN = btgl RX by RY.  Positions outside the 32-bit field leave RX
     # unchanged.
@@ -808,9 +894,20 @@ def _compute(
 
 
 def _apply_compute(
-    state: State, insn: Instruction, result: tuple[int, Value, str]
+    state: State, insn: Instruction, result: tuple[int | str, Value, str]
 ) -> None:
     rn, value, operation = result
+    if isinstance(rn, str):
+        _event(
+            state,
+            insn,
+            "compute",
+            operation=operation,
+            result_register=rn,
+            value=value,
+        )
+        state.special["MRF"] = value
+        return
     if operation == "pass":
         astatx_code = UREG_CODES["ASTATX"]
         astatx = _ureg(state.uregs, astatx_code)
@@ -952,13 +1049,14 @@ def _advance(state: State, insn: Instruction) -> List[State]:
             # pointer arguments are deliberately untouched.
             for code in range(16):
                 state.uregs[code] = Unknown("opaque-external-call result")
+            state.special["MRF"] = Unknown("opaque-external-call result")
             state.pending = None
             state.pc_sw = return_sw
             _event(
                 state,
                 insn,
                 "external-call-continue",
-                clobbered=["R%d" % n for n in range(16)],
+                clobbered=["R%d" % n for n in range(16)] + ["MRF"],
             )
             return [state]
         state.pending = None
@@ -1130,6 +1228,55 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             result = _shift_immediate(f, dict(state.uregs))
         except ValueError as error:
             return [_stop(state, insn, str(error))]
+        _apply_compute(state, insn, result)
+        return _advance(state, insn)
+    if name == "6a_mem":
+        # PRM Type 6a performs a ShiftImm and a normal-word memory transfer
+        # in parallel, then post-modifies the selected I register by M.
+        if _field(f, "cond") != 0x1F:
+            return [_stop(state, insn, "unsupported Type6a predicate")]
+        old = dict(state.uregs)
+        try:
+            result = _shift_immediate(f, old)
+        except ValueError as error:
+            return [_stop(state, insn, str(error))]
+        bank = 8 if _field(f, "g") else 0
+        index, modifier = _field(f, "i") + bank, _field(f, "m") + bank
+        iv, mv = _ureg(old, 16 + index), _ureg(old, 32 + modifier)
+        space = "PM" if bank else "DM"
+        dreg = _field(f, "dreg")
+        if _field(f, "d"):
+            value = _ureg(old, dreg)
+            _event(
+                state,
+                insn,
+                "store",
+                space=space,
+                dreg="R%d" % dreg,
+                value=value,
+                address=iv,
+                expression=_render(iv),
+                concrete_write=_dm_write(state, iv, 4, value)
+                if space == "DM"
+                else False,
+                addressing_mode="post-modify",
+                access_width="normal-word",
+            )
+        else:
+            loaded = _load_normal_ureg(state, space, iv, dreg)
+            _event(
+                state,
+                insn,
+                "load",
+                space=space,
+                dreg="R%d" % dreg,
+                address=iv,
+                expression=_render(iv),
+                concrete_value=loaded,
+                addressing_mode="post-modify",
+                access_width="normal-word",
+            )
+        state.uregs[16 + index] = _add(iv, mv, "I%d + M%d" % (index, modifier))
         _apply_compute(state, insn, result)
         return _advance(state, insn)
     if name == "18a":
@@ -1400,7 +1547,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         destination_low = source_low ^ _field(f, "idis")
         source, destination = source_low + bank, destination_low + bank
         try:
-            compute = _compute(f, False, dict(state.uregs))
+            compute = _compute(f, False, dict(state.uregs), state.special)
         except ValueError as error:
             return [_stop(state, insn, str(error))]
         state.uregs[16 + destination] = Unknown(
@@ -1431,7 +1578,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         compute_fields["compute[22:16]"] = compute_field >> 16
         compute_fields["compute[15:0]"] = compute_field & 0xFFFF
         try:
-            compute = _compute(compute_fields, False, old)
+            compute = _compute(compute_fields, False, old, state.special)
         except ValueError as error:
             return [_stop(state, insn, str(error))]
         bank = 8 if _field(f, "g") else 0
@@ -1528,7 +1675,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         compute = None
         if name == "5a_move":
             try:
-                compute = _compute(f, False, old)
+                compute = _compute(f, False, old, state.special)
             except ValueError as error:
                 return [_stop(state, insn, str(error))]
         src = (
@@ -1590,7 +1737,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         # Type 2a conditionally executes a full compute.  Decode against the
         # pre-instruction register file before either predicate assumption mutates it.
         try:
-            compute = _compute(f, False, dict(state.uregs))
+            compute = _compute(f, False, dict(state.uregs), state.special)
         except ValueError as error:
             return [_stop(state, insn, str(error))]
         if compute is None:
@@ -1626,7 +1773,7 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             return [_stop(state, insn, "unsupported predicate")]
         old = dict(state.uregs)
         try:
-            compute = _compute(f, False, old)
+            compute = _compute(f, False, old, state.special)
         except ValueError as error:
             return [_stop(state, insn, str(error))]
         index = _field(f, "i") + (8 if _field(f, "g") else 0)

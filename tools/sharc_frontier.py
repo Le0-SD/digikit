@@ -224,6 +224,7 @@ def _clobber(state: trace.State) -> None:
     state.call_stack.clear()
     state.overlay.clear()
     state.mmrs.clear()
+    state.special.clear()
     # Keep the loader's code map for instruction fetch/call following, but do
     # not treat any pre-island data-memory or MMR value as concrete.
     state.data_memory_tainted = True
