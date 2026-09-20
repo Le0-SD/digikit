@@ -677,3 +677,62 @@ An aside worth recording so it is not re-investigated: there is no standalone
 embedded English word list ("MISFORTUNE", "OPPORTUNE"). That is ordinary linker
 string-suffix merging, not a bad pointer.
 
+
+## Exposing CFADE: scoped, two six-byte edits **[D][O]**
+
+What it would take to turn on the dormant slot-2 parameter, scoped but **not
+applied**. Nothing here has been patched or tested.
+
+Descriptor field 2 is written by a `clr.l` in the boot initializer, so the patch
+target is that instruction, not a table byte:
+
+```
+SAMPLE (type 0)       guest 0x401c4844  file 0x1c4444  42 b9 42 93 b9 70  clr.l $4293b970.l
+MANUAL SLICE (type 6) guest 0x401c4b08  file 0x1c4708  42 b9 42 93 ba 78  clr.l $4293ba78.l
+```
+
+Both are 6 bytes. The replacement `move.l #$cc,$4293b970.l` is **10 bytes**, so it
+does not fit, and the following instruction cannot be borrowed: it loads
+`0xcb`/`0xf8` for a different field's store a few instructions later, and
+shrinking it to a `moveq` would sign-extend to `0xffffffcb`, which
+`FUN_400d9ed8` would then clamp to entry 0 and silently corrupt that other slot.
+
+The fit is a 6-byte `jmp (cave).l` (`4ef9` + address) at each site, with a 16-byte
+stub in the confirmed-zero cave tail (`tools/machineprofile.py` `cave_b =
+0x4031be5c`, free to end of file, and the existing eighth-machine patch occupies
+only the first ~`0x380`):
+
+```
+stub: 23 fc 00 00 00 cc 42 93 b9 70   move.l #$cc,$4293b970.l
+      4e f9 40 1c 48 4a               jmp $401c484a.l
+```
+
+Two length-preserving 6-byte edits plus 32 bytes of new code in previously-zero
+space. Much smaller than the eighth-machine work: no list, dispatch, rank, permit
+or clone parts, because SAMPLE and MANUAL SLICE already exist and are already
+permitted -- only a dormant field is being turned on.
+
+Gates a newly non-zero field 2 must pass:
+
+| gate | status |
+|---|---|
+| descriptor field 2 | needs patching |
+| param-table entry for `0xcc`/`0xfa` | already complete **[V]** |
+| row/parameter registration `FUN_40049b16` | satisfied -- walks all nine fields, skips only `0` and `0xa` (`moveq #0xa,D1; move.l (A3)+,D0; cmp.l D0,D1; beq; tst.l D0; beq`) **[D]** |
+| encoder/touch hit-test `FUN_4006216e` | satisfied -- same zero-skip shape, independent consumer **[D]** |
+| machine-type permission check | not applicable; types 0 and 6 already permitted **[V]** |
+| DSP transport | satisfied -- unconditional copy, index 27 to frame `+0xde` **[V]** |
+| a SHARC-side consumer that does something audible | **unknown [O]** |
+
+Persistence looks generic rather than enumerated: `FUN_4002d7a4` is bound-checked
+`idx < 0x47` and index 27 sits inside both the `Sound + 0x14 + idx*2` array and
+the mirror, and the live kit table is flat POD that undo/copy `memcpy` wholesale.
+The flash-to-RAM project-load routine and the on-flash serialisation format were
+never traced, so whether a previously-always-zero index survives a save and
+reload is **[O]**.
+
+The one risk that matters is the last gate: whether the SHARC implements a
+crossfade with that value or ignores it the way REPITCH's deliberately disabled
+TUNE is ignored. Recommendation is to do SAMPLE first -- equally cheap, and a
+quieter neighbourhood than MANUAL SLICE, which sits next to the slice-boundary
+sub-block and the type-4/6 direct STRT feed.

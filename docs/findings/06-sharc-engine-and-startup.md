@@ -941,3 +941,88 @@ Tool gap noted: `tools/sharc_trace.py` `_execute()` has no case for Type
 `8a_rel`/`8a_abs`, so symbolic runs stop at the first Type8a branch -- worth
 adding for future SHARC symbolic tracing (and the A2 work). **[O]**
 
+
+## The frame displacements are raw ColdFire bytes, unscaled **[V]**
+
+Settled, and it matters because every offset claim about the DSP's view of the
+frame depends on it. `FUN_001c2b24` forms its frame pointers with SHARC+ form
+**`19a`** (plain, not `19a_scaled`) -- a 48-bit `Ireg += imm32`. Decoding the
+`data` fields directly:
+
+| addr | form | I-reg | data | hex |
+|---|---|---|---|---|
+| `0x1c2cc1` | 19a | I4 | 1884 | `0x75c` |
+| `0x1c2ccb` | 19a | I1 | 148 | `0x94` |
+| `0x1c2cd7` | 19a | I4 | 1852 | `0x73c` |
+| `0x1c33da` | 19a | I4 | 84 | `0x54` |
+
+All four match the ColdFire byte literals in value *and* register.
+
+The proof does not even need the ColdFire side. The TX frame is `0x802` = 2050
+bytes (`tools/framelink.py` `TABLES`). Word-scaled (x4), `0x73c`/`0x75c` would be
+bytes 7408/7536 -- more than three times the whole frame. Short-word scaled (x2)
+gives 3704/3768, still past the end. Only the raw-byte reading fits.
+
+The contrast is instructive: the same function's prologue at `0x1c2b24` uses
+`19a_scaled` (`I7 += -48`, normal-word, = -192 bytes, a stack allocation). Two
+visually similar forms, two different units. The frame-pointer code consistently
+uses the unscaled one.
+
+## `FUN_001c2b24` makes 32 calls with an integer, not 16 with a pointer **[C][V]**
+
+Corrects the "Per-track processing structure" note above, which recorded
+`FUN_001c2b24` as calling `0x1c24e9` **once per track**, 16 times.
+
+The hardware `LCNTR` loop is set up at `0x1c2c94` (form `12a_imm`, count 16) with
+body `0x1c2c97`-`0x1c2cb2`. Each iteration makes **two unconditional calls** to
+`0x1c24e9`, passing a plain incrementing integer in `R12`: `R12=R13`, call,
+`R13++`, `R12=R13`, call. Across the loop the argument runs 0..31.
+
+So it is 32 calls, and the argument is a small integer -- not a track-relative
+frame pointer. Sixteen tracks x two is the obvious reading (stereo, or two voices
+per track) but that is inference, not shown. The consequence for the frame work
+is that `FUN_1c24e9`'s own `I6` addressing (word range 5-126, previously
+documented) is **not** shown to be the ColdFire frame; it is more likely that
+routine's own stack frame, with the real parameter access derived from `R12` by
+code not yet traced.
+
+## No read of the frame's per-track parameter block found yet **[D][O]**
+
+The ColdFire places the four parameter pages in a per-track `0x60`-byte block at
+frame byte `0xda + track*0x60` (see `04-coldfire-dsp-link.md`, "The mirror index
+to TX frame map"). Two independent searches over the whole main program block
+(blk93, file offsets `0x31c3c`-`0x4b470`, 104,500 bytes, decoded sequentially
+with resync-on-desync: 22,646 instructions, 99.3% confident, 8 desync points
+losing ~16 bytes) found **no read site**:
+
+- **Literal displacements.** Zero `19a`/`19a_scaled` instructions anywhere carry
+  `0xda`, `0xfa`, `0x116`, `0x130`, `0xde` or `0xe6`. The already-known scalar
+  fields do recur as expected (`0x54` x4, `0x94` x2, `0x73c`, `0x75c`), matching
+  the "8 other per-track field readers" already recorded -- so the method does
+  find real frame reads when they exist.
+- **Stride `0x60`.** The literal 96 appears 19 times in blk93 and every one is
+  explained: consecutive stack-slot indices in prologues (`I6+90,91,...,98`,
+  callee-saved spill areas) or unrelated small constants. No `I += 0x60` and no
+  M-register modifier load of `0x60`.
+- `0xec` (LEV) produced three in-region `19a` hits, all investigated and rejected
+  as value collisions: `0x1c5b57` sits in a run of consecutive-by-one offsets
+  (52,53,54,55,56 -- a byte/flags struct), and `0x1c6a90`/`0x1c6ebd` sit inside
+  the synthesis-table reader alongside sibling adds of 72, 212, 20 and 300 off
+  the same base, none of which match any frame field.
+
+**What this negative does not cover**, stated precisely per the repo rule:
+
+1. Pointer arithmetic synthesised by shift/add rather than a literal -- a
+   compiler can build `track*0x60` as `(t<<6)-(t<<5)` and never materialise 96.
+   No `0x60`-into-register load was found to seed such a multiply either, but
+   shift/add combinations were not exhaustively enumerated.
+2. De-interleaving done in the SPORT/DMA descriptor rather than in program code,
+   in which case no program literal would exist. The frame's receive-side DMA
+   descriptor construction was not inspected.
+3. The interior of `FUN_1c24e9` past its prologue. Only the caller side was
+   traced.
+
+Point 3 is the strongest remaining lead: `FUN_1c24e9` is the 396-instruction
+uniform per-track routine with no per-machine branch, it is called 32 times with
+an integer 0..31, and an index-to-address computation inside it is exactly the
+shape that point 1 says a literal search cannot see.
