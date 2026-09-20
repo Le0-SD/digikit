@@ -350,13 +350,22 @@ not the request). `FsRaw*` is dead (unadvertised, no dynamic_cast site).
 `OsUpgradeWrite 0x51` writes attacker-chosen bytes at an offset but into the
 flash region via the upgrade handshake, not live RAM.
 
-**Not yet ruled out [O]** (so "no memory access over MIDI" is not proven): the
-~70 less-common MidiRpc handlers were not all read; and the path resolver behind
-`DataReadOpen`/`FsSampleOpen` (`FUN_400e7e9c`/`FUN_400e7e5c`) was not audited for
-traversal into a memory-mapped node — if a crafted path can open something
-RAM-backed, the existing partial-read/write would become a memory primitive
-using advertised commands. Live RAM inspection via the plain protocol is not
-available; the UART console (§9) exposes only 11 named test-points.
+The **path resolver is also ruled out [V]**: the Data registry (`FUN_4002fc02`,
+`0x40966a4c`) holds exactly three handlers — Project/Soundbank/Kit — matching
+only `/projects`, `/soundbanks`, `/kits` (and `.metadata`) sub-paths; every leaf
+opens a real +Drive file. FsSample opens resolve through a real directory walk
+(`FUN_40158626`/`FUN_40159f50`), and `FsSampleReadFileV1`'s "offset" is a
+desync check against the server's own position, not a seek. No path maps to a
+fixed address or MMIO base.
+
+**Still open [O]** (so "no memory access over MIDI" is not fully proven): the
+~70 less-common MidiRpc handlers were not all read; a **backup import/export
+adapter** (`BackupFileImportAdapter` `0x400e77de` / `Export` `0x400e7832`) is
+the one place `MemoryStreamReader`/`MemoryStreamWriter` are constructed — which
+RPC (if any) reaches it is untraced and is the best remaining lead; and whether
+an FsSample path can `..`-traverse the +Drive is unconfirmed (a file-disclosure
+question, still real files, not RAM). Live RAM inspection via the plain protocol
+is not available; the UART console (§9) exposes only 11 named test-points.
 
 ### Live, self-driven (verified against hardware)
 
