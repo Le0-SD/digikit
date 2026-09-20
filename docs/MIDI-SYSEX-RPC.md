@@ -313,7 +313,36 @@ reply:    F0 00 20 3C 10 00 24 <dev16>  ......... <seq_hi> <seq_lo> <type> <payl
 | `0x53` | DataList | a path + object fields (projects/soundbanks/kits) |
 
 The shared enum (`0x14` path §4) also defines file open/read/write and
-`OsUpgrade*`; only the read-only subset above is confirmed on `0x10`.
+`OsUpgrade*`; only the read-only subset above is confirmed *sent* on `0x10`.
+
+### Device-advertised command set (from the Ping capability list) **[V]**
+
+The Ping reply carries the device's own list of supported RPC types (then the
+name string `"Digitakt II"`). Decoded, the DT2 1.16 device advertises **44**
+commands, and — confirming the dead-`FsRaw` trace — advertises **no** `FsRaw*`:
+
+- **Info/control:** Ping `0x01`, SoftwareVersion `0x02`, DeviceUID `0x03`,
+  Screenshot `0x04`, StorageSpace `0x05`, TempoRead `0x06`, TempoWrite `0x07`,
+  Query `0x09`.
+- **Sample filesystem (read + write, by path):** ReadDir `0x10`,
+  CreateDir `0x11`, DeleteDir `0x12`, EnumerateFiles `0x13`, ListRam `0x17`,
+  ClearRam `0x18`, Assign `0x19`, DeleteFile `0x20`, RenameFile `0x21`,
+  GetFileInfo Path/Hash/PathV2 `0x22/0x23/0x28`, MemoryCompaction `0x29`,
+  Open/Read/Close read `0x30/0x32/0x31` (+ ReadV2 `0x36`),
+  Open/Write/Close write `0x40/0x42/0x41` (+ WriteV2 `0x46`).
+- **Data object API (read + write of projects/sounds/kits):** DataList `0x53`,
+  Read{Open,Partial,Close} `0x54/0x55/0x56`,
+  Write{Open,Partial,Close} `0x57/0x58/0x59`, Move `0x5a`, Copy `0x5b`,
+  Clear `0x5c`, Swap `0x5d`, Rename `0x5e`.
+- **OS upgrade (flash channel):** Start `0x50`, Write `0x51`, End `0x52`.
+- **Not advertised:** all `FsRaw*` (unsandboxed arbitrary-path FS, `0x14/0x15/
+  0x16/0x24-0x27/0x33-0x35/0x37/0x38/0x43-0x45/0x47`), and `DataSetTags` `0x5f`.
+
+**Memory access:** there is no raw peek/poke-by-address command. The read/write
+primitives are the sample filesystem (bytes by path+offset+length), the Data
+object API (structured content by id, partial read/write), and OsUpgradeWrite
+(the flash region, gated by the upgrade handshake). Live RAM inspection is not
+available over MIDI — use the UART debug console (§9) or the emulator.
 
 ### Live, self-driven (verified against hardware)
 
