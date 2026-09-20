@@ -1185,10 +1185,16 @@ descriptors, a TX/RX pair, or a generic builder is **[O]**.
 
 ## Whole-program sweep: the frame is referenced in exactly one region **[V]**
 
-A decode over **every word** of the full extracted SHARC main program
+> **The scope claim in this section's first paragraph was wrong.** blk93 is not
+> the entire executable program -- it is roughly a third of the SHARC code. See
+> "The SHARC code is not one block" below. The sweep was re-run over every block
+> and the *result* held: still zero frame references outside blk93.
+
+A decode over **every word** of the extracted SHARC main program
 (`out/sharc/dt2-1.16-main.bin`, blk93, 104,500 bytes, ~52,000 instructions --
-confirmed to be the entire executable program, since loader blocks 94-103 are
-large zero-FILL blocks into a different address space) scanning for any literal
+wrongly believed at the time to be the entire executable program, on the basis
+that loader blocks 94-103 are zero-FILL; the blocks *before* 93 were never
+checked) scanning for any literal
 in the frame's whole mapped range `[0x2558dc, 0x2560de]`:
 
 **71 hits, every one between short-word `0x1c2517` and `0x1c33c1`** -- entirely
@@ -1279,3 +1285,88 @@ standing "ingredients located, control flow runtime-assembled" conclusion.
   `0x1cc79e`, `0x1cbf07`). Six calls and six sample machine types invites a
   dispatch reading, but the six execute **unconditionally in sequence** with no
   compare or branch between them -- a fixed six-stage pipeline, not a selector.
+
+## The SHARC code is not one block **[C][V]**
+
+Every SHARC search in this project ran over **blk93** alone, on the belief that
+it was the whole program. It is not. The boot stream has 104 blocks, 58 carrying
+payload, **319,352 bytes** in total; blk93 is 104,500 of them.
+
+Classifying blocks by decode quality needs care: per-instruction confidence is
+**not** a reliable code/data signal, because short encodings coincidentally match
+random data (blk40 is data yet scores 98.5%). The reliable signal is **desync
+frequency** -- real code resyncs once or twice per 8 KB, data every 25-45 bytes.
+
+| blk | target | bytes | segs/KB | verdict |
+|---|---|---|---|---|
+| **69** | `0x20000000` | **109,436** | 0.12 | **CODE -- larger than blk93** |
+| 93 | `0x283827cc` | 104,500 | 0.12 | CODE (the one everyone searched) |
+| 1 | `0x282403f0` | 10,312 | 0.25 | CODE |
+| 88 | `0x28380548` | 8,484 | 0.12 | CODE |
+| 56, 76, 78, 80, 91 | `0x282d7158`, `0x28380000`+ | 192-388 | 2.6-5.3 | small CODE fragments |
+| 17,19,21,27,35,37,39,40,99,101 | various | 236-41,576 | 15-105 | data and tables |
+
+**blk69 is not a driver overlay**, the inference that kept it unexamined. Two
+lines of evidence. It does carry peripheral-register-shaped literals -- clusters
+at `0x310c93xx`/`0x310ca3xx`/`0x31089xxx` on 4-byte register strides, plus float
+constants (`0x3f800000` = 1.0f, `0x3f000000` = 0.5f). But it also shares
+**byte-identical code** with the application blocks: 3,492 bytes with blk88
+including an **823-byte contiguous identical run** (blk69 `0x20011256` <->
+blk88 `0x28380608`), 10,221 bytes with blk93, 4,694 with blk1 including a
+336-byte run. A pure driver overlay does not contain 800 contiguous bytes
+identical to application code. It reads as a second, largely self-contained
+program image -- driver/IOP setup plus shared runtime library -- in its own
+`0x20000000` address space. Whether that is a second core's build or a
+separately linked overlay is **[O]**.
+
+Also corrected: blk93's payload starts at file offset **`0x31bcc`**, not
+`0x31c3c` as earlier recorded -- a 112-byte discrepancy. Cross-validated against
+`FUN_1c24e9`'s known address.
+
+## The frame sweep, re-run over every block: still one region **[V]**
+
+The literal sweep was re-run across all 58 payload-carrying blocks, scanning
+only genuine literal-carrying fields (`data`, `addr` on types 14a/14d/15a/16a/
+17a/18a/19a/19a_scaled/12a_imm) and explicitly excluding register selectors
+(`ureg`), opcode bits (`compute`, `cond`) and branch displacements (`reladdr`)
+-- an unfiltered pass produces false positives from all three.
+
+**Zero hits for `[0x2558dc, 0x2560de]` outside blk93.** All 76 real hits are the
+already-known ones in `FUN_1c24e9` and `FUN_1c2b24`. The machine-type cache read
+at `0x255970` appears exactly twice, both in blk93. The `*0x60` stride idiom
+exists nowhere else: literal `0x60` occurs in blk1, blk69 and blk88, but always
+inside runs of consecutive small immediates loaded into successive registers,
+never feeding a multiply.
+
+So the negative now covers the whole image, not a third of it. Since no literal
+anywhere points into the SRC page, the only remaining ways it could be read are
+the two runtime-value threads already recorded above -- the stack-loaded base at
+`0x1c33bc` and the unresolved `M5`/`M6`/`M7` in `FUN_1c24e9`. Those are no
+longer side notes; they are the only candidates left.
+
+## A confirmed writer to the transmit ring heads **[V][O]**
+
+The strongest render-loop lead this project has had. A region at byte addresses
+`0x2838eb06`-`0x2838f736` (function starting about `0x2838ec80`, i.e. `sw`
+`~0x1c7640`, immediately adjacent to the `FUN_1c71ec` time-stretch kernel)
+references **all six** ring addresses. Two of them are type `14a` with `d=1`:
+
+```
+0x2838f5cc   ureg=20, d=1, addr=0x264138
+0x2838f710   ureg=20, d=1, addr=0x264170
+```
+
+`d=1` is a memory **write** (ADI SHARC Programming Reference Table 10-1, acronym
+`D`: "0 = Memory read, 1 = Memory write";
+`out/refs/adsp-2136x_2137x_214xx_pgr_rev2.4/all.txt`). `0x264138` and `0x264170`
+are the two ring *head* addresses, `+0x2000` and `+0x1038` from the audio buffer
+bases -- so these are control-block writes (write pointer or flag) rather than
+audio data. The containing function was not traced. **[O]** whether it is the
+render loop, but it is the first confirmed non-marker write to the ring
+structures and it sits next to the one kernel we have tentatively identified.
+
+Machine dispatch remains unfound. A stride-2 little-endian scan of the six
+data/table blocks for values landing in the three code ranges produced three
+isolated hits and no run of three consecutive same-region words -- no jump
+table. The scan assumed absolute pointers, so a PC-relative table or one needing
+a base add would not appear.
