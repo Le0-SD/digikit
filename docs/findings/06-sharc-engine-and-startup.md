@@ -1558,3 +1558,162 @@ every one of these functions. One agent extended a scratchpad copy using
 and got a full symbolic walk of stage 5. **Folding float compute into the real
 tool would unblock every further read** -- stage 4's loop body is undecoded for
 exactly this reason.
+
+## A function inventory: 1228 functions, and we have read ten **[V]**
+
+`tools/sharcinv.py` classifies every function in the SHARC code from a feature
+vector -- float ALU / multiply / MAC counts, dual add/subtract, loop constructs
+split by literal vs register trip count, memory accesses by space, decoded
+IEEE-754 float immediates, and touches of the known named tables. It runs over
+the whole image in about 1.4 s and reuses `sharcldr.py` for blocks,
+`sharcflow.py` for calls and returns, `sharc_disasm.py` for decode and
+`sharcspec/compute_table.json` for opcode semantics (PRM Tables 18-2, 18-5,
+18-7, 18-9, 18-10). 19 synthetic tests in `tests/test_sharcinv.py`.
+
+```
+uv run python tools/sharcinv.py out/sections/dt2-1.16/section_7_BLOB.bin --top 25 --json OUT
+```
+
+**1228 functions** across the nine code blocks: **blk69 660**, **blk93 454**,
+blk1 82, blk88 30, and single functions in blk76/blk78. blk56/80/91 are code
+fragments too short to contain a return.
+
+Labels: unclassified 674, block copy 229, glue/trampoline 128, envelope or gain
+42, orchestrator 40, driver 37, DMA construction 34, IIR/recurrence 21,
+wavetable lookup 9, FFT-like 8, interpolating oscillator 5, parameter converter
+1. The 55% abstention rate is deliberate -- the heuristic only fires on shapes
+confirmed by a hand-read, and the vector is emitted for every function
+regardless, so a wrong label is visible rather than load-bearing.
+
+Validated against the ten functions hand-read this session: **8 of 10 boundaries
+exact, 9 of 10 labels in clean semantic agreement, 1 honest abstention
+(`0x1cd286`), 0 contradictions.** It independently rediscovered `0x26bb68` as
+stage 5's index table and labelled `0x1c75d8` "DMA/descriptor construction",
+matching the hand-read wording. The one boundary disagreement (`0x1c71ec`, 235
+vs 251 instructions) is explained: `0x1c7442`-`0x1c7462` is an independently
+callable shared tail with two other call sites, so splitting it is defensible.
+
+A method note the tool had to solve: a callee can sit physically inside another
+routine's return-delimited span with no return before it -- `0x1c24e9` is inside
+a larger span -- so every direct-call target landing strictly inside a span also
+opens a function there.
+
+### FFT code does exist, and it is not in this pipeline **[D]**
+
+**25 dual add/subtract instructions across 13 functions.** Not the clean zero
+that would have settled it. The densest:
+
+| function | instrs | dual add/sub | label |
+|---|---|---|---|
+| blk69 `0xb8063e` | 602 | 4 | FFT-like |
+| blk69 `0xb80c6c` | 52 | 4 | FFT-like |
+| blk93 `0x1c5615` | 385 | 3 | FFT-like |
+| blk93 `0x1c5ed4` | 128 | 3 | FFT-like |
+| blk93 `0x1cb647` | 168 | 3 | FFT-like |
+
+None is in the `FUN_1c71ec` chain, which stands as a wavetable engine. No
+bit-reversed addressing (`19a_bitrev`) anywhere in the image, which is a second
+FFT tell and argues these are something else -- possibly just the butterfly
+*instruction* used for a cheap paired sum/difference. `blk69@0xb8063e` is the
+one to read first. The classifier's dual-add/subtract rule has no
+ground-truth-confirmed example yet, so treat the list as a strong lead.
+
+### The reading shortlist
+
+Ranked by compute density and table touches. The two standouts are
+**`blk93@0x1c18a6`** (654 instructions, 162 float multiplies, 33 MACs, labelled
+interpolating oscillator) and **`blk93@0x1c642a`** (1458 instructions -- the
+largest in the image -- 33 callees, and it touches all three of the cosine
+tables and the 32-float table). Also notable: `blk88@0x1c0d68` has **15 callers**,
+unusually many, suggesting a core shared primitive.
+
+## The 12 "indirect calls" are returns **[C][V]**
+
+Recorded above as unresolved indirect calls that might reach the callerless
+engine functions. They are not calls. All twelve decode identically to the
+established return idiom -- `9b_abs`, `cond=31`, `j=1` (delayed; the PGR acronym
+table at `adsp-2136x_2137x_214xx_pgr_rev2.4/all.txt:19101` gives J as "Jump
+type, 0=Non delayed, 1=Delayed", **not** a call/jump selector -- Type9b has no
+such bit), `pmi=4` -> I12, `pmm=5` -> M13 -- and for every one the nearest I12
+write 6-17 short-words earlier is a memory load or register move restoring a
+return address, never a literal:
+
+```
+0x1c8530: I12 = DM(I3,M5)    0x1c9ae7: I12 = DM(I2+4)     0x1caf67: I12 = DM(I6,M7)
+0x1c86b0: I12 = DM(I2,M5)    0x1ca216: I12 = DM(I5+13)    0x1cb095: I12 = DM(I4,M5)
+0x1caf50: I12 = DM(I5+13)    0x1cb1b8: I12 = DM(I3+13)
+```
+
+So this was never a dispatch table, and the callerless engine functions remain
+callerless. Likewise **[C]** the `I13 = I5` at `sw 0x1c717c`, 224 bytes before
+`FUN_1c71ec`, is not its call setup: `0x1c71ad`-`0x1c71eb` is the *epilogue* of
+the preceding function -- a bank restore of ~28 registers followed by the same
+return idiom at `0x1c71e7`. `FUN_1c71ec` merely sits next in memory.
+
+## I13 is never loaded from a literal **[V][O]**
+
+All 58 payload blocks scanned, 65,595 confident instructions: **44 writers of
+I13**, in 7 blocks (blk93 17, blk69 11, blk88 7, blk40 4, blk1 2, blk37 2,
+blk27 1). **Not one is a `17a`/`17b` immediate.** Every write is a
+register-to-register move or a small-offset DM load off I3/I4/I5/I6/I7/I12/I15.
+
+That is itself the finding: I13's value is always runtime data, consistent with
+a genuine per-call context pointer, and static tracing bottoms out in a chain of
+register moves rather than a literal. Four of blk88's writes copy **MODE1** (ureg
+114) through I13 as scratch, so not every write is even a pointer.
+
+The task-creation sequence at `sw 0x1c7749`-`0x1c7793` was read: it calls
+`0xb8615d` with `R12=1000`, `R8=0x25f7c0`, `R4=0x1c7749` -- registering its own
+entry address. **It does not set I13**, and no I13 write occurs anywhere in that
+function's body. If the RTOS deposits I13 as part of a per-task register-bank
+restore before dispatch, that is the same kernel-side mechanism already recorded
+as statically unreachable for M5/M6/M7.
+
+Next step for this thread, if pursued: a scripted fixed-point **backward slice**
+over the I3/I4/I5/I6/I7/I12 chains feeding the 44 writes. By hand it explodes --
+I6 alone has 474 writes in blk93.
+
+## `tools/sharc_trace.py` now models float compute **[V]**
+
+The gap that forced seven functions to be hand-decoded this session. +544 lines:
+IEEE-754 single-precision helpers with the NaN "all ones" quirk and overflow
+detection; 13 float ALU branches (add, subtract, negate, abs, pass, compare,
+min, max, clip, float-convert, trunc, and the recips/rsqrts seeds); float
+multiply; both **MULALU** multifunction forms; **dual add/subtract** for fixed
+and float; and the five previously missing ShortCompute opcodes, which completes
+that opcode space. Dual-result ops required a new tuple path in
+`_apply_compute()` so both registers are written from one combined ASTATX
+update -- with tests proving the OR-ing of flags across the two halves, which a
+naive implementation gets wrong.
+
+Citations are in the code: PRM Tables 18-2/18-5/18-7/18-10/18-13/18-16/18-17 and
+the PGR functional definitions at 11-24 through 11-57.
+
+Tests: **472 -> 521 passed**, 5 skipped, 172 subtests, no regressions, ~40 new
+test methods.
+
+Effect, measured:
+
+| function | before | after |
+|---|---|---|
+| stage 4 loop `0x1cd33c` | 1 step, `unsupported cu=0x0 opcode=0x81` | **49 steps, clean return** -- the full 32-instruction body |
+| stage 5 `0x1cc79e` | 22 steps | 85-101 steps |
+| stage 3 `0x1cb3d8` | 14 steps | 43-51 steps |
+| stage 6 `0x1cbf07` | 28 steps | 57-78 steps |
+| stage 1 `0x1ccbd8` | 20 steps | 29-32 steps |
+| orchestrator `0x1c71ec` | 5 steps | 16 steps |
+
+Remaining stops are honest ones: `nonconcrete Type12a UREG loop count` and
+`return without followed call` are correct end-of-static-walk conditions. Two
+unrelated gaps remain -- `unsupported Type3a predicate`, and fixed-point
+`RN=min(RX,RY)` (`cu=0x0 opcode=0x61`).
+
+**This resolves stage 4's `[O]`**: its loop body contains a dual add/subtract
+and two MULALU forms. Not a contradiction of stage 3's zero-butterfly result --
+different functions.
+
+Not modelled, and reported rather than guessed: 40-bit extended float (the
+register file holds 32 bits per ureg), denormal flush-to-zero, the AI flag where
+the manual gives no formula, RECIPS/RSQRTS values (the seed comes from an
+undocumented ROM table, so they decode but return Unknown), and the 3-result MUL
+Dual Add/Subtract form, which still raises a clear error.

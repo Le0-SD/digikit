@@ -1199,10 +1199,21 @@ class TraceTest(unittest.TestCase):
     def test_compute_unknown_and_unsupported_do_not_mutate(self):
         s = self.run_one(T.State(1), insn("2c", {"compute[11:0]": 0x251}, 2))
         self.assertIsInstance(s.uregs[5], T.Unknown)
+        # ShortCompute's opcode field (PRM Table 18-2, p.423-425) is now
+        # fully enumerated across all 16 values (0-7/0xC-0xE fixed-point,
+        # 8/9/0xA/0xB/0xF float), so "unsupported short compute" can no
+        # longer be reached through a 2c instruction; exercise the same
+        # do-not-mutate-on-stop guarantee through a still-unsupported full
+        # compute instead (cu=11, reserved -- PRM Table 18-1 p.423).
         s = self.run_one(
-            T.State(1, {1: T.Const(2)}), insn("2c", {"compute[11:0]": 0xF12}, 2)
+            T.State(10, {1: T.Const(2)}),
+            insn(
+                "2a",
+                {"cond[4:0]": 0x1F, "compute[22:16]": 0x30, "compute[15:0]": 0},
+                6,
+            ),
         )
-        self.assertIn("unsupported short compute", s.stopped)
+        self.assertIn("unsupported full compute", s.stopped)
         self.assertEqual(s.uregs, {1: T.Const(2)})
 
     def test_type6a_shift_store_and_post_modify_use_old_values(self):
@@ -1747,11 +1758,17 @@ class TraceTest(unittest.TestCase):
             ("compare", True),
         )
         original = {1: T.Const(2)}
+        # cu=11 (reserved, "not used by SINGLEFN" -- PRM Table 18-1 p.423)
+        # is never matched by any compute branch, fixed-point or float,
+        # so it still reaches the final unsupported-opcode raise. (0xF/0x1234
+        # used to serve as this test's "definitely unsupported" filler value,
+        # but cu=00 opcode-top-nibble-0xF is now the documented float dual
+        # add/subtract encoding -- see test_dual_add_subtract_* below.)
         unsupported = self.run_one(
             T.State(10, dict(original)),
             insn(
                 "2a",
-                {"cond[4:0]": 0x1F, "compute[22:16]": 0xF, "compute[15:0]": 0x1234},
+                {"cond[4:0]": 0x1F, "compute[22:16]": 0x30, "compute[15:0]": 0},
                 6,
             ),
         )
@@ -3164,6 +3181,37 @@ def short_compute(opcode, rn, rx):
     return {"compute[11:0]": (opcode << 8) | (rn << 4) | rx}
 
 
+def dual_add_subtract_fields(float_form, rs, ra, rx, ry):
+    """PRM Table 18-10 (p.433) / Table 18-13 (p.434): opcode[19:16]=0111
+    (fixed) or 1111 (float); Rs[15:12], Ra[11:8], Rx[7:4], Ry[3:0]."""
+    top_nibble = 0xF if float_form else 0x7
+    field = (top_nibble << 16) | (rs << 12) | (ra << 8) | (rx << 4) | ry
+    return {"compute[22:16]": field >> 16, "compute[15:0]": field & 0xFFFF}
+
+
+def mulalu_fields(category, rm, ra, rxm, rym, rxa, rya):
+    """PRM Figure 18-1 mf bit (p.423) + Table 18-16/18-17 (p.434): mf=1,
+    opcode[21:16]=CATEGORY, then Rm[15:12]/Ra[11:8]/Rxm[7:6]/Rym[5:4]/
+    Rxa[3:2]/Rya[1:0] (Rxm/Rym/Rxa/Rya are each a 2-bit code within their
+    fixed quad: R/F 0-3, 4-7, 8-11, 12-15 respectively)."""
+    field = (
+        (1 << 22)
+        | (category << 16)
+        | (rm << 12)
+        | (ra << 8)
+        | (rxm << 6)
+        | (rym << 4)
+        | (rxa << 2)
+        | rya
+    )
+    return {"compute[22:16]": field >> 16, "compute[15:0]": field & 0xFFFF}
+
+
+def f32(value):
+    """The IEEE-754 single-precision bit pattern for a Python float."""
+    return struct.unpack("<I", struct.pack("<f", value))[0]
+
+
 def shiftimm_fields(opcode, data8, rn, rx, dataex=0):
     """A ShiftImm field dict for _shift_immediate."""
     field = (opcode << 16) | (data8 << 8) | (rn << 4) | rx
@@ -3689,6 +3737,388 @@ class PredicateTruthTableTest(unittest.TestCase):
                 state_false = T.State(0, {astatx_code: T.PartialConst(1 << bit_pos, 0)})
                 self.assertEqual(T._predicate(state_true, cond), not negate)
                 self.assertEqual(T._predicate(state_false, cond), negate)
+
+
+class FloatComputeTest(unittest.TestCase):
+    """Float ALU/multiplier/multifunction compute forms (PRM Table 18-5
+    p.425-427, Table 18-7 p.428-429, Table 18-10 p.433, and the
+    multi_function_selector p.423), cross-checked against the classic PGR's
+    per-instruction pages for exact flag formulas the SHARC+ PRM only marks
+    '*'/data-dependent."""
+
+    def astatx_after(self, fields, values, old_astatx):
+        rn, value, operation, update = T._compute(fields, False, values)
+        return rn, value, operation, update(old_astatx)
+
+    # -- Fn = Fx + Fy / Fx - Fy (PGR p.11-24/11-25) --------------------------
+
+    def test_float_add(self):
+        rn, value, op, astatx = self.astatx_after(
+            full_compute(0, 0x81, 0, 1, 2),
+            {1: T.Const(f32(1.5)), 2: T.Const(f32(2.5))},
+            T.Unknown("start"),
+        )
+        self.assertEqual(op, "float-add")
+        self.assertEqual(value, T.Const(f32(4.0)))
+        self.assertEqual(T._astatx_known_bit(astatx, T.AZ_BIT), False)
+        self.assertEqual(T._astatx_known_bit(astatx, T.AN_BIT), False)
+        self.assertEqual(T._astatx_known_bit(astatx, T.AV_BIT), False)
+        self.assertEqual(T._astatx_known_bit(astatx, T.AC_BIT), False)
+        self.assertEqual(T._astatx_known_bit(astatx, T.AF_BIT), True)
+        self.assertEqual(T._astatx_known_bit(astatx, T.AI_BIT), False)
+
+    def test_float_subtract_negative_result(self):
+        _, value, op, astatx = self.astatx_after(
+            full_compute(0, 0x82, 0, 1, 2),
+            {1: T.Const(f32(1.0)), 2: T.Const(f32(2.5))},
+            T.Unknown("start"),
+        )
+        self.assertEqual(op, "float-subtract")
+        self.assertEqual(value, T.Const(f32(-1.5)))
+        self.assertEqual(T._astatx_known_bit(astatx, T.AN_BIT), True)
+        self.assertEqual(T._astatx_known_bit(astatx, T.AZ_BIT), False)
+
+    def test_float_add_overflow_rounds_to_infinity_and_sets_av(self):
+        _, value, _, astatx = self.astatx_after(
+            full_compute(0, 0x81, 0, 1, 2),
+            {1: T.Const(f32(3.4e38)), 2: T.Const(f32(3.4e38))},
+            T.Unknown("start"),
+        )
+        self.assertEqual(value, T.Const(0x7F800000))  # +infinity
+        self.assertEqual(T._astatx_known_bit(astatx, T.AV_BIT), True)
+
+    def test_float_add_nan_input_returns_all_ones_and_sets_ai(self):
+        # PGR p.11-24: "A NAN input returns an all 1s result."
+        _, value, _, astatx = self.astatx_after(
+            full_compute(0, 0x81, 0, 1, 2),
+            {1: T.Const(f32(float("nan"))), 2: T.Const(f32(1.0))},
+            T.Unknown("start"),
+        )
+        self.assertEqual(value, T.Const(0xFFFFFFFF))
+        self.assertEqual(T._astatx_known_bit(astatx, T.AI_BIT), True)
+
+    # -- Fn = -Fx / Fn = abs Fx (PGR p.11-30/11-31) --------------------------
+
+    def test_float_negate(self):
+        _, value, op, astatx = self.astatx_after(
+            full_compute(0, 0xA2, 0, 1, 0),
+            {1: T.Const(f32(2.5))},
+            T.Unknown("start"),
+        )
+        self.assertEqual(op, "float-negate")
+        self.assertEqual(value, T.Const(f32(-2.5)))
+        self.assertEqual(T._astatx_known_bit(astatx, T.AN_BIT), True)
+
+    def test_float_abs_an_fixed_zero_as_from_input_sign(self):
+        _, value, op, astatx = self.astatx_after(
+            full_compute(0, 0xB0, 0, 1, 0),
+            {1: T.Const(f32(-3.5))},
+            T.Unknown("start"),
+        )
+        self.assertEqual(op, "float-abs")
+        self.assertEqual(value, T.Const(f32(3.5)))
+        self.assertEqual(T._astatx_known_bit(astatx, T.AN_BIT), False)
+        self.assertEqual(T._astatx_known_bit(astatx, T.AS_BIT), True)
+        _, _, _, astatx_pos = self.astatx_after(
+            full_compute(0, 0xB0, 0, 1, 0),
+            {1: T.Const(f32(3.5))},
+            T.Unknown("start"),
+        )
+        self.assertEqual(T._astatx_known_bit(astatx_pos, T.AS_BIT), False)
+
+    # -- Fn = pass Fx (PGR p.11-32) ------------------------------------------
+
+    def test_float_pass_roundtrips_value(self):
+        _, value, op, _ = self.astatx_after(
+            full_compute(0, 0xA1, 0, 1, 0),
+            {1: T.Const(f32(-7.25))},
+            T.Unknown("start"),
+        )
+        self.assertEqual(op, "float-pass")
+        self.assertEqual(value, T.Const(f32(-7.25)))
+
+    # -- Fn = min/max(Fx, Fy) (PGR p.11-46/11-47) ----------------------------
+
+    def test_float_min_max(self):
+        values = {1: T.Const(f32(3.0)), 2: T.Const(f32(-1.0))}
+        _, min_value, min_op, _ = self.astatx_after(
+            full_compute(0, 0xE1, 0, 1, 2), values, T.Unknown("start")
+        )
+        _, max_value, max_op, _ = self.astatx_after(
+            full_compute(0, 0xE2, 0, 1, 2), values, T.Unknown("start")
+        )
+        self.assertEqual((min_op, min_value), ("float-min", T.Const(f32(-1.0))))
+        self.assertEqual((max_op, max_value), ("float-max", T.Const(f32(3.0))))
+
+    # -- Fn = clip Fx by Fy (PGR p.11-48) ------------------------------------
+
+    def test_float_clip(self):
+        for fx, fy, expected, label in (
+            (1.0, 5.0, 1.0, "within range passes through"),
+            (7.0, 5.0, 5.0, "positive out-of-range clips to +|Fy|"),
+            (-7.0, 5.0, -5.0, "negative out-of-range clips to -|Fy|"),
+        ):
+            with self.subTest(label=label):
+                _, value, op, _ = self.astatx_after(
+                    full_compute(0, 0xE3, 0, 1, 2),
+                    {1: T.Const(f32(fx)), 2: T.Const(f32(fy))},
+                    T.Unknown("start"),
+                )
+                self.assertEqual(op, "float-clip")
+                self.assertEqual(value, T.Const(f32(expected)))
+
+    # -- comp(Fx, Fy) (PGR p.11-29) -------------------------------------------
+
+    def test_float_compare_equal_sets_az(self):
+        _, value, op, astatx = self.astatx_after(
+            full_compute(0, 0x8A, 0, 1, 2),
+            {1: T.Const(f32(2.0)), 2: T.Const(f32(2.0))},
+            T.Unknown("start"),
+        )
+        self.assertEqual(op, "float-compare")
+        self.assertEqual(T._astatx_known_bit(astatx, T.AZ_BIT), True)
+        self.assertEqual(T._astatx_known_bit(astatx, T.AF_BIT), True)
+
+    def test_float_compare_nan_is_unordered_and_sets_ai(self):
+        _, value, op, astatx = self.astatx_after(
+            full_compute(0, 0x8A, 0, 1, 2),
+            {1: T.Const(f32(float("nan"))), 2: T.Const(f32(2.0))},
+            T.Unknown("start"),
+        )
+        self.assertEqual(T._astatx_known_bit(astatx, T.AZ_BIT), False)
+        self.assertEqual(T._astatx_known_bit(astatx, T.AN_BIT), False)
+        self.assertEqual(T._astatx_known_bit(astatx, T.AI_BIT), True)
+
+    # -- Fn = float Rx / Rn = trunc Fx (PRM p.427, PGR p.11-37/11-39) -------
+
+    def test_float_convert_from_signed_int(self):
+        _, value, op, astatx = self.astatx_after(
+            full_compute(0, 0xCA, 0, 1, 0),
+            {1: T.Const(0xFFFFFFFD)},  # -3 two's complement
+            T.Unknown("start"),
+        )
+        self.assertEqual(op, "float-convert")
+        self.assertEqual(value, T.Const(f32(-3.0)))
+        self.assertEqual(T._astatx_known_bit(astatx, T.AI_BIT), False)
+
+    def test_trunc_toward_zero_both_signs(self):
+        for source, expected in ((3.7, 3), (-3.7, -3)):
+            with self.subTest(source=source):
+                _, value, op, _ = self.astatx_after(
+                    full_compute(0, 0xCD, 0, 1, 0),
+                    {1: T.Const(f32(source))},
+                    T.Unknown("start"),
+                )
+                self.assertEqual(op, "trunc")
+                self.assertEqual(value, T.Const(expected & 0xFFFFFFFF))
+
+    def test_trunc_overflow_saturates_when_alusat_set(self):
+        mode1 = T.Const(1 << T.ALUSAT_BIT)
+        result = T._float_to_fixed_trunc(T.Const(f32(1e10)), mode1, "trunc F1")
+        self.assertEqual(result, (T.Const(0x7FFFFFFF), True, False))
+
+    def test_trunc_overflow_unknown_when_alusat_clear(self):
+        mode1 = T.Const(0)
+        result = T._float_to_fixed_trunc(T.Const(f32(1e10)), mode1, "trunc F1")
+        value, overflow, invalid = result
+        self.assertIsInstance(value, T.Unknown)
+        self.assertEqual(overflow, True)
+
+    # -- Fn = recips/rsqrts Fx seeds (PRM p.427, PGR p.11-44/11-45) ---------
+
+    def test_recips_rsqrts_decode_without_a_numeric_seed(self):
+        for opcode, name in ((0xC4, "float-recips-seed"), (0xC5, "float-rsqrts-seed")):
+            with self.subTest(opcode=hex(opcode)):
+                _, value, op, astatx = self.astatx_after(
+                    full_compute(0, opcode, 0, 1, 0),
+                    {1: T.Const(f32(2.0))},
+                    T.Unknown("start"),
+                )
+                self.assertEqual(op, name)
+                self.assertIsInstance(value, T.Unknown)
+                self.assertIsNone(T._astatx_known_bit(astatx, T.AV_BIT))
+
+    # -- Fn = Fx * Fy (PRM Table 18-7 p.428-429, PGR p.11-57) ----------------
+
+    def test_float_multiply(self):
+        rn, value, op, astatx = self.astatx_after(
+            full_compute(1, 0x30, 0, 1, 2),
+            {1: T.Const(f32(1.5)), 2: T.Const(f32(2.0))},
+            T.Const(0xFFFFFFFF),
+        )
+        self.assertEqual(op, "float-multiply")
+        self.assertEqual(value, T.Const(f32(3.0)))
+        # Multiplier result flags (MN/MV/MU/MI) are unmodeled -> forgotten,
+        # same convention the fixed-point multiply already uses.
+        for bit in (T.MN_BIT, T.MV_BIT, T.MU_BIT, T.MI_BIT):
+            self.assertIsNone(T._astatx_known_bit(astatx, bit))
+
+    # -- Dual Add/Subtract: Ra = Rx+Ry, Rs = Rx-Ry (PRM Table 18-10 p.433) --
+
+    def test_dual_add_subtract_fixed_writes_both_registers(self):
+        fields = dual_add_subtract_fields(False, rs=3, ra=0, rx=1, ry=2)
+        rn, value, op, astatx = self.astatx_after(
+            fields, {1: T.Const(10), 2: T.Const(3)}, T.Unknown("start")
+        )
+        self.assertEqual(op, "dual-add-subtract")
+        self.assertEqual(rn, (0, 3))
+        self.assertEqual(value, (T.Const(13), T.Const(7)))
+
+    def test_dual_add_subtract_ors_an_from_the_subtract_half(self):
+        # Rx=3, Ry=10: Ra=Rx+Ry=13 (AN clear), Rs=Rx-Ry=-7 (AN set). A naive
+        # "flags follow Ra only" implementation would miss AN; PRM
+        # p.3-21/3-22 says both halves' ALU flags are ORed together.
+        fields = dual_add_subtract_fields(False, rs=3, ra=0, rx=1, ry=2)
+        _, value, _, astatx = self.astatx_after(
+            fields, {1: T.Const(3), 2: T.Const(10)}, T.Unknown("start")
+        )
+        self.assertEqual(value, (T.Const(13), T.Const(0xFFFFFFF9)))
+        self.assertEqual(T._astatx_known_bit(astatx, T.AN_BIT), True)
+
+    def test_dual_add_subtract_ors_az_from_the_add_half(self):
+        # Rx=5, Ry=-5: Ra=Rx+Ry=0 (AZ set), Rs=Rx-Ry=10 (AZ clear).
+        fields = dual_add_subtract_fields(False, rs=3, ra=0, rx=1, ry=2)
+        _, value, _, astatx = self.astatx_after(
+            fields, {1: T.Const(5), 2: T.Const(0xFFFFFFFB)}, T.Unknown("start")
+        )
+        self.assertEqual(value, (T.Const(0), T.Const(10)))
+        self.assertEqual(T._astatx_known_bit(astatx, T.AZ_BIT), True)
+
+    def test_dual_add_subtract_float_ors_an_from_the_subtract_half(self):
+        fields = dual_add_subtract_fields(True, rs=3, ra=0, rx=1, ry=2)
+        rn, value, op, astatx = self.astatx_after(
+            fields,
+            {1: T.Const(f32(1.0)), 2: T.Const(f32(3.0))},
+            T.Unknown("start"),
+        )
+        self.assertEqual(op, "float-dual-add-subtract")
+        self.assertEqual(rn, (0, 3))
+        self.assertEqual(value, (T.Const(f32(4.0)), T.Const(f32(-2.0))))
+        self.assertEqual(T._astatx_known_bit(astatx, T.AN_BIT), True)
+        self.assertEqual(T._astatx_known_bit(astatx, T.AF_BIT), True)
+
+    # -- MUL/ALU multifunction: Fm=Fxm*Fym, Fa=Fxa+-Fya (PGR Table 12-12) ---
+
+    def test_mulalu_add_variant_writes_multiply_and_add_results(self):
+        fields = mulalu_fields(0x18, rm=1, ra=2, rxm=0, rym=0, rxa=0, rya=0)
+        values = {
+            0: T.Const(f32(2.0)),  # Rxm (R0-3 quad, code 0)
+            4: T.Const(f32(3.0)),  # Rym (R4-7 quad, code 0)
+            8: T.Const(f32(5.0)),  # Rxa (R8-11 quad, code 0)
+            12: T.Const(f32(1.0)),  # Rya (R12-15 quad, code 0)
+        }
+        rn, value, op, astatx = T._compute(fields, False, values)
+        astatx = astatx(T.Unknown("start"))
+        self.assertEqual(op, "float-mulalu-add")
+        self.assertEqual(rn, (1, 2))
+        self.assertEqual(value, (T.Const(f32(6.0)), T.Const(f32(6.0))))
+        self.assertEqual(T._astatx_known_bit(astatx, T.AF_BIT), True)
+        self.assertIsNone(T._astatx_known_bit(astatx, T.MN_BIT))
+
+    def test_mulalu_subtract_variant(self):
+        fields = mulalu_fields(0x19, rm=1, ra=2, rxm=0, rym=0, rxa=0, rya=0)
+        values = {
+            0: T.Const(f32(2.0)),
+            4: T.Const(f32(3.0)),
+            8: T.Const(f32(5.0)),
+            12: T.Const(f32(1.0)),
+        }
+        rn, value, op, _ = T._compute(fields, False, values)
+        self.assertEqual(op, "float-mulalu-subtract")
+        self.assertEqual(value, (T.Const(f32(6.0)), T.Const(f32(4.0))))
+
+    def test_unsupported_multifunction_category_raises(self):
+        # category=0x04 (SSFR fixed-point RM=R3-0*R7-4, RA=RXA+RYA, PGR
+        # Table 12-12) is a real MUL/ALU multifunction row this tracer does
+        # not implement (only the float rows 0x18/0x19 are); it must still
+        # raise rather than being silently misparsed as something else.
+        fields = mulalu_fields(0x04, rm=1, ra=2, rxm=0, rym=0, rxa=0, rya=0)
+        with self.assertRaises(ValueError) as raised:
+            T._compute(fields, False, {})
+        self.assertIn("multifunction category", str(raised.exception))
+
+    # -- ShortCompute float rows (PRM Table 18-2 p.423-425, opcodes 8/9/A/B/F) -
+
+    def short_astatx_after(self, fields, values, old_astatx):
+        rn, value, operation, update = T._compute(fields, True, values)
+        return rn, value, operation, update(old_astatx)
+
+    def test_short_float_add_and_subtract(self):
+        # RN doubles as the Y input and result (Table 18-22): FN = FN +- FX.
+        values = {0: T.Const(f32(1.5)), 1: T.Const(f32(2.5))}
+        _, add_value, add_op, _ = self.short_astatx_after(
+            short_compute(0x8, 0, 1), values, T.Unknown("start")
+        )
+        _, sub_value, sub_op, _ = self.short_astatx_after(
+            short_compute(0x9, 0, 1), values, T.Unknown("start")
+        )
+        self.assertEqual((add_op, add_value), ("float-add", T.Const(f32(4.0))))
+        self.assertEqual((sub_op, sub_value), ("float-subtract", T.Const(f32(-1.0))))
+
+    def test_short_float_convert_reads_only_rx(self):
+        # FN = float RX: RN is the destination only, not a second input.
+        rn, value, op, _ = self.short_astatx_after(
+            short_compute(0xA, 0, 1),
+            {0: T.Const(0xDEAD), 1: T.Const(0xFFFFFFFD)},  # RX=-3
+            T.Unknown("start"),
+        )
+        self.assertEqual(op, "float-convert")
+        self.assertEqual(value, T.Const(f32(-3.0)))
+
+    def test_short_float_compare_is_status_only(self):
+        rn, value, op, astatx = self.short_astatx_after(
+            short_compute(0xB, 0, 1),
+            {0: T.Const(f32(2.0)), 1: T.Const(f32(2.0))},
+            T.Unknown("start"),
+        )
+        self.assertEqual(op, "float-compare")
+        self.assertEqual(T._astatx_known_bit(astatx, T.AZ_BIT), True)
+
+    def test_short_float_multiply(self):
+        rn, value, op, astatx = self.short_astatx_after(
+            short_compute(0xF, 0, 1),
+            {0: T.Const(f32(1.5)), 1: T.Const(f32(2.0))},
+            T.Const(0xFFFFFFFF),
+        )
+        self.assertEqual(op, "float-multiply")
+        self.assertEqual(value, T.Const(f32(3.0)))
+        self.assertIsNone(T._astatx_known_bit(astatx, T.MN_BIT))
+
+    def test_short_compute_opcode_space_is_fully_enumerated(self):
+        # All 16 ShortCompute opcodes (PRM Table 18-2) are now implemented;
+        # none should reach the "unsupported short compute" fallback.
+        for opcode in range(16):
+            with self.subTest(opcode=hex(opcode)):
+                try:
+                    T._compute(
+                        short_compute(opcode, 0, 1),
+                        True,
+                        {0: T.Const(1), 1: T.Const(2)},
+                    )
+                except ValueError as exc:
+                    self.fail("opcode %#x unexpectedly unsupported: %s" % (opcode, exc))
+
+    # -- End-to-end wiring through _execute/_apply_compute -------------------
+
+    def test_dual_result_reaches_both_uregs_via_execute(self):
+        fields = dual_add_subtract_fields(False, rs=3, ra=0, rx=1, ry=2)
+        state = T.State(1, {1: T.Const(10), 2: T.Const(3)})
+        record = insn(
+            "2a",
+            {
+                "cond[4:0]": 0x1F,
+                "compute[22:16]": fields["compute[22:16]"],
+                "compute[15:0]": fields["compute[15:0]"],
+            },
+            6,
+        )
+        executed = T._execute(state, record)[0]
+        self.assertEqual(executed.uregs[0], T.Const(13))
+        self.assertEqual(executed.uregs[3], T.Const(7))
+        self.assertEqual(
+            executed.trace[-1]["result_register"], ["R0", "R3"]
+        )
+        self.assertEqual(executed.trace[-1]["value"], [13, 7])
 
 
 class UregMovePartialConstTest(unittest.TestCase):
