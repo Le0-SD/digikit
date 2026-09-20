@@ -1110,6 +1110,11 @@ Mapping every `I2`-relative read through the scaling rules above:
 | `0x1c266d` `i4=modify(i2,0x56)` | 19a, x1 | `0x56` | 64 | FX |
 | `0x1c2630` `i3=modify(i2,0x5a)` | 19a, x1 | `0x5a` | 66 | FX |
 
+Note the loads are 32-bit while parameters are 16-bit, so each `dm(K,i2)` read
+covers a **pair** of adjacent parameters, which the code then unpacks -- visible
+at `0x1c26a5`, where `r11=dm(0x5,i2)` is followed by `lshift` by +-`0x10`. The
+mirror index given in the table above is the first of each pair.
+
 All sixteen feed a dense `leftz`/`float`/multiply/spill chain running to about
 `0x1c2870` -- an ordinary audio-parameter conversion pipeline, values turned into
 floats and scaled.
@@ -1177,3 +1182,100 @@ coincidence that supports the field reading. It is submitted via `0x1c834a` and
 `0x1c83ff`, neither decoded. Note this destination is `0x268240`, **not**
 `0x2558dc`, so it is not obviously the same buffer; whether there are two
 descriptors, a TX/RX pair, or a generic builder is **[O]**.
+
+## Whole-program sweep: the frame is referenced in exactly one region **[V]**
+
+A decode over **every word** of the full extracted SHARC main program
+(`out/sharc/dt2-1.16-main.bin`, blk93, 104,500 bytes, ~52,000 instructions --
+confirmed to be the entire executable program, since loader blocks 94-103 are
+large zero-FILL blocks into a different address space) scanning for any literal
+in the frame's whole mapped range `[0x2558dc, 0x2560de]`:
+
+**71 hits, every one between short-word `0x1c2517` and `0x1c33c1`** -- entirely
+inside `FUN_1c24e9` and its caller `FUN_1c2b24`. `tools/sharcflow.py` confirms no
+call targets anything between `0x1c2b24` and `0x1c33fe`, so `0x1c33c1` is still
+inside the caller's body, not a third function.
+
+The scanned range covers every per-track variant (`0x2559b6 + n*0x60` for all
+n = 0..15) and CFADE's own per-track absolute addresses (`0x2559ba + n*0x60`).
+**No other routine anywhere in the program loads a literal pointing into the
+frame.** So there is no statically literal-addressed reader of the SRC page, and
+**CFADE is not read anywhere reachable by this method [V]**.
+
+A constant-propagation pass over `FUN_1c2b24`'s own body (modelling `17a`/`17b`
+literal loads, `5a_move`/`5b_move` copies and `19a` modify) found only one
+resolvable frame pointer, `0x1c3112 i2=modify(i5,0x7fc)` -- frame byte `0x7fc`,
+the tail, nowhere near any track's SRC page.
+
+### Two threads that could still overturn this
+
+**1. A second `*0x60` pointer idiom with a stack-loaded base [O].** At
+`0x1c33bc`-`0x1c33d0` in `FUN_1c2b24`, after the per-track call loop:
+
+```
+0x1c33bc  r2=0x60                            (17b)
+0x1c33be  r12=dm(i6,-2)  ||  r2=r5*r2        (4a: parallel load + R2 := R5*R2)
+0x1c33c1  i4=0x255970                        (17a -- frame 0x94, machine type)
+0x1c33c4  r2=r2+r12     ||  i0=i10           (R2 := R2 + R12)
+0x1c33c7  r1=dm(i4+m0*2) (sw, pre-modify)
+0x1c33cc  i12=r2
+0x1c33d0  i4=i12                             ; I4 := R5*0x60 + DM[I6-2]
+```
+
+Structurally identical to `FUN_1c24e9`'s idiom, but the additive term is loaded
+from the stack rather than being an inline literal. **If `DM[I6-2]` holds
+`0x2559b6` or `0x2558dc`, this is an SRC-page reader.** It could not be resolved:
+`tools/sharc_trace.py` stops at `0x1c2c01` on an unhandled `14d source: prm`
+form, before reaching the loop.
+
+**2. `FUN_1c24e9`'s M-register-indexed reads [O].** M4-indexed reads occur
+against six different base registers at `0x1c252b`, `0x1c2546`, `0x1c2554`,
+`0x1c260a`, `0x1c260c`, `0x1c2613`, `0x1c261e`, `0x1c262b`, `0x1c26c5`,
+`0x1c26d4`, `0x1c26dd`, `0x1c26e2`, `0x1c27d2` -- more than previously recorded.
+M4 is **not** a constant track index throughout: it is reassigned at `0x1c27a9`
+(`f5=float r0, m4=r2`). M5, M6 and M7 are never assigned in either function and
+must be set further up the call chain. **If any of M5/M6/M7 holds a small value,
+`dm(m5,i2)` and friends read the SRC page** -- and one of them,
+`0x1c2594 r8=dm(m6,i2)`, is the flags word feeding the function's only branches.
+Resolving M5/M6/M7 is the cheapest remaining way to settle the SRC question.
+
+An incidental observation worth checking rather than trusting: `0x255970`
+(frame `0x94`) and `0x255990` (frame `0xb4`) are exactly `0x20` apart, which
+matches a 16-entry 2-byte packed array if `dm(m4,i4)(sw)` at `0x1c26d4` means
+`0x255970 + track*2`. That would make the machine type a separate packed 16-track
+array rather than a field inside the `0x60` block **[O]**.
+
+## What the render loop investigation adds **[D][O]**
+
+Pushed from the audio side rather than the parameter side; nothing overturns the
+standing "ingredients located, control flow runtime-assembled" conclusion.
+
+- **No voice structure or voice table found.** No interpolation loop with the
+  canonical two-adjacent-samples-plus-fractional-weight shape was located, though
+  an exhaustive whole-image scan for that shape was not run -- this is open, not
+  a negative.
+- **No slot-to-sample-pointer directory on the SHARC side.** A scan of all 26
+  distinct external-memory literals (`0x80000000`-`0x8fffffff`) in the program
+  found no N-entry address array. The best candidate for slot metadata remains
+  the ColdFire's FlexBus window `0x8C000000`-`0x8C00000F`, read only by
+  `FUN_400cf4a8`, `FUN_400cf534` and `FUN_400cf67c`.
+- **The transmit rings still have no literal writer.** The one confirmed store
+  (`0x1c7586`) writes only the marker word `0x7fffffff` through a runtime pointer
+  no static path resolves.
+- **`FUN_1c71ec` looks like a time-stretch kernel, not an LFO.** It loads two DAG
+  register pairs to the cosine table's ends (`0x8055c440` value 1.0, `0x8055c640`
+  value 0.0) and runs float multiply-accumulate chains against them
+  (`0x1c7258 f12=mrf+f0*f7, f8=f8+f12`) -- interpolated table lookup from a
+  fractional phase. Nearby: a buffer pair `0x8055c890`/`0x8055d890` exactly 4096
+  bytes (1024 floats) apart with a `1023` loop bound set immediately before at
+  `0x1cca02`, and one instruction at `0x1c72a0` with the shape of a radix-2
+  butterfly (sum and difference of a register pair in one slot). Together that
+  suggests an FFT/phase-vocoder or windowed-grain kernel -- plausibly STRETCH or
+  WERP. **[O]**; a single butterfly-shaped instruction is not proof of an FFT.
+  LFOs are separately established as ColdFire-side only.
+- **Rejected hypothesis, recorded so it is not retried:** `FUN_1c71ec`'s tail
+  contains six blocks of an identical push/`cjump`/pop pattern calling six
+  well-separated targets (`0x1ccbd8`, `0x1cdecb`, `0x1cb3d8`, `0x1cd286`,
+  `0x1cc79e`, `0x1cbf07`). Six calls and six sample machine types invites a
+  dispatch reading, but the six execute **unconditionally in sequence** with no
+  compare or branch between them -- a fixed six-stage pipeline, not a selector.
