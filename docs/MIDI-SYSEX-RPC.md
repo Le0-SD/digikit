@@ -264,46 +264,63 @@ round-trip against the real device on 2026-09-20 (`tools/devrpc.py`).
 
 ### Frame
 
+Request (host → device) and reply (device → host), confirmed against real
+hardware and against a MIDI Monitor capture of Elektron Transfer:
+
 ```
-F0 00 20 3C 10 00 <cmd> <seq_hi> <seq_lo> 09 <ctr> <type> <payload...> F7
+request:  F0 00 20 3C 10 00 00 <seq_hi> <seq_lo> 00 00 <type> <payload...> F7
+reply:    F0 00 20 3C 10 00 24 <dev16>  ......... <seq_hi> <seq_lo> <type> <payload...> F7
 ```
 
 - `10` device id, `00` separator — the descriptor at `0x4021e08c` requires the
   separator to be exactly `0x00` (`+0x00` devid `0x10`, `+0x01` sep `0x00`,
   `+0x04` jump-table ptr `0x402b40f8`, `+0x08/+0x0c` cmd range `0..0x7f`).
-- **`cmd` is ignored by the receiver.** All 128 entries of the jump table at
-  `0x402b40f8` point to the same handler `0x4011efb8`, so any `cmd` in
-  `0x00..0x7f` routes identically. (Observed values: `0x04`/`0x05`, and a second
-  channel `0x0c`/`0x0d` when a new connection opens.)
-- `seq_hi seq_lo` (`u16` BE) then `09 ctr` (a second `u16`-shaped field, high
-  byte constant `0x09` in all traffic, low byte a per-channel counter) then
-  `type` — these are the 5-byte `MidiRpcMessage` header parsed by `0x4013d864`,
-  aligned to frame bytes 7–11. `seq` is caller-chosen; the device assigns its
-  own `seq`/`ctr` in the reply, so **match replies on devid `0x10` + `type`,
-  not on any echo.**
-- **No checksum, no length, no 8-in-7 packing** — verified absent in the
-  receive chain (`0x4011efb8` → `0x40125184` → `0x4013d864`); the body is raw
-  bytes. Binary values that would exceed `0x7f` appear 7-bit encoded (the
-  `DeviceUID` `u32` comes back as 5 bytes); the general ≥`0x80` escape on this
-  path is not yet decoded. **[O]**
-- `type` reuses the shared enum: `0x01` Ping, `0x02` SoftwareVersion, `0x03`
-  DeviceUID, `0x05` StorageSpace, `0x09` Query, `0x53` DataList. There is **no
-  `0x80` response bit** on this path; request vs response is only by direction.
+- **`cmd` (byte 6):** requests use `0x00`, the device stamps `0x24` on replies.
+  All 128 jump-table entries at `0x402b40f8` point to one handler `0x4011efb8`,
+  so `cmd` does not gate dispatch — but use `0x00` for requests to match
+  Transfer.
+- `seq` (bytes 7–8, `u16` BE) is caller-chosen; **the reply echoes it** (at
+  reply bytes 9–10), so requests can be correlated to replies by `seq`.
+- **Bytes 9–10 of a request must be `00 00`.** Transfer always sends `00 00`
+  here regardless of payload, and the device reads the body up to `F7`. A
+  non-zero byte 9 (an early attempt sent `0x09`) makes the device parse a
+  bogus body and **never reply** — this was the one gotcha. It is not a length.
+- `type` (byte 11) reuses the shared enum (below). Payload follows `type`
+  directly, as raw bytes (no 8-in-7 packing, verified in the receive chain
+  `0x4011efb8` → `0x40125184` → `0x4013d864`; string args like a ReadDir path
+  are a raw NUL-terminated string). There is **no `0x80` response bit**;
+  direction is only by which endpoint carried the bytes.
+- Binary reply fields that would exceed `0x7f` are 7-bit encoded (the
+  `DeviceUID` comes back as 5 bytes); the exact scheme is not yet decoded. **[O]**
 
-### Live round-trip (verified against hardware)
+### Command vocabulary (from a Transfer capture)
 
-Sent `F0 00 20 3C 10 00 04 00 01 09 00 01 F7` (Ping). Replies observed:
+| type | command | request payload |
+|---|---|---|
+| `0x01` | Ping | none → reply: capability blob + name `"Digitakt II"` |
+| `0x02` | SoftwareVersion | none → reply: strings `"00"`,`"79"`,`"1.16"` |
+| `0x03` | DeviceUID | none → reply: 5-byte 7-bit value |
+| `0x05` | StorageSpace | 1 byte drive select (`0x01`) |
+| `0x09` | Query | a feature-key string, e.g. `sample_file.interleaved_stereo_support` |
+| `0x10` | ReadDir | a path, raw NUL-terminated (`"/\0"` for root) |
+| `0x53` | DataList | a path + object fields (projects/soundbanks/kits) |
 
-- Ping → capability blob + NUL-terminated name string `"Digitakt II"`.
-- SoftwareVersion → NUL-terminated strings `"00"`, `"79"`, `"1.16"`.
-- DeviceUID → 5-byte (7-bit-encoded) value.
-- StorageSpace, Query, DataList (dir listing with `"projects"`, `"soundbanks"`)
-  all respond.
+The shared enum (`0x14` path §4) also defines file open/read/write and
+`OsUpgrade*`; only the read-only subset above is confirmed on `0x10`.
 
-Tools: `tools/midisniff.py` (passive capture, transmits nothing) and
-`tools/devrpc.py` (read-only queries: `--ping --version --uid --storage
---query`). Nothing on the USB path can reach the irreversible bootstrap
-(DIN-only, §7).
+### Live, self-driven (verified against hardware)
+
+With Transfer **not** running, `tools/devrpc.py` sends
+`F0 00 20 3C 10 00 00 00 01 00 00 01 F7` (Ping) and the device replies. Also
+confirmed live: SoftwareVersion (`"1.16"`), DeviceUID, StorageSpace (with the
+`0x01` arg), and ReadDir `/` (returns the sample-pack directory listing). No
+session or handshake is needed — the earlier "only replies when Transfer is
+connected" was our malformed byte-9, not a session.
+
+Tools: `tools/midisniff.py` (passive capture, transmits nothing),
+`tools/devrpc.py` (read-only queries + `--readdir PATH`), `tools/mmon.py`
+(parse a MIDI Monitor `.mmon` capture; `--endpoints` shows direction).
+Nothing on the USB path can reach the irreversible bootstrap (DIN-only, §7).
 
 ### 0x10 key addresses
 
