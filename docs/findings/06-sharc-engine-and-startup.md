@@ -1370,3 +1370,112 @@ data/table blocks for values landing in the three code ranges produced three
 isolated hits and no run of three consecutive same-region words -- no jump
 table. The scan assumed absolute pointers, so a PC-relative table or one needing
 a base add would not appear.
+
+## M5, M6 and M7 are unresolvable statically **[V][O]**
+
+The last route by which `FUN_1c24e9` could read the SRC page. It closes as a
+strong negative rather than an answer.
+
+A full writer-form scan (`17a`/`17b` immediates, `5a_move`/`5b_move`, and
+`14a`/`15a`/`15b`/`3a`/`3b`/`3d` with `d=0`, which is the complete set of forms
+that can write a ureg; M0-M15 are ureg codes 32-47, re-derived from
+`tools/sharcspec/decode_table.json` rather than trusted) over all 58 payload
+blocks, 65,595 confident instructions:
+
+- **blk93: M4 written 93 times, M5/M6/M7 never.** That covers the block holding
+  the documented entry point `sw 0x1c1338` and the whole graph reachable from it
+  by resolvable calls. `FUN_1c2b24` has exactly one direct caller, `0x1c771e`,
+  also in blk93; scanning its body and a 600-instruction window before the call
+  finds no M5/M6/M7 writer either.
+- **In genuine code across the whole image: one writer site**, in blk69, and it
+  is a generic DAG-bank restore rather than a convention setter:
+
+```
+0x20010bce  m7 = pm(i11, +74)      ; 15a, d=0
+0x20010bd4  m6 = pm(i11, +73)
+0x20010bda  m5 = pm(i11, +72)
+0x20010be0  m4 = pm(i11, +71)
+```
+
+surrounded by identically shaped restores of B4-B7 (`addr` 87-90), L4-L7
+(107-110), then M0-M3, B0-B3, L0-L3. These are **loads, not immediates**, and the
+pointer chain is runtime state: `i0 = dm(0x2ca020)` -> `i3 = dm(i0,+0)` ->
+`i11 = i3`, where `0x2ca020` is referenced 76 times in blk69 across many register
+classes (including a *store* of M5 at `0x2000b8ec`) -- a reused spill slot, not a
+dedicated context pointer.
+
+Three reasons this cannot be pushed further statically: blk69 is in its own
+`0x20000000` space with **no established call edge** to or from blk93 (blk93 has
+12 unresolved indirect calls, so a link cannot be excluded either); the table
+base is runtime-computed; and SHARC+ DAG modifier registers have **no documented
+reset value** (checked `out/refs/sharc-plus-prm/all.txt`; only status, loop and
+interrupt registers have documented resets, and `tools/sharc_trace.py`'s
+`CORE_UREG_RESET_VALUES` deliberately excludes M/I/L/B).
+
+`M4`'s second value at `0x1c27a9` is likewise not a constant: `R2` there comes
+from `r2 = r2 or fext r2 by 0x0:0x10` then `r2 = lshift r2 by -0x8` two
+instructions earlier -- a bitfield extract, not the track index.
+
+**CFADE: not provably read; treat as no.** Nothing puts M6 at the value 2 that
+would be required, and even then the read would return the constant zero the
+ColdFire always writes. The three branches gated on that word are not shown to
+depend on it either way.
+
+## The ring function is descriptor construction, not the render loop **[C][V]**
+
+The `0x264138`/`0x264170` writes were a real lead and it resolves cleanly in the
+wrong direction.
+
+**[C]** The function's true bounds are `sw 0x1c75d8`-`0x1c7bd3`, not `0x1c7640`.
+The preceding return is at `0x1c75d3` (`9b_abs`, `JUMP(M14,I12)(DB)` with `15b` +
+`25c_rframe` delay slots) and the next at `0x1c7bcf`; `0x1c7640` is about 104
+short-words inside the body.
+
+It builds **all four** transmit descriptor rings in order -- A (`0x2620c8`, 256 B),
+B (`0x262100`, 256 B), C (`0x264138`, 2048 B, audio), D (`0x264170`, 2048 B,
+audio) -- each by the same setup, field-fill, submit pattern ending in a call to
+`0x1ca7e4` with the head address in R8.
+
+`ureg=20` is **I4** (read from `UREG_NAMES`' construction, not a comment). The two
+flagged writes are the **NEXT_DESC_ADDR chain pointers** of two-descriptor
+circular lists, sourced from compile-time immediates one instruction earlier:
+
+```
+0x1c7add  I4 = 0x262138
+0x1c7ae0  DM(0x26413c) = I4      ; descriptor1.START_ADDR
+0x1c7ae3  I4 = 0x264154
+0x1c7ae6  DM(0x264138) = I4      ; descriptor1.NEXT_DESC_ADDR
+0x1c7ae9  I4 = 0x262938
+0x1c7aec  DM(0x264158) = I4      ; descriptor2.START_ADDR
+0x1c7aef  I4 = 0x264138
+0x1c7af2  DM(0x264154) = I4      ; descriptor2.NEXT -> closes the loop
+0x1c7af6  R8 = 0x264138
+0x1c7af9  call 0x1ca7e4          ; submit
+```
+
+Ring D is byte-identical in shape at `+0x38`. The already-recorded CFG word
+`0x00100000` is written to `+0x08` in the same span.
+
+**The sample-filling code is not here.** The body has exactly one hardware loop
+(`0x1c7656`, `LCNTR=32`, four fixed-point instructions), no float
+multiply-accumulate, no loop with a 512/1024/2048 trip count, and no access to
+any audio buffer body -- only writes of their *addresses* into descriptor
+headers. About twenty small callees were not opened, so that is bounded.
+
+**[C]** The call to `FUN_1c2b24` is at **`0x1c771e`** (`25a_direct`, target
+`0x1c2b24`), not `0x1c768c` as previously recorded -- that address holds an
+unrelated `19a_scaled` push.
+
+Two oddities worth recording. The function has **no static caller** anywhere in
+blk93's 664 resolved calls, like `FUN_1c71ec` and `FUN_1c2b24` before it -- all
+three are reached only through runtime paths, and blk93 has 12 unresolved
+indirect calls (`sw 0x1c8530, 0x1c86b0, 0x1c8847, 0x1c9ae7, 0x1c9df7, 0x1c9f29,
+0x1c9f8b, 0x1ca216, 0x1caf50, 0x1caf67, 0x1cb095, 0x1cb1b8`). And a **conditional
+RTI** sits mid-body at `0x1c7641` (`Type11a`, `x=1`, `cond=NE`) while the
+function returns by the ordinary call convention at `0x1c7bcf` -- unusual for
+compiler-generated C, and circumstantial evidence this code is interrupt-adjacent
+**[O]**.
+
+No per-machine dispatch here: none of the 12 indirect-call sites falls inside the
+body, and every conditional branch tests a shifter or ALU flag around lock and
+retry sequences, never a small-integer compare or table load.
