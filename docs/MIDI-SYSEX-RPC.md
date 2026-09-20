@@ -338,11 +338,25 @@ commands, and — confirming the dead-`FsRaw` trace — advertises **no** `FsRaw
 - **Not advertised:** all `FsRaw*` (unsandboxed arbitrary-path FS, `0x14/0x15/
   0x16/0x24-0x27/0x33-0x35/0x37/0x38/0x43-0x45/0x47`), and `DataSetTags` `0x5f`.
 
-**Memory access:** there is no raw peek/poke-by-address command. The read/write
-primitives are the sample filesystem (bytes by path+offset+length), the Data
-object API (structured content by id, partial read/write), and OsUpgradeWrite
-(the flash region, gated by the upgrade handshake). Live RAM inspection is not
-available over MIDI — use the UART debug console (§9) or the emulator.
+**Memory access.** No raw peek/poke-by-address command was found in the handlers
+examined. Specifically **[V]** (a second agent byte-checked the handlers):
+`DataReadPartial 0x55` and `DataWritePartial 0x58` take `{job_id, seq[,
+checksum]}` u32s gated against a session opened earlier **by path string**
+(`DataReadOpen 0x54` / `DataWriteOpen 0x57`); the bytes move to/from a process
+buffer via a virtual read()/write() on the path-opened resource, never a
+wire-supplied address (handlers `0x40126f56`, `0x40126956`; open `0x40125c30`,
+`0x40126002`; the leaf `0x401d5e3a`'s memcpy is from a stack-local chunk struct,
+not the request). `FsRaw*` is dead (unadvertised, no dynamic_cast site).
+`OsUpgradeWrite 0x51` writes attacker-chosen bytes at an offset but into the
+flash region via the upgrade handshake, not live RAM.
+
+**Not yet ruled out [O]** (so "no memory access over MIDI" is not proven): the
+~70 less-common MidiRpc handlers were not all read; and the path resolver behind
+`DataReadOpen`/`FsSampleOpen` (`FUN_400e7e9c`/`FUN_400e7e5c`) was not audited for
+traversal into a memory-mapped node — if a crafted path can open something
+RAM-backed, the existing partial-read/write would become a memory primitive
+using advertised commands. Live RAM inspection via the plain protocol is not
+available; the UART console (§9) exposes only 11 named test-points.
 
 ### Live, self-driven (verified against hardware)
 
