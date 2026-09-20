@@ -5665,3 +5665,246 @@ compare (ALU opcode `0x8a`, PRM Table 18-5) that the tracer does not model,
 and on the boot probe above. A block of about 295 accesses in
 `0x3108b000..0x3108bc20` is not named in these notes and looks like a table
 being cleared. **[O]**
+
+## Live musical state in RAM: the pattern and kit working-set tables **[D][O]**
+
+Where the currently-loaded project lives while the device is running, found while
+looking for a way to capture live memory (the MIDI/UART memory-access surface
+audit is in `docs/MIDI-SYSEX-RPC.md`; this is the 1.16 image). Two parallel
+flat-POD tables, both 128 slots, indexed by the same pattern index (`< 0x80`
+guard, or clamp `0..0x7f`):
+
+- **Pattern table — `0x41776cb8`, stride `0x1db8c` (117,644 B), 128 slots.** The
+  sequencer/trig data for the one loaded project (128 patterns). The live
+  step-record path `FUN_4011fe12` writes per-track step data at
+  `entry + 0x481 + track*0x6a5` and `entry + 0x482 + track*0x6a5` (8 tracks,
+  per-track stride `0x6a5` ≈ header + 128 steps), so the trig region starts
+  around `+0x481`. The rest of the 117 KB entry (p-lock lanes, song/scale
+  metadata, sample assignment) is uncharacterised. `#PLAY_PATTERN` (UART console)
+  hard-codes slot 0 = `0x41776cb8`; pattern undo/copy (`FUN_40041d68`,
+  `FUN_400442f0`, caption `"Undo Pattern(s)"`) memcpy whole `0x1db8c` slots,
+  confirming the block is flat POD.
+- **Kit / sound-parameter table — `0x426532b8`, stride `0x5574` (21,876 B), 128
+  slots.** The kit bound to each pattern slot. Per-track machine/sound parameters
+  at `entry + 0x48 + track*0x450` (8 tracks, stride `0x450`), passed to the
+  sound-engine setup `FUN_400d67b2`/`FUN_400d6cbc` keyed off the current machine
+  type `DAT_402b49f4`. FX and kit-level data (the remainder) uncharacterised.
+
+`ProjectCache` (`0x400f49fc`, a `StaticSingleton` `Observer`) is the
+wrapper/observer, not the backing store; the buffers are reached through a
+pattern-manager object (`+0x43d0` = 128 Pattern wrappers of `0x954` B, vfunc
+`+0x28` returns the `0x41776cb8` slot pointer; `+0xf4` = the kit collection,
+vfunc `+0x30`/`+0x5c` return the `0x426532b8` slot). "Cache" here is the single
+in-RAM working copy of the loaded project, not a multi-project cache.
+
+A full live snapshot of the active pattern needs **both** tables at the same slot
+index. Both are flat POD, so an emulator can memcpy `[base + idx*stride, +stride)`
+from each. This is the practical route to inspect/capture live musical state:
+there is **no** MIDI or UART command that dumps these tables (`#MRAM_DUMP` stops
+24 bytes short, at `0x41776c9c`; see `docs/MIDI-SYSEX-RPC.md` §9). **[D][O]**
+
+Open: the flash→RAM project-load routine that populates these tables; the bulk of
+each entry's offset map; confirming the pattern-manager `param_1` resolves to the
+`Project` singleton. Single-agent reads (2026-09-20), not second-agent
+byte-checked. **[O]**
+
+## The SHARC machine-type consumer: received and cached, no dispatch found **[D][O]**
+
+Investigated 2026-09-20 to decide whether a new machine needs SHARC synthesis
+code (roadmap A5). Static reads only (loader-backed `decode_at`), so INFERENCE,
+not qualified. Three passes over `out/sections/dt2-1.16/section_7_BLOB.bin`
+(sha `0f514a12...`):
+
+- **Receive site (reproduces existing [V]).** The `0x94 + 2i` machine word is
+  read and change-tested at `FUN_001c2b24` (call `0x1c771e -> 0x1c2b24`; load
+  `0x1c33d2`, `R0 = DM(I0,M0)`; compare `0x1c33d7`; equal/not-equal paths join
+  at `0x1c33e9` and store a derived scalar to `DM(I5+0xc4)`). It is a
+  change-detector, not a dispatch, and carries **no bound/range check** against
+  the ColdFire's 0..6 machine range. `FUN_001c2b24`'s sole caller is `0x1c768c`
+  (Ghidra: 1 caller); `I5` there derives from an argument of `0x1c768c`'s own
+  caller, so the **absolute DM address of the per-track machine cache is not yet
+  pinned** (`DM(I5+0xc4)` is frame-relative). **[D][O]**
+- **No per-machine dispatch table in the scanned regions.** A whole-image scan
+  for runs of >=5 consecutive code-address words (main program `0x1c0000` region
+  and the L2 driver overlay `0xb8xxxx` -- everything the loader stream populates)
+  found only: the already-documented RPC command table (`DM 0x2577c4`, 11
+  entries), the documented PCG 4-pointer table (`DM 0x2d7158`), and ADI SSL
+  driver-service bookkeeping in the `0xb87xxx-0xb8dxxx` overlay (one run adjoins
+  the ASCII string `"ASSERT [ADI_GPIO_CALLBAC..."`). No table of distinct
+  synthesis-routine targets exists in that data. The 12 indirect calls
+  (`COMPUTED_CALL`, raw `0x3f083f2c`, the documented idiom) are spread across 12
+  unrelated functions and load their targets from locals, not an indexed table;
+  none was shown machine-keyed. **[D][O]**
+- **Not ruled out:** a compiler-emitted compare-chain dispatch (up to seven
+  `type==N` branches, no table -- invisible to a data-table scan); the readers of
+  the (unpinned) machine-cache DM address; and code in the external-memory blocks
+  the loader places at `0x8045a6c8` (DT2 1.16 loads only 3,316 bytes there).
+
+**The real gap: the SHARC audio synthesis engine is unlocated.** These passes,
+like the prior interface work, stayed in the control/bring-up code (frame
+receive, SPORT/PCG/DMA, boot). No per-frame/per-voice audio-render routine -- the
+code that reads the sample buffers and produces output for SPORT/SSI -- is named
+anywhere in FINDINGS. A whole-image scan did turn up float ramp/interpolation
+tables in external memory (near `0x8055c840`), a plausible synthesis-table lead.
+All DT2 machines are sample-based variants (SAMPLE/WERP/STRETCH/REPITCH/SLICED/
+MANUAL SLICE), which makes a single parameter-driven sample engine (machine type
+selecting a mode/params) at least as plausible as separate per-machine kernels.
+Deciding A5 -- and building a machine that makes a new sound -- needs that engine
+located first. **[O]**
+
+## The SHARC audio engine: ingredients located, control flow runtime-assembled **[D][O]**
+
+Three parallel static passes (2026-09-20, loader-backed `decode_at` on
+`section_7_BLOB.bin` sha `0f514a12...`) hunting the per-voice synthesis engine.
+They located the engine's *ingredients* but not its running control flow; the
+edges are runtime-established, so static analysis stalls here and the emulator
+(gated by A2) is the natural next tool. OBSERVATION unless marked INFERENCE.
+
+**Audio output buffers (OBSERVATION).** Four DMA descriptor rings, all built by
+the same `0x1ca58a` setup + `0x1ca7e4` submit, all with config `0x00100000`
+(decoded against ADSP-2156x HWR DMA_CFG: EN=0, WNR=0 = **transmit**, INT=1 =
+interrupt on X-count) -- so all four are output/transmit, none receive:
+- Ring A: head `0x2620c8`, buffers `0x261cc8`/`0x261dc8`, 256 B (setup/submit
+  `0x1c792f`/`0x1c7971`); Ring B: head `0x262100`, `0x261ec8`/`0x261fc8`, 256 B
+  (`0x1c79c4`/`0x1c79f8`).
+- Ring C: head `0x264138`, buffers `0x262138`/`0x262938`, 2048 B
+  (`0x1c7ab7`/`0x1c7af9`); Ring D: head `0x264170`, buffers `0x263138`/`0x263938`,
+  2048 B (`0x1c7b6a`/`0x1c7b9e`) -- a second full ping-pong ring, new to the crib
+  sheet. The two 2048 B rings are the audio-output ping-pong pairs (INFERENCE:
+  candidates for SPORT4A-TX / SPORT4B-TX). No literal reference to any ring
+  buffer exists outside descriptor construction -- the render loop writes them
+  through a runtime pointer, so the writer is not findable by literal scan.
+
+**Synthesis tables + reader code (OBSERVATION).** Only two real external float
+payloads load (rest of `0x80xxxxxx` is FILL/zero scratch), LE float32:
+- Block A `0x8045a6c8`, 829 floats: exponential curve, denormal -> exactly 1.0
+  (INFERENCE: pitch/note-to-freq or dB/exponential envelope map). Loaded at boot
+  by `0x1c1686` (`R8 = 0x8045a6c8`) then passed to a `25a_direct` call at
+  `0x1c168c -> 0x1c7442` with a second (internal) address -- the shape of a
+  boot-time copy/expand into internal memory.
+- Block B `0x8055c440`, 2324 floats. Table1 (idx 0-255, `0x8055c440..0x8055c83c`)
+  is a **folded quarter-wave cosine**, `value(k) ~= cos(min(k,256-k)*pi/256)` --
+  the classic single-table sin/cos generator. Read at `FUN_1c71ec` via two DAG
+  pointers 128 words apart: `I5 = 0x8055c440` (`0x1c724f`, value 1.0) and
+  `I5 = 0x8055c640` (`0x1c7247`/`0x1c7263`, the fold-point, value 0.0). Table2
+  (idx 256+) is another exponential-shaped curve with a discontinuity past the
+  DT2 payload boundary (DN2 1.11 loads far more here); read at `0x1c6c16`
+  (`I4 = 0x8055c874`) inside a large routine `~0x1c6156..0x1c71e7`.
+- **Boot-time relocation hypothesis (INFERENCE):** if the tables are copied into
+  internal SHARC memory at boot (`0x1c1686 -> 0x1c7442`), the real per-frame
+  synthesis reads *internal* addresses and would never appear in an `0x80xxxxxx`
+  literal scan -- which explains why no per-frame render loop was found touching
+  these addresses. Verifying this needs decoding `0x1c7442`.
+
+**Per-track processing structure (OBSERVATION).** `FUN_001c2b24` (the frame-RX
+consumer) contains a **uniform 16-track counted loop** (`0x1c2c97`, `TRACKS=16`)
+that calls **one** routine `0x1c24e9` per track with a `track*0x60` (96-byte)
+stride -- no per-machine branch at this level. `0x1c24e9` computes the per-track
+stride, reads `DM(0x255934)`, and hits an ALU `MAX` (opcode `0x62`, PRM Table
+18-5) the tracer does not model -- a clean decode boundary, a candidate
+clamp/limit step; decoding past it is the top per-track lead. Separately,
+`FUN_001c2b24` reads per-track TX-mirror fields `{0x54, 0x73c, 0x75c, 0x94}` off
+base `I4`/`I1` and caches a derived word to `DM(I5+0xc4)`. Unit note: `Type19a`'s
+16-bit offset is a byte literal (`0x94`, `0x73c`...), while `Type15b`'s 7-bit
+field is a normal-word index (`49*4 = 0xc4`) -- reconciles the `+0xc4` cache
+offset. A whole-image `Type19a` scan found 8 other routines
+(`~0x1c8900..0x1cd600`) forming pointers to the same `0x34`/`0x54` per-track
+fields; none is reached by a direct call, none decoded past pointer formation --
+the most promising concrete lead for a follow-up decode pass.
+
+**Why static stalls (INFERENCE).** The engine's control flow is runtime-built:
+its routines (`FUN_001c2b24`, `FUN_1c71ec`, the table readers, `0x1c24e9`) have
+no static direct callers -- they are entered via tasks/callbacks or the image's
+12 unresolved indirect calls (`COMPUTED_CALL`, raw `0x3f083f2c`); the tables are
+relocated to internal memory; the output buffers are addressed by runtime
+pointers; and per-track state (`I5`) is stack-relative off a runtime `I6`. So the
+ingredients are now mapped but assembling them into the running per-frame engine,
+and proving whether any per-machine branch hides deep in `0x1c24e9` or the render
+kernel, needs dynamic execution.
+
+**Bearing on "does a new machine need SHARC code" (INFERENCE, strengthened but
+not proven).** Every static level examined -- receive/cache, the 16-track loop,
+the synthesis tables (general DSP primitives, not per-machine), and the absence
+of any dispatch table -- points to a **uniform, parameter-driven engine** where
+the machine type is one per-track parameter, not a selector of separate kernels.
+If that holds, a new machine is largely a new parameter/mode configuration
+(ColdFire-side, where `tools/machinepatch.py` already clones a machine slot),
+not new DSP code. Unproven: the undecoded tail of `0x1c24e9`, the 8 field-reader
+candidates, and any branch inside the (runtime-only) render kernel could still
+hide per-machine behavior. **[D][O]**
+
+**Firming pass (2026-09-20): the per-track routine and field readers are uniform
+(OBSERVATION).** Two decode passes closed the leads the paragraph above left open:
+- `0x1c24e9` (called once per track from the 16-track loop) fully decoded, entry
+  to return: 396 instructions, a leaf (zero CALLs), no loop, no computed/indirect
+  jump but its own return. No `comp`/`compu` ALU op anywhere and no
+  AZ/AN/LT/LE/GT/GE-conditioned branch -- none of the shape a `switch(type)` or
+  `if(type==N)` chain needs. Its four conditional branches all test the
+  shifter-zero flag right after a bit-toggle/shift (per-track boolean flags), and
+  the FINDINGS "MAX at 0x1c2530" is now resolved as a two-sided clamp
+  `R1 = min(max(R1,R3),R4)` (`0x1c2530` MAX, `0x1c2532` MIN). The body is a float
+  convert/multiply/clamp/bit-test parameter pipeline addressed through I6 (word
+  indices 5-126); it never reads the machine-type cache word (index 49 / `0xc4`
+  absent). Full-body OBSERVATION, not inference: `0x1c24e9` is uniform, no
+  per-machine dispatch.
+- Of the 8 other per-track field (`0x34`/`0x54`) readers, six decode as uniform
+  (generic field marshalling; a shared compiler check idiom -- byte-identical
+  `2a_short` computes recurring across unrelated routines; and `0x1c9fd5`'s
+  count-bounded callback-registration loop). No compare-chain against 0..6 and no
+  indexed jump in any of them.
+- **Two residual sites, not closed:** `0x1cc225` (`comp(R9,R14)` -> EQ; `R9-1==0`
+  -> EQ) and the twins `0x1cc44e`/`0x1cc4cb` (`compu` vs literal `3` -> GE) have
+  genuine two-way compares, but their non-constant operand was not traced to the
+  machine-type field. A two-way test against a register or the literal 3 cannot
+  by itself select among 7 machines, so these are unlikely to be a machine
+  dispatch (more plausibly a stereo/mode/bounds flag); provenance untraced. **[O]**
+
+Net: the "uniform parameter-driven engine" reading is now OBSERVATION at the
+per-track processing routine and 6/8 field readers, with two two-way compares and
+the runtime-only render kernel the only residual uncertainty. A second-agent
+byte-check is still owed before any of this is marked **[V]**.
+
+Tool gap noted: `tools/sharc_trace.py` `_execute()` has no case for Type
+`8a_rel`/`8a_abs`, so symbolic runs stop at the first Type8a branch -- worth
+adding for future SHARC symbolic tracing (and the A2 work). **[O]**
+
+## Workstream D kickoff: the generic parameter -> mirror-index resolver **[D][O]**
+
+Tracing MANUAL SLICE's (type 6) LEV parameter end-to-end (2026-09-20). LEV was
+chosen over SLICE/LEN: it is the generic level control on the mainline
+parameter-apply flow with no `type==N`-gated branch. SLICE's SRC page shows
+`LEV`, `SLICE`, `LEN` and a dash (docs/FINDINGS.md:1146 [V]).
+
+Static path (sharpens the existing apply chain): a parameter edit goes
+`SoundParameterSet::vfunc_31` (generic apply) / `vfunc_13` (coarse/fine tune) ->
+`FUN_4002d7a4(value, track, index)`, which writes one short to the live `Sound`
+object at `src + 0x14 + index*2` (guard `-1 < index < 0x47`, so 0x47 shorts) and
+to the `0x8e`-stride mirror `0x80003362 + track*0x8e + index*2`. The `index` is
+resolved from the parameter code by **`FUN_400d9ed8`** (read from disasm, the
+decompiler's `*0xf` was misleading):
+
+```
+D0 = param_code
+D1b = (D0 < 0x113) ? 0xff : 0        ; clamp out-of-range to entry 0
+D0 = D0 & sign_extend(D1b)
+return *(long*)(0x4020f18c + 4 + D0*0x3c)   ; table @ 0x4020f18c, 0x3c stride, idx field at +4
+```
+
+So the parameter table at `0x4020f18c` (stride `0x3c`, 0x113 entries) carries each
+param's mirror `index` at offset +4 (a `-1` there means the param is not
+mirror-indexed). From the mirror the value propagates (dirty bit `FUN_400d9204`
+-> vector-191 `FUN_400d90ac` -> DSP table `0x8000dd40`; `FUN_400d92a2` ->
+`0x80005b50 + i*0x8e` at `+0x2a/0x3a/0x4a`) to **TX frame offset 0x74 =
+word at 0x80005b50 + 2*track** (offset 0x74 is doc-traced [D], not yet measured).
+
+**Open [O]:** LEV's specific `param_code` (and thus its table entry / `index`)
+was not pinned -- the bare string "LEV" at `0x40226eac` sits in mixer/track-level
+rodata (param_code `0x0a`, `+4` field = -1), likely NOT the SRC-page LEV, so it
+was not attributed. The `0x4020f18c` table's meaning by entry is otherwise
+undecoded. Save/project representation untraced.
+
+**Blocked [O]:** the emulator A/B that would measure LEV -> mirror -> TX-0x74
+cannot run -- every snapshot in `snapshots/` is 1.15C and no 1.16 `.syx` is in the
+tree, so a 1.16 snapshot ladder must be built first (`DT2_SYX` -> the 1.16 `.syx`,
+`emu.checkpoint make`). This is the standing gate for any 1.16 emulator
+measurement, not just this trace.
