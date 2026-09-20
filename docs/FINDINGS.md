@@ -5566,3 +5566,96 @@ added, `0x1c7599` (ALU `0x22`). **[O]**
   (p.1050), which would send the low 24 bits. The link must use another word
   length, packing or framing. The SPORT4A control value is still unknown.
   **[D][O]**
+
+## Type 7 corrections carry strict startup into the DAI setup **[C][V][O]**
+
+### Type7a keeps its modifier register **[C][V]**
+
+`tools/sharcspec/build_table.py` dropped frame bit 29 of Type7a. Its merge
+rule handles a bit the PRM prints and the classic grid leaves blank, and a bit
+both fix, but not a bit the classic grid declares a field and the PRM figure
+does not bracket. Bits 29-27 are the M register selector, the field Type7b's
+own PRM figure carries at the same place, and the PRM figure brackets only 28
+and 27 because it prints the same bits its Type7d ACONV figure names `breg`
+and `toby`. With the field restored, the tracer applies the modifier with the
+documented normal-word scaling. Before this, every Type 7a modify lost its
+index register: `MODIFY(I7, M7)` at `0xb8946a` made the stack pointer unknown,
+and the frame stayed unknown for the rest of the run. **[C][V]**
+
+### Type7d is ACONV, and the strict run executes it **[C][V]**
+
+PRM Table 14-22 gives Type 7d as the Type 7a word whose condition is 11111 and
+whose compute field is empty, so those bits select the form. They are now
+pinned into its mask and the form is confident. PRM Table 6-4 (p.6-16) gives
+`Id = B2W(Is)` as "Likely semantics Id <- Is >> 2", with `W2B` the mirror,
+hedged by "Exact semantics depend on address map" and an illegal-address trap
+for addresses with no equivalent. The handler applies the shift, marks the
+event as the manual's likely semantics, and stops rather than guess when the
+source is unknown.
+
+The firmware corroborates the pair. At `0x1c1460..0x1c1478` eight ACONV words
+convert I7, B7, I6 and B6 to word addresses and back again:
+
+```text
+0x1c1460  b2w  I7  0x26f7f0 -> 0x9be7c
+0x1c1463  b2w  B7  0x26f000 -> 0x9bc00
+0x1c1469  b2w  I6  0x26f7f0 -> 0x9be7c
+0x1c146c  b2w  B6  0x26f000 -> 0x9bc00
+0x1c146f  w2b  I7  0x9be7c  -> 0x26f7f0
+0x1c1472  w2b  B7  0x9bc00  -> 0x26f000
+0x1c1475  w2b  I6  0x9be7c  -> 0x26f7f0
+0x1c1478  w2b  B6  0x9bc00  -> 0x26f000
+```
+
+The round trip is exact, and the tracer's own return check agrees: every
+`JUMP (M14, I12)` return in the run matches the call it came from. **[V]**
+
+### Type14d and Type15a **[V][O]**
+
+Both gain handlers from their PRM pages. Type15a is already confident, with
+270 aligned instances in 1.16. Type14d stays uncertain, and a second agent
+checked why: its PRM figure is transcribed correctly, but nothing independent
+pins its seven fixed bits. There is no classic form to compare (its fixed bits
+differ from Type14a at bit 42), no cross-reference table like the one that
+settles Type7d, and the public Selache decoder models the form wrongly: it
+requires bit 40 to be 1, which is the direction field, so it misses every load,
+and it decodes the register as a universal register with a blanket width
+suffix where the PRM restricts it to the R register file and gives six width
+and extension rows. Promoting it on firmware counts alone would set a
+precedent for every SHARC+-only form, so it waits for a decision. **[O]**
+
+Instead, `tools/sharc_trace.py` takes `--allow-provisional-form NAME`, which
+executes a named unconfirmed form and records it on every state that used one.
+Any run that names a form is calibration, never qualification. **[V]**
+
+### Startup stops at a boot-source probe **[V][O]**
+
+The strict run is boot bring-up code. It configures the caches and MODE1,
+clears a block of DM, then probes two candidate boot sources in a loop: it
+reads `DM(0x80000010)`, which the image provides as 0, and then
+`DM(0x10000000)`, which no section of the firmware populates. The branch on
+that second read forks, and the path that falls through jumps through
+`JUMP (M13, I13)` at `0x1c144c` with I13 holding the value just read. The
+target therefore depends on what the hardware has at that address, not on
+anything in the image. This is a real boundary, not a tracer gap. **[V][O]**
+
+The qualifying strict run ends in two states: `0x1c144c` above, after 7,545
+instructions, and `0xb8cdaf`, an unconfirmed Type14d, after 7,566. **[V]**
+
+### The calibrated continuation reaches the DAI setup **[D][O]**
+
+With `14d` named as a provisional form, and therefore as calibration, the run
+reaches 11,597 instructions and executes the DAI and PADS setup at
+`0x1cb28e..0x1cb323`. It writes exactly the 34 DAI stores and the two PADS0
+stores already recorded from a direct entry, including `0x3def7b9c`,
+`0x3ef83fbe`, `0x0fdf9d38` and `0x000fffff`, and it also resolves the three
+stores that run left open: `0x310c91e4` takes 1, `0x310c91e8` and `0x310c91ec`
+take 0. Every one of the 3,730 returns checked in that run matches its call
+site. **[D]**
+
+The run still reaches no SPORT4A, DMA10 or PCG register, so the cadence and
+framing questions stay open. It ends on the state budget, on a floating-point
+compare (ALU opcode `0x8a`, PRM Table 18-5) that the tracer does not model,
+and on the boot probe above. A block of about 295 accesses in
+`0x3108b000..0x3108bc20` is not named in these notes and looks like a table
+being cleared. **[O]**

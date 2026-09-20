@@ -282,6 +282,10 @@ class State:
     mmrs: Dict[int, Value] = field(default_factory=dict)
     data_memory_tainted: bool = False
     special: Dict[str, Value] = field(default_factory=dict)
+    # Forms this run may execute although the table marks them unconfirmed,
+    # and the ones it actually did. A state that used any is calibration.
+    provisional_forms: tuple[str, ...] = ()
+    provisional_used: tuple[str, ...] = ()
 
 
 def _signed(value: int, bits: int) -> int:
@@ -392,6 +396,8 @@ def _copy(state: State) -> State:
         dict(state.mmrs),
         state.data_memory_tainted,
         dict(state.special),
+        state.provisional_forms,
+        state.provisional_used,
     )
 
 
@@ -813,6 +819,11 @@ def _shift_immediate(
                 lambda a, b: a ^ b,
             )
         return rn, value, "bit-toggle-immediate", _astatx_bit_field(position, value)
+    if opcode == 0x33:
+        # PRM Table 17-9: ShiftImm 110011 is btst RX by DATA8, the immediate
+        # form of the 11001100 register operation. It updates status only, so
+        # RN keeps its value.
+        return rn, source, "bit-test", _astatx_btst(source, Const(data8))
     raise ValueError("unsupported ShiftImm opcode %#x" % opcode)
 
 
@@ -1717,7 +1728,12 @@ def _start_counted_loop(state: State, insn: Instruction, count: int) -> List[Sta
 
 def _execute(state: State, insn: Instruction) -> List[State]:
     if insn.kind != "confident" or insn.length_bytes is None:
-        return [_stop(state, insn, "uncertain or undecodable form: " + insn.note)]
+        if insn.length_bytes is None or insn.type_name not in state.provisional_forms:
+            return [_stop(state, insn, "uncertain or undecodable form: " + insn.note)]
+        if insn.type_name not in state.provisional_used:
+            state.provisional_used = tuple(
+                sorted(set(state.provisional_used) | {insn.type_name})
+            )
     state.at_loaded_entry = False
     f, name = insn.fields, insn.type_name
     if name in ("21a", "21c"):
@@ -3302,6 +3318,7 @@ def trace(
     assume_nw32: bool = False,
     core_reset_state: bool = False,
     breakpoints: Sequence[int] = (),
+    provisional_forms: Sequence[str] = (),
 ) -> List[State]:
     uregs: Dict[int, Value] = (
         {
@@ -3346,6 +3363,7 @@ def trace(
         assume_nw32=assume_nw32,
         core_reset_state=core_reset_state,
         mmrs=mmrs,
+        provisional_forms=tuple(provisional_forms),
     )
     # FIFO of distinct live states. Paths that reconverge on an identical state
     # behave identically from there, so only one is kept.
@@ -3457,6 +3475,8 @@ def summarize(
         if state.stopped == "breakpoint":
             summary["registers"] = _register_snapshot(state)
             summary["watched_dm"] = _watched_dm_snapshot(state, watch_dm)
+        if state.provisional_used:
+            summary["provisional_forms_used"] = list(state.provisional_used)
         summaries.append(summary)
     return {"start_sw": start_sw, "states": summaries}
 
@@ -3514,6 +3534,14 @@ def main(argv=None) -> int:
         "--core-reset-state",
         action="store_true",
         help="seed only documented core-register and core-MMR reset values",
+    )
+    p.add_argument(
+        "--allow-provisional-form",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="execute this form (e.g. 14d) although the table marks it "
+        "unconfirmed; any run that uses one is calibration, not qualification",
     )
     output = p.add_mutually_exclusive_group()
     output.add_argument("--json", action="store_true")
@@ -3591,6 +3619,7 @@ def main(argv=None) -> int:
         assume_nw32=a.assume_32bit_normal_words,
         core_reset_state=a.core_reset_state,
         breakpoints=a.break_pc,
+        provisional_forms=tuple(a.allow_provisional_form),
     )
     result = [
         {
@@ -3603,6 +3632,11 @@ def main(argv=None) -> int:
             "trace": s.trace,
             "registers": _register_snapshot(s),
             "watched_dm": _watched_dm_snapshot(s, a.watch_dm),
+            **(
+                {"provisional_forms_used": list(s.provisional_used)}
+                if s.provisional_used
+                else {}
+            ),
         }
         for s in states
     ]

@@ -1548,6 +1548,45 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(state.uregs[1], T.Const(0xFFFFFFFB))
         self.assertEqual(state.trace[-1]["operation"], "negate")
 
+    def test_provisional_form_runs_only_when_named(self):
+        word = T.Instruction(
+            0, 6, "14d", {"ex": 1}, kind="uncertain", note="source: prm"
+        )
+        stopped = self.run_one(T.State(1), word)
+        self.assertEqual(
+            stopped.stopped, "uncertain or undecodable form: source: prm"
+        )
+        self.assertEqual(stopped.provisional_used, ())
+        allowed = self.run_one(T.State(1, provisional_forms=("14d",)), word)
+        self.assertEqual(allowed.provisional_used, ("14d",))
+        # The form now reaches its own handler, which stops for its own reason.
+        self.assertEqual(allowed.stopped, "unsupported Type14d exclusive access")
+
+    def test_type6b_bit_test_immediate_is_status_only(self):
+        astatx = T.UREG_CODES["ASTATX"]
+        for label, source_value, expected_sz in (
+            ("bit set", 0b1000, False),
+            ("bit clear", 0b0100, True),
+        ):
+            with self.subTest(label=label):
+                fields = {
+                    "cond[4:0]": 31,
+                    "dataex[3:0]": 0,
+                    "shiftimm[22:16]": 0x33,
+                    "shiftimm[15:0]": (3 << 8) | (1 << 4) | 2,
+                }
+                state = self.run_one(
+                    T.State(
+                        1, {2: T.Const(source_value), astatx: T.Const(0)}
+                    ),
+                    insn("6b_shiftimm", fields, 6),
+                )
+                self.assertNotIn(1, state.uregs)
+                self.assertTrue(state.trace[-1]["status_only"])
+                self.assertEqual(
+                    state.uregs[astatx], T.Const((1 << 12) if expected_sz else 0)
+                )
+
     def test_full_compute_register_to_mr_move_is_recorded(self):
         state = self.run_one(
             T.State(1, {T.UREG_CODES["R2"]: T.Const(0x1234)}),
