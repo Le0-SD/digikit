@@ -163,6 +163,12 @@ rename/get-info/hash variants. ✝ = `FsRaw*`, see §6.)
 - **SoftwareVersion (`0x02`)** — response `0x401e06ac`: two NUL-terminated
   strings (version, build).
 - **DeviceUID (`0x03`)** — response `0x401dce08`: one big-endian `u32`.
+- **Screenshot (`0x04`)** — the one command that returns live RAM. The handler
+  (`0x401243c6` Screenshot branch → async closure `0x40123728`) `memcpy`s a
+  fixed **1024 bytes** of the current OLED shadow framebuffer (`DAT_402b605c`,
+  128×64×1bpp, double-buffered with `DAT_402b6058`) into the reply; no request
+  field steers the address or length. Response ctor `0x401ddc40`. A read-only,
+  no-mod live capture of the display, drivable now over the `0x10` path. **[D]**
 - **StorageSpace (`0x05`)**, **Query (`0x09`)** — read-only, layouts not
   decoded.
 
@@ -247,6 +253,31 @@ status, `0xEC07000C` data). Commands include `#HELLO`, `#READ`, `#WRITE`,
   buffer, not an address (index bounds unchecked here — possible OOB, **[O]**).
 - `#ENTER_TEST_MODE` sets byte `0x4031be48`, stops audio, arms interrupt
   vector 191, writes `0xFC04C07F`. `FUN_400ceeb4` enter / `FUN_4002dc74` exit.
+- **`#MRAM_DUMP` is a fixed 13.81 MiB dump of a flash-mirrored factory blob, not
+  a RAM peek.** `FUN_400cae8c` → `FUN_400cabb4(0x4099d588, 0xdd9714)` raw-copies
+  `[0x4099d588, 0x41776c9c)` to the console. That region is a checksummed,
+  flash-mirrored persistence store (magic `0x434f4b69` "COKi") for serial
+  number, UI calibration, reset/test flags and MMC health — its own allocator
+  arena, gated by `MRAM_HEADER_BROKEN`/`MRAM_STATE_NOT_WRITTEN`, written to/from
+  MMC by `FUN_400f0628`/`FUN_400f04e2`/`FUN_400f044a`. Base and length are
+  hard-coded; nothing in the request steers them. It does **not** hold the live
+  sequencer/kit/sound working state — that lives just past the dump's end
+  (`0x41776cb8`; see `docs/FINDINGS.md`, "Live musical state in RAM"). **[D][C]**
+  (Earlier wording implied a battery-backed MRAM chip; the target is a
+  DRAM/flash-mirror scratch region.)
+- **`#MMCDUMP <addr> <len>` is a raw eMMC sector dump, not a RAM read** (not
+  previously recorded). It decodes a caller-supplied address+length (no bounds
+  check at the parse site) and streams `[addr, addr+len)` over UART in ≤0x8000
+  chunks via `FUN_4012deda`. That leaf is an ESDHC/eDMA card read
+  (`_ESDHC_XFERTYP = 0x123a0036`, block index scaled by block size and bounded
+  by card block count `_DAT_44e3fea0`, /512 stepping through a fixed DMA landing
+  buffer `0x4fe69300` then memcpy to the caller buffer), so it reads +Drive
+  storage at the block level — raw, below the FS layer — not main RAM. **[D]**
+- **`#DUMP_AUDIO` / `#RECEIVE_AUDIO` cannot over-read.** The index is
+  unconditionally clamped to `0..4` (`FUN_400cee80` / `FUN_400cee0e`), selecting
+  one of five fixed 2 MiB test buffers at `0x42949548 + n*0x200000`, valid only
+  after `#ENTER_TEST_MODE` sets the base `_DAT_47db45ac`. The earlier "possible
+  OOB" concern is not borne out. **[D][C]**
 - No evidence the console is reachable over any transport other than UART8, and
   no repo evidence UART8 is physically exposed or bridged to USB. **[O]**
 
@@ -372,19 +403,24 @@ over named content objects, streaming a small `BackupFileHeader` (31/12 bytes)
 through the embedded streams; the client picks *which named object* and read vs
 write, not an address.
 
-**Still open [O]** (so "no memory access over MIDI" is not fully proven): the
-compiled `RouteResolver` route table (per-handler lambdas) was not fully
-enumerated, so a route whose stream-type-1 ("Memory") callback hands back a
-wider region than a single bounded object is ~5% not-excluded; the ~70
-less-common MidiRpc handlers were not all read; and whether an FsSample path can
-`..`-traverse the +Drive is unconfirmed (file disclosure, still real files, not
-RAM). Live RAM inspection via the plain protocol is not available; the UART
-console (§9) exposes only 11 named test-points.
+**Two of these gaps are now closed [D]** (single-agent re-reads 2026-09-20, not
+yet second-agent byte-checked): (1) the `RouteResolver` registers exactly three
+routes — Project/Soundbank/Kit — and all **9** `MemoryStream` construction sites
+take a firmware-owned base (an in-object header buffer of constant length 31/12,
+or a fresh heap allocation); the "Memory" naming is the internal `MemoryStream`
+*class*, not a selectable route, and no wire value reaches a base. (2) The
+type-byte factory switch (`0x4013aaf4`) was enumerated in full — no type above
+`0x5f`, and no class name suggesting peek/poke/reg/debug/mem — so there is no
+hidden "~70 handler" class outside the audited families. **Still open [O]:**
+whether an FsSample path can `..`-traverse the +Drive (file disclosure, still
+real files, not RAM). Live RAM inspection via the plain protocol is not
+available; the UART console (§9) exposes only bounded dumps (a fixed calibration
+blob, five test buffers, and eMMC sectors).
 
-**Net across six audited surfaces** (Data partial R/W, Data/FsSample path
-resolvers, `FsRaw`, `DigisharcSysexRpc`, the UART console, and
-`MemoryStream`/backup): no arbitrary, wire-controlled memory read/write is
-reachable over MidiRpc. If a live report says otherwise it likely means content
+**Net across eight audited surfaces** (Data partial R/W, Data/FsSample path
+resolvers, `FsRaw`, `DigisharcSysexRpc`, the UART console, `MemoryStream`/backup,
+the `RouteResolver` route table, and the full MidiRpc type factory): no
+arbitrary, wire-controlled memory read/write is reachable over MidiRpc. If a live report says otherwise it likely means content
 (a modified project/sound reloaded live), the `OsUpgradeWrite` flash path, or a
 non-MIDI transport — pending the specifics.
 
