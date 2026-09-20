@@ -157,7 +157,7 @@ Use the PGR value, not the PRM figure digits, for these:
 | Type 5b move, 9b | VISA marker drawn `0000000` | PGR `0111111` |
 | Type 11c, 17b | figures carry template digits | PGR |
 | Type 17a | `i[2:0]` label over a 7-bit field | `ureg[6:0]` |
-| Type 19a | figure draws bits 41–40 as a field `sc[1:0]` | PGR fixes them `10`; §3.9 |
+| Type 19a | figure draws bits 41–40 as a field `sc[1:0]` | PGR fixes ordinary form `10`; SHARC+ scaled `01` is documented, §3.9 |
 | Type 19a bitrev | bits 41–39 disagree | PGR `101`; bit 39 is the bit-reverse flag, §3.9 |
 | Type 25c rframe | figure is a copy of 25a rframe | PGR 16-bit form |
 
@@ -172,7 +172,8 @@ Resolved on 2026-09-16 by a third source: the ADSP-2106x, ADSP-21065L and
 ADSP-21160 manuals (`docs/sharc/SOURCES.md`). Type 7a's fixed bits are the eight
 of `000 00100`, with bit 39 the `G` field, "Selects DAG1 or DAG2" — so the PRM's
 ninth digit is a shaded field bit, and the table, which already declines to fix
-it, is right. Type 19a's claimed new field `sc[1:0]` goes the same way; see §3.9.
+it, is right. Type 19a differs: the classic ordinary form uses `sc=10`, while
+the SHARC+ enhanced scaled form uses the documented `sc=01`; see §3.9.
 Type 7d keeps bit 39 fixed at 1 and stays unconfirmed, since the classic manuals
 have no Type 7d to check it against.
 
@@ -201,24 +202,60 @@ here; the firmware is the arbiter.
   47..16. In memory, code is 16-bit little-endian words, most-significant word
   first for multi-word instructions.
 
-### 3.6 The undocumented 16-bit instruction (`Type23p_undoc16`)
+### 3.6 `0x023e` begins a 48-bit immediate-shift form (corrected)
 
-- ADI's public PRM **skips Type 23 and Type 24** entirely.
-- The firmware contains a heavily-used **16-bit** instruction the manual never
-  documents. The word **`0x023e` occurs 329× in DT2** and is 49% of all unknowns.
-- It belongs to a family sharing **top-7 bits `0000001`** with a flat 9-bit
-  operand field (62% of all unknowns fall in this family). Behavioural signature:
-  followed ~50% by Type21a (nop) and ~23% by Type5a-swap — an ~11–34× enrichment
-  over base rates. Sits at real instruction boundaries (both address parities).
-- Added provisionally as **`Type23p_undoc16`**: 16-bit, mask `0xfe0000000000`,
-  value `0x020000000000` (top-7 `0000001`), 9-bit operand, `unconfirmed`.
-  Prefix width tuned against the firmware: top-6 gains nothing, top-8 drops real
-  members (e.g. `0x0300`); **top-7 is the sweet spot**.
-- Name and semantics are **unknown**. Sources to identify it: infer from
-  behaviour, or ADI errata.
-- One open boundary case: the Ghidra prior-art module sizes `0x0300` as 48-bit
-  where our provisional form makes it 16-bit. Branch alignment did not regress, so
-  the 16-bit call holds for now, but the exact extent of the family is not final.
+- The old `Type23p_undoc16` hypothesis was a width error. A public independent
+  SHARC+ VISA decoder selects 48 bits for first byte `0x02`; the matching mask
+  and field positions are the PRM Type6a no-memory ShiftImm layout with the
+  alternate VISA prefix `0x02`.
+- Loader memory stores each 16-bit parcel little-endian while multi-parcel
+  instructions keep the most-significant parcel first. Thus physical bytes
+  `3e 02 10 38 22 80` are architectural word `0x023e38108022`, not a short
+  `0x023e` followed by a Type1a instruction.
+- The low 23 bits use the public ShiftImm opcode table directly. Selected-path
+  examples decode as `BSET`, `BCLR`, `FEXT`, and `LSHIFT`; no new operation
+  semantics are inferred from firmware.
+- `Type23p_undoc16` has been removed. The old frequency and successor statistics
+  mixed the trailing parcels of these 48-bit instructions into false successor
+  instructions and must not be used as instruction-boundary evidence.
+- Public decoder source and immutable revision are recorded in
+  `docs/sharc/SOURCES.md`; exact firmware words and corrected runtime effects are
+  recorded in `docs/FINDINGS.md`.
+
+### 3.6a Combined-PX PM reads need 48-bit alias and split-register semantics
+
+- `PX` is a combined 64-bit bus-exchange register; `PX1` and `PX2` are its
+  32-bit halves. The public SHARC+ reference states that a non-`LW` transfer
+  between combined `PX` and internal memory moves 48 bits in PX bits 63--16.
+  Therefore a PM load into `PX` cannot be represented as an ordinary 32-bit
+  UREG load.
+- Loader bytes are addressed through the system/short-word view. For ADSP-2156x
+  L1 block 3, normal-word `0xe0000` and short-word `0x1c0000` alias the same
+  physical base. A 48-bit combined-PX word consumes three little-endian
+  16-bit parcels (six bytes) per normal-word offset.
+- The tracer keeps the combined `PX` value unknown because its `Const` domain is
+  intentionally 32-bit, but writes concrete `PX2=(parcel0<<16)|parcel1` and
+  `PX1=parcel2<<16`. A missing backing read invalidates all three registers;
+  retaining the prior halves would create a false value.
+- This support is deliberately bounded to loader-backed block-3 combined-PX
+  normal-word reads over either data bus. It does not claim generic PM
+  byte/short aliases, memory writes, arbitrary blocks, or a value for
+  unrepresented memory such as normal-word address zero.
+
+### 3.6b Sub-word memory modifiers use scaled address arithmetic
+
+- The PRM's DAG chapter states that byte-space `SW`, `NW`, and `LW` accesses
+  scale modify, load, and store address arithmetic by the access size. The
+  Type3d example makes the register case explicit: `DM(I0,M4) (SWSE)` adds
+  `2*M4`, not `M4`, to the byte address.
+- `sharc_trace.py` now applies that rule to Type3b register modifiers and
+  Type4b immediate modifiers: byte access scale 1, short-word scale 2, and
+  long-word scale 8. Normal-word scaling remains opt-in through the existing
+  32-bit-normal-word address model because not every internal-memory address
+  in the tracer is a byte-space address.
+- This distinction is material at the ColdFire-frame reader: the load at
+  `0x1c33d2` is `DM(I0,M0) (SWSE)`, so base `+0x94` and track modifier `i`
+  select byte offset `0x94 + 2i`.
 
 ### 3.7 Type 21a is the whole word, not a prefix
 
@@ -231,13 +268,11 @@ here; the firmware is the arbiter.
 - `FULL_WORD` in `build_table.py` now takes every bit from the figure for these
   two forms: Type21a `0xffffffffffff`/`0`, Type21c `0xffff00000000`/
   `0x000100000000`.
-- The left-over first words become **`Type21p_undoc16`**, provisional in the
-  same sense as Type23p_undoc16: top nine bits zero, a 7-bit operand, 16 bits
-  long, no name and no semantics. 883 in 1.16, 969 in 1.11. Its commonest
-  first words are `0x0032`, `0x001c`, `0x0008`, `0x0030`, `0x0010`. It is
-  followed by itself 18% of the time, then by `2a`, `23p_undoc16` and `3a` —
-  not the signature 3.6 records for Type23p_undoc16, so the two are probably
-  unrelated despite the shared construction.
+- The left-over first words become **`Type21p_undoc16`**: top nine bits zero,
+  a provisional 7-bit operand, 16-bit extent, and no established name or
+  semantics. Its old counts and successor statistics must be remeasured after
+  the corrected 48-bit `0x02` form; those statistics previously included false
+  boundaries downstream of mis-sized instructions.
 - In the SLEIGH module the crossing pattern with Type22c moves from Type21a to
   Type21p_undoc16 (bit 32), and Type21c stops crossing anything.
 - Open: what the instruction is. The first-word values cluster, which is a
@@ -261,50 +296,46 @@ here; the firmware is the arbiter.
   PRM digits are the stale template values the merge rule exists to ignore,
   so it stands for them. Type3d, Type4d and Type20a change nothing
   measurable either way.
+- **[C]** Type2a's bit 39 is a width selector in VISA code. When it is 1 the
+  word is a 32-bit unconditional compute (`Type2a_short`, compute field in
+  frame bits 38:16); when it is 0 the word is the 48-bit conditional Type2a.
+  The public Selache decoder uses the same rule. See docs/FINDINGS.md,
+  "`0x01` words with bit 39 set are 32-bit computes".
 - A 16-bit reading of Type22a's leftovers was tried first and rejected: it
   stranded the two words after each one, split the RPC dispatcher into two
   functions and added 33 truncated functions in 1.16.
 - Open: what the Type22p and Type26p words are. Their length is what the
   decoder always read; nothing else about them is confirmed.
 
-### 3.9 Type 19a took two bits too many, and `Type19p_undoc48` has them
+### 3.9 [C] `10101` is documented enhanced Type 19a address scaling
 
-- Both classic manuals fix Type 19's bits 44–40 at `10110` and make bit 39 the
-  bit-reverse flag, `0` for `MODIFY` and `1` for `BITREV` (ADSP-21065L
-  `all.txt` 3617-3670; ADSP-21160 ISR `all.txt` 5723-5745). The PRM figure
-  shades only bits 47–42 and draws bits 41–40 as a SHARC+ field `sc[1:0]` and
-  bit 39 as `w`, so the merge rule — a PRM field wins over a PGR value — left
-  `Type19a` matching on six bits where `Type18a` and `Type20a` match on eight.
-- On six bits it claimed the whole `000101` block. Its tighter neighbours took
-  what they own and `Type19a` kept the rest: its own `10110` with bit 39 clear,
-  **and all of `10101`, which no ADI manual documents**. Bits 44–40 run Type 18
-  `10100`, the gap, Type 19 `10110`, Type 20 `10111` — in the PGR Rev 2.4 and in
-  the ADSP-21160, ADSP-21065L and ADSP-2106x manuals alike.
-- `tools/sharcfields.py`, new, is the mirror of `audit_bits.py`: it tallies the
-  values the table's declared fields actually take across the aligned
-  instructions of both images and flags a field sitting on bits the classic grid
-  fixes. The joint value of `sc[1:0]` and `w` is `10 0` for 1,178 instructions,
-  `01 1` for 748 and `01 0` for 9.
-- `DROP_FIELDS` in `build_table.py` now drops Type19a's `sc[1:0]` and `w`
-  declarations, so the classic values at bits 41–39 are used and `Type19a` fixes
-  nine bits, `000101100`. The 757 words in the gap become
-  **`Type19p_undoc48`**: 48 bits, prefix `00010101`, Type19a's remaining field
-  layout with bit 39 an unknown `u`. 410 in 1.16, 347 in 1.11.
-- The override lives in `build_table.py`, not in `figures.json`, which
-  `extract_figures.py` regenerates from the PDF.
-- Measured, `out/sharcpcode/t23` against `t24`: **0 regressions**. Aligned and
-  decoded counts, function counts and size histograms, functions truncated at
-  bad data, probe verdicts and every Error and warning bookmark count are
-  identical in both images, and `19a` plus `19p_undoc48` sums exactly to the old
-  `19a` — 969 to 559 + 410, and 966 to 619 + 347.
-- The provisional names in 3.6, 3.7, 3.8 and here read `21p`, `22p`, `23p`,
-  `26p`, `19p` after the form whose loose prefix used to take the words. They
-  are not claims about ADI's numbering: Types 23 and 24 are now known to be
-  `IDLE16` and `CJUMP`/`RFRAME` (`docs/FINDINGS.md`).
-- Open: what `10101` is. Bit 39 is set in 748 of the 757, which is the one thing
-  arguing it is a distinct instruction rather than a wider Type 19 — if `w` were
-  still the bit-reverse flag then nearly all of them would be `BITREV`, and the
-  documented bit-reverse form occurs 8 times in both images combined.
+- The earlier `Type19p_undoc48` classification was wrong. It correctly stopped
+  the ordinary classic Type19a form from swallowing a SHARC+-only prefix, but
+  it missed the PRM's **Enhanced Modify Instruction for Address Scaling** and
+  the Type19a BH-table assignment `sc=01`. A public independent implementation,
+  `js216/selache`, confirms the same `w`, `g`, `idis`, `is`, and signed-data
+  field layout.
+- The classic form remains distinct: the PGR fixes bits 44–40 at `10110`, while
+  the enhanced scaled form fixes the top byte at `0x15`. `build_table.py`
+  therefore keeps the ordinary `Type19a` override and now emits a confident
+  **`Type19a_scaled`** form with mask `0xff0000000000`, rather than preserving a
+  firmware-only provisional form.
+- The corpus distribution that prompted the split is now explained, not an open
+  gap: joint `sc[1:0],w` values are `10,0` for 1,178 ordinary instructions and
+  `01,1` / `01,0` for 748 / 9 enhanced NW/SW instructions across the two images.
+- The strict DT2 1.16 path reaches storage bytes `87 15 ff ff fe ff` at SW
+  `0xb893e2`. Three little-endian 16-bit parcels, kept in most-significant-parcel
+  order, normalize to logical word `0x1587fffffffe`: `w=1`, `g=0`, `idis=0`,
+  `is=7`, signed immediate `-2`. This is `I7 = MODIFY(I7,-2)(NW)`, not the
+  previously reported `-257` or `I7 -= 0x404`.
+- In the tracer's explicit byte-address model, `(NW)` scales the immediate and
+  corresponding circular length by four. With the strict-path state
+  `I7=0x26f7ee`, `B7=0x26f000`, `L7=0x1fd`, the instruction writes only I7 and
+  produces `0x26f7e6`; B7/L7 remain inputs. In normal-word address space its
+  unscaled architectural delta is `-2`.
+- The old `out/sharcpcode/t23`→`t24` measurement still established that splitting
+  the ordinary and `0x15` populations preserved instruction sizing and alignment,
+  but its provisional name and undocumented-semantics conclusion are retracted.
 
 ### 3.10 The branch figures' gap digits, and `Type8p_undoc48`
 
@@ -455,10 +486,10 @@ ran function/call-graph analysis. Findings, graded evidence vs hypothesis:
   fragments Ghidra's native call graph and is the main thing to model next.
   *Evidence.*
 - **RPC dispatcher** = a FreeRTOS **task** (string @ BW 0x282577f0; created near
-  SW 0x1c3f62; trampoline at SW 0x1c3bf0; ~4,600-word body). This is the
-  **ColdFire→SHARC command interface**. The exact dispatch (jump table vs compare
-  chain) is not yet pinned — needs compute-field dataflow. *Evidence (task) +
-  hypothesis (dispatch shape).*
+  SW 0x1c3f62; trampoline at SW 0x1c3bf0; ~4,600-word body). It is a candidate
+  command interface, but no ColdFire transport or runtime dispatch has been
+  established. The exact dispatch (jump table vs compare chain) is not yet
+  pinned. *Evidence (task) + hypothesis (transport and dispatch shape).*
 - **Command/parameter block** = a DDR structure at **0x82a00000** (~456 bytes, 14
   fields); every firmware-wide reference to it falls inside the RPC dispatcher's
   code span — the most likely ColdFire→SHARC command block. *Strong hypothesis.*
@@ -472,14 +503,15 @@ Artifacts: `docs/sharc/structure-1.16.md` (the call-graph and function lists wer
 
 ## 8. Open items / next steps
 
-1. **Port compute mnemonics into the SLEIGH** so Ghidra shows `R0=R1+R2` etc.
+1. Trace the byte-backed `0x94 + 2i` frame reader from natural runtime state to
+   its receive-buffer owner and the non-`EQ` downstream behavior.
+2. **Port compute mnemonics into the SLEIGH** so Ghidra shows `R0=R1+R2` etc.
    instead of raw hex; reassemble split addr/data/compute fields; resolve
    ureg/sreg names. (`render.py` already does all this — it's the reference.)
-2. **Add arithmetic p-code** to non-control-flow constructors for decompilation
+3. **Add arithmetic p-code** to non-control-flow constructors for decompilation
    (currently disassembly-first: only branches carry p-code).
-3. **Analyse the firmware in Ghidra** — auto-analysis for functions/call graph,
+4. **Analyse the firmware in Ghidra** — auto-analysis for functions/call graph,
    then locate the audio task, ColdFire↔SHARC communication, and hook points.
-4. Identify Type 23/24 semantics (`0x023e` family) — behaviour, errata.
 5. Resolve the `0x023e` vs `0x0300` family-extent boundary; chase the ~1% tail.
 6. Confirm the SHARC+-only encodings (§3.3) against firmware usage.
 7. Fill compute-table gaps (~14% of compute opcodes absent from the manual tables).

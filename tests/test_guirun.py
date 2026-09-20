@@ -1,6 +1,7 @@
 # pyright: reportMissingImports=false
 """Unit coverage for guirun's stateful timer checkpoint setup."""
 
+import argparse
 import os
 import sys
 import tempfile
@@ -13,9 +14,46 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "tools"))
 import guirun
+from unicorn import UC_ERR_WRITE_UNMAPPED, UcError
 
 
 class GuirunTimerCheckpointTest(unittest.TestCase):
+    def test_parse_poke_encodes_big_endian_long(self):
+        self.assertEqual(
+            guirun.parse_poke("0x4fe57100=0x007fffff"),
+            (0x4FE57100, b"\x00\x7f\xff\xff"),
+        )
+
+    def test_parse_poke_rejects_missing_separator(self):
+        with self.assertRaisesRegex(
+            argparse.ArgumentTypeError, "expects ADDR=LONG"
+        ):
+            guirun.parse_poke("0x4fe57100")
+
+    def test_main_reports_unmapped_poke_as_cli_error(self):
+        machine = SimpleNamespace(
+            uc=SimpleNamespace(
+                mem_write=mock.Mock(
+                    side_effect=UcError(UC_ERR_WRITE_UNMAPPED)
+                )
+            ),
+            close=mock.Mock(),
+        )
+        built = (machine, {}, {}, 0, None, None)
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                ["guirun.py", "checkpoint.snap", "--poke", "0x1=0x2"],
+            ),
+            mock.patch.object(guirun, "build", return_value=built),
+            self.assertRaisesRegex(SystemExit, "2") as raised,
+        ):
+            guirun.main()
+
+        self.assertEqual(raised.exception.code, 2)
+        machine.close.assert_called_once_with()
+
     def test_intro_timer_mode_defaults_to_historical_hold(self):
         self.assertEqual(guirun.parse_args([]).intro_timers, "held")
 

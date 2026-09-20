@@ -163,8 +163,16 @@ items remain required follow-up, including input-driven provenance and the
 
 `out/experiments/panel-machine-commit/qualify-1.16-001/report.json` closes the
 input side through `FUN_40051712`: four repeatable runs write track 0 type 2
-from the real panel path, but hit `FUN_4002d438` zero times. The next missing
-event is not another UI gesture. The producer is now identified as
+from the real panel path. The shorter follow-up at
+`out/experiments/a2-notification-invalidation/qualify-001/report.json` closes
+the notification/invalidation front half as well: two clean and two traced
+exact runs have byte-identical endpoints, and the traced runs show the one
+setter reaching `ValueWithMirror`, `Sound::updateMirror`, registered callback
+`0x40042fe2` with null info, and unconditional `FUN_4002da38(track 0)`.
+Cache slot `0x8000470c` changes from `0x426532ec` to zero, while
+`FUN_4002d438` and row byte `0x80003cd0` remain untouched. The eight downstream
+observer hits are not eight setters. The next missing event is therefore not
+another UI gesture or invalidation. The producer is now identified as
 SSI0-paced eDMA channel 50 completion -> INTC1 source 42/vector 170 -> the
 firmware's `INTFRCH1` bit-31 software force -> source 63/vector 191. SSI0,
 eDMA48/50 scatter/gather, and safe interrupt-force delivery now have a narrow,
@@ -176,6 +184,15 @@ CLI deliberately requires an explicit exploratory rate. A host-patched vector
 slot proves the downstream guest CINT/force/vector-191 chain only as
 calibration. Do not replace the missing RX handover with that control or a
 direct function call and call the phase complete.
+
+The SHARC-side routing is now narrower. Byte-checked 1.15C and 1.16 DAI setup
+stores route PCG C clock/frame sync and SPORT4A primary data to DAI1 pins
+1-3, with those pin buffers enabled. The loader's SPORT table pairs SPORT4A
+with DMA10. This identifies the likely peer peripheral but not its runtime
+payload: the PCG C divisor/source frequency, DMA10 descriptor and application
+buffer, and the `0x007fffff` producer are still unproved. The next bridge step
+is therefore to recover those driver-created runtime values, not to insert a
+guessed 48 kHz cadence or synthesize a marker.
 
 ## Phase 3 — Build concrete differential frame fixtures
 

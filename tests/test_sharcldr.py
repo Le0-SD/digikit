@@ -66,6 +66,20 @@ class LoadedMemoryTest(unittest.TestCase):
         with self.assertRaises(TypeError):
             memory.blocks[0]["byte_count"] = 1
 
+    def test_read_sw_falls_back_to_l2_execution_window(self):
+        payload = b"service"
+        memory = self.memory(
+            block(0, sharcldr.L2_BYTE_BASE + 6, len(payload), payload=payload)
+        )
+        self.assertEqual(memory.read_sw(sharcldr.L2_SW_BASE + 3, len(payload)), payload)
+        self.assertIsNone(memory.read_sw(sharcldr.L2_SW_BASE + 2, len(payload)))
+
+        # A large SW value must not fold the fallback into an unrelated L1
+        # loader region even if bytes happen to be present there.
+        l1 = self.memory(block(0, 0x28240000, 4, payload=b"l1!!"))
+        folded = sharcldr.L2_SW_BASE + (0x28240000 - sharcldr.L2_BYTE_BASE) // 2
+        self.assertIsNone(l1.read_sw(folded, 4))
+
     def test_invalid_metadata_and_arguments(self):
         with self.assertRaisesRegex(ValueError, "stream data must be bytes-like"):
             sharcldr.LoadedMemory.from_stream(object())

@@ -53,13 +53,32 @@ PRM_VALUE_WINS = {"Type2b"}
 # field rather than a digit (Type22a's `emu` selects idle from emuidle).
 # Field declarations to ignore, so the classic grid's fixed values at those bits
 # are used instead. Type19a's PRM figure draws bits 41-40 as a selector
-# `sc[1:0]` and bit 39 as `w`, while the PGR grid and the ADSP-2106x, ADSP-21065L
-# and ADSP-21160 manuals all fix bits 44-40 at 10110 and make bit 39 the
-# bit-reverse flag. With the fields declared, Type19a matched on six bits and
-# took the whole 000101 block, including the undocumented 10101; without them it
-# matches on nine, like Type19a_bitrev. See docs/FINDINGS.md, "Type19a's mask is
-# two bits short".
+# `sc[1:0]` and bit 39 as `w`, while the classic PGR grid fixes the ordinary
+# unscaled form at 10110. Keep that classic form narrow here; the SHARC+ scaled
+# `sc=01` form is emitted separately below from the PRM BH table and an
+# independent public decoder.
 DROP_FIELDS = {"Type19a": {"sc[1:0]", "w"}}
+
+# Type7a's PRM figure (Figure 14-19) brackets bits 28 and 27 as breg/toby, the
+# names the Type7d ACONV figure uses for the same bits. Type7d is documented as
+# Type7a's own cond=11111, compute=0 case, so the two figures print the same
+# bits. For every other Type7a word the classic grid, and Type7b's own PRM
+# figure at the same position, make bits 29-27 the M register selector. The
+# merge loop cannot restore bit 29 on its own: the PRM has no bracket there and
+# the classic side is a live field rather than a blank.
+FIELD_OVERRIDE = {
+    "Type7a": {
+        "remove": ("breg", "toby"),
+        "add": [{"label": "m[2:0]", "hi": 29, "lo": 27}],
+    }
+}
+
+# PRM Table 14-22: Type 7d is the Type 7a word whose condition is 11111 and
+# whose compute field is empty, so those bits select the form and are not
+# free fields.
+PIN_FIELDS = {
+    "Type7d": {"cond[4:0]": 0x1F, "compute[22:16]": 0, "compute[15:0]": 0}
+}
 
 # Bits where a split branch form takes the PRM figure's digit although its own
 # classic table leaves that bit blank, listed per emitted form name. The generic
@@ -91,22 +110,7 @@ FULL_WORD = {
     "Type26a": (48, 0x004000000000, ()),      # Figure 17-13
 }
 
-# Undocumented 16-bit instruction family, identified only from firmware.
-# ADI's public PRM omits Type 23 and Type 24; the firmware contains a heavily-used
-# 16-bit instruction with top-7 bits 0000001 and a 9-bit operand field (the word
-# 0x023e alone occurs 329x in the DT2 image). No public figure documents it, so
-# this entry carries a prefix and length only — no confirmed name or semantics.
-# It exists so the decoder sizes these instructions correctly and stays in sync.
-# Prefix width is deliberately a parameter so it can be re-tuned against the
-# firmware; default top-7 bits = 0000001.
 UNDOCUMENTED = [
-    {
-        "name": "Type23p_undoc16",    # provisional; p = provisional
-        "width": 16,
-        "prefix_bits": "0000001",      # top bits, MSB-first, from bit47 down
-        "note": "provisional, from firmware only (0x023e x329, top-7 0000001 "
-                "family = 62% of unknowns)",
-    },
     # The words Type21a used to swallow: with Type21a tightened to the all-zero
     # word, a first word whose top nine bits are zero and whose rest is not is
     # left over. 95% of the old Type21a matches are such words (859 of 904 in
@@ -139,14 +143,6 @@ UNDOCUMENTED = [
         "note": "provisional, from firmware only (the old Type26a prefix; one "
                 "instance per image, too few to judge)",
     },
-    # Bits 44-40 = 10101 sits between Type 18 (10100) and Type 19 (10110), and
-    # no ADI manual across four generations puts an instruction there. Type19a
-    # used to take it, because its figure declares bits 41-39 as fields where
-    # the classic grid fixes them; with Type19a tightened to nine bits these
-    # words need a home. 757 across the two images, 748 of them with bit 39 set.
-    # The field layout below is Type19a's, which the frames fit -- an index
-    # register and a small signed immediate -- but that is a reading of the
-    # bytes, not a source, and bit 39's meaning is unknown.
     # The words Type8a used to take on its loose eight-bit prefix, now that
     # both halves fix bit 25 to zero (RESTORE_PRM_GAP). Excluding them without
     # giving them a home costs 50 aligned instructions in 1.16 and 71 in 1.11
@@ -175,24 +171,6 @@ UNDOCUMENTED = [
         "note": "provisional, from firmware only (bits 47-41 = 0000011 with "
                 "bit 25 set, which no real Type 8a branch has; 32 across the "
                 "two images)",
-    },
-    {
-        "name": "Type19p_undoc48",
-        "width": 48,
-        "prefix_bits": "00010101",
-        "fields": [
-            {"label": "u", "hi": 39, "lo": 39},
-            {"label": "g", "hi": 38, "lo": 38},
-            {"label": "idis[2:0]", "hi": 37, "lo": 35},
-            {"label": "is[2:0]", "hi": 34, "lo": 32},
-            {"label": "data[31:16]", "hi": 31, "lo": 16},
-            {"label": "data[15:0]", "hi": 15, "lo": 0},
-        ],
-        "source": "firmware (undocumented; the 10101 gap between Type 18 and "
-                  "Type 19; unconfirmed)",
-        "note": "provisional, from firmware only (bits 44-40 = 10101, which no "
-                "manual documents; taken from Type19a when its mask is "
-                "tightened to the nine bits the classic grid fixes)",
     },
 ]
 
@@ -368,6 +346,14 @@ for f in prm:
         notes.append(f"{name}: PRM field declarations {dropped} dropped so the "
                       "classic grid's fixed values at those bits are used")
 
+    if name in FIELD_OVERRIDE:
+        override = FIELD_OVERRIDE[name]
+        fields = [fl for fl in fields if fl["label"] not in override["remove"]]
+        fields += [dict(fl) for fl in override["add"]]
+        fields.sort(key=lambda fl: -fl["hi"])
+        notes.append(f"{name}: PRM fields {sorted(override['remove'])} replaced "
+                      "with the classic grid's m[2:0], as in Type7b")
+
     fixed = {}
     unconfirmed = []
     if keys and name not in PRM_VALUE_WINS:
@@ -402,6 +388,20 @@ for f in prm:
         fixed = {b: (word >> b) & 1 for b in range(48 - full_width, 48)
                  if b not in free}
         source = "prm figure (every bit printed; the PGR grid leaves them blank)"
+    if name in PIN_FIELDS:
+        pinned = PIN_FIELDS[name]
+        for fl in [fl for fl in fields if fl["label"] in pinned]:
+            digits = pinned[fl["label"]]
+            for offset in range(fl["hi"] - fl["lo"] + 1):
+                fixed[fl["lo"] + offset] = (digits >> offset) & 1
+        fields = [fl for fl in fields if fl["label"] not in pinned]
+        unconfirmed = []
+        source = (
+            "prm figure and the Table 14-22 selector; the firmware cluster "
+            "matches the documented ACONV rows"
+        )
+        notes.append(f"{name}: PRM Table 14-22 pins {sorted(pinned)}; the form "
+                      "is Type 7a with condition 11111 and an empty compute")
     mask = sum(1 << b for b in fixed)
     value = sum(v << b for b, v in fixed.items())
     forms.append({
@@ -410,6 +410,95 @@ for f in prm:
         "fields": fields, "source": source, "classic_keys": list(keys),
         "unconfirmed_bits": len(unconfirmed),
     })
+
+# The same public decoder independently agrees with the PRM-only Type12a UREG
+# field layout on the exact loop words reached from reset, so that form no
+# longer needs to carry the table builder's single-source marker.
+type12a_ureg = next(f for f in forms if f["name"] == "Type12a_ureg")
+type12a_ureg["source"] = "prm layout + public Selache decoder cross-check"
+type12a_ureg["unconfirmed_bits"] = 0
+
+# A public SHARC+ VISA decoder identifies the 0x02-prefixed 48-bit form as the
+# no-memory immediate-shift instruction.  Its remaining fixed bits and field
+# positions are identical to the PRM's Type6a no-memory figure, and its low
+# 23-bit ShiftImm field renders through the PRM opcode table without any new
+# semantic mapping.  This corrects the old firmware-only interpretation of the
+# first 0x023e parcel as a standalone reserved 16-bit Type 23 instruction.
+# See docs/sharc/SOURCES.md and docs/FINDINGS.md.
+type6a_nomem = next(f for f in forms if f["name"] == "Type6a (nomem)")
+forms.append({
+    **type6a_nomem,
+    "name": "Type6b_shiftimm",
+    "visa": True,
+    "isa": False,
+    "value": "0x020000000000",
+    "source": "public Selache VISA decoder, cross-checked against PRM Type6a shiftimm",
+    "classic_keys": [],
+    "unconfirmed_bits": 0,
+})
+notes.append(
+    "Type6b_shiftimm: public decoder selects 48 bits for the 0x02 prefix; "
+    "the PRM Type6a no-memory mask and ShiftImm fields then decode the operation"
+)
+
+# The SHARC+ Type19a BH table assigns sc=01 to enhanced immediate MODIFY and
+# uses bit 39 to choose SW/NW scaling.  The public Selache decoder independently
+# confirms the remaining PRM field layout.  Keep the ordinary sc=10 Type19a
+# above for classic compatibility and emit the scaled form explicitly.
+forms.append({
+    "name": "Type19a_scaled",
+    "width": 48,
+    "visa": True,
+    "isa": True,
+    "mask": "0xff0000000000",
+    "value": "0x150000000000",
+    "fixed_bits": 8,
+    "fields": [
+        {"label": "w", "hi": 39, "lo": 39},
+        {"label": "g", "hi": 38, "lo": 38},
+        {"label": "idis[2:0]", "hi": 37, "lo": 35},
+        {"label": "is[2:0]", "hi": 34, "lo": 32},
+        {"label": "data[31:16]", "hi": 31, "lo": 16},
+        {"label": "data[15:0]", "hi": 15, "lo": 0},
+    ],
+    "source": "prm Type19a layout/BH table + public Selache decoder cross-check",
+    "classic_keys": [],
+    "unconfirmed_bits": 0,
+})
+notes.append(
+    "Type19a_scaled: PRM Type19a BH sc=01 form; bit 39 selects SW/NW scaling"
+)
+
+# VISA width for the 0x01 prefix: bit 39 (bit 7 of the first parcel) selects a
+# 32-bit single-function compute; bit 39 = 0 keeps the 48-bit conditional
+# Type2a.  The public Selache decoder implements this rule for every 0x01
+# instruction, and its 32-bit compute field is ((parcel1 & 0x7f) << 16) |
+# parcel2, the same bits 38:16 as the PRM Type2b figure.  In Digitakt II 1.16,
+# 1,880 of 2,396 aligned Type2a words have bit 39 set; 99.1% of those are
+# followed by a confident instruction 4 bytes later, against 49.0% 6 bytes
+# later.  This is not the PRM's Type2b (prefix 0xc0), which keeps its name.
+# The longer fixed lead wins over Type2a in VISA decode; classic ISA keeps
+# Type2a.  See docs/sharc/SPEC-FINDINGS.md and docs/FINDINGS.md.
+forms.append({
+    "name": "Type2a_short",
+    "width": 32,
+    "visa": True,
+    "isa": False,
+    "mask": "0xff8000000000",
+    "value": "0x018000000000",
+    "fixed_bits": 9,
+    "fields": [
+        {"label": "compute[22:16]", "hi": 38, "lo": 32},
+        {"label": "compute[15:0]", "hi": 31, "lo": 16},
+    ],
+    "source": "public Selache VISA width rule + PRM compute tables; firmware-checked",
+    "classic_keys": [],
+    "unconfirmed_bits": 0,
+})
+notes.append(
+    "Type2a_short: 0x01 prefix with bit 39 set is a 32-bit unconditional "
+    "compute (Selache VISA width rule); bit 39 clear keeps 48-bit Type2a"
+)
 
 def undocumented_form(entry):
     prefix_bits = entry["prefix_bits"]

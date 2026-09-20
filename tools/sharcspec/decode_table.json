@@ -935,13 +935,8 @@
      "lo": 30
     },
     {
-     "label": "breg",
-     "hi": 28,
-     "lo": 28
-    },
-    {
-     "label": "toby",
-     "hi": 27,
+     "label": "m[2:0]",
+     "hi": 29,
      "lo": 27
     },
     {
@@ -1017,19 +1012,14 @@
    "width": 48,
    "visa": true,
    "isa": true,
-   "mask": "0xff8020800000",
-   "value": "0x048000800000",
-   "fixed_bits": 11,
+   "mask": "0xffbe20ffffff",
+   "value": "0x04be00800000",
+   "fixed_bits": 39,
    "fields": [
     {
      "label": "g",
      "hi": 38,
      "lo": 38
-    },
-    {
-     "label": "cond[4:0]",
-     "hi": 37,
-     "lo": 33
     },
     {
      "label": "is[2:2]",
@@ -1055,21 +1045,11 @@
      "label": "idis[2:0]",
      "hi": 26,
      "lo": 24
-    },
-    {
-     "label": "compute[22:16]",
-     "hi": 22,
-     "lo": 16
-    },
-    {
-     "label": "compute[15:0]",
-     "hi": 15,
-     "lo": 0
     }
    ],
-   "source": "prm",
+   "source": "prm figure and the Table 14-22 selector; the firmware cluster matches the documented ACONV rows",
    "classic_keys": [],
-   "unconfirmed_bits": 11
+   "unconfirmed_bits": 0
   },
   {
    "name": "Type8a_abs",
@@ -1704,9 +1684,9 @@
      "lo": 0
     }
    ],
-   "source": "prm",
+   "source": "prm layout + public Selache decoder cross-check",
    "classic_keys": [],
-   "unconfirmed_bits": 17
+   "unconfirmed_bits": 0
   },
   {
    "name": "Type13a",
@@ -2441,23 +2421,106 @@
    "unconfirmed_bits": 16
   },
   {
-   "name": "Type23p_undoc16",
-   "width": 16,
+   "name": "Type6b_shiftimm",
+   "width": 48,
    "visa": true,
    "isa": false,
-   "mask": "0xfe0000000000",
+   "mask": "0xffc187800000",
    "value": "0x020000000000",
-   "fixed_bits": 7,
+   "fixed_bits": 16,
    "fields": [
     {
-     "label": "operand[8:0]",
-     "hi": 40,
-     "lo": 32
+     "label": "cond[4:0]",
+     "hi": 37,
+     "lo": 33
+    },
+    {
+     "label": "dataex[3:0]",
+     "hi": 30,
+     "lo": 27
+    },
+    {
+     "label": "shiftimm[22:16]",
+     "hi": 22,
+     "lo": 16
+    },
+    {
+     "label": "shiftimm[15:0]",
+     "hi": 15,
+     "lo": 0
     }
    ],
-   "source": "firmware (undocumented; unconfirmed)",
+   "source": "public Selache VISA decoder, cross-checked against PRM Type6a shiftimm",
    "classic_keys": [],
-   "unconfirmed_bits": 7
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type19a_scaled",
+   "width": 48,
+   "visa": true,
+   "isa": true,
+   "mask": "0xff0000000000",
+   "value": "0x150000000000",
+   "fixed_bits": 8,
+   "fields": [
+    {
+     "label": "w",
+     "hi": 39,
+     "lo": 39
+    },
+    {
+     "label": "g",
+     "hi": 38,
+     "lo": 38
+    },
+    {
+     "label": "idis[2:0]",
+     "hi": 37,
+     "lo": 35
+    },
+    {
+     "label": "is[2:0]",
+     "hi": 34,
+     "lo": 32
+    },
+    {
+     "label": "data[31:16]",
+     "hi": 31,
+     "lo": 16
+    },
+    {
+     "label": "data[15:0]",
+     "hi": 15,
+     "lo": 0
+    }
+   ],
+   "source": "prm Type19a layout/BH table + public Selache decoder cross-check",
+   "classic_keys": [],
+   "unconfirmed_bits": 0
+  },
+  {
+   "name": "Type2a_short",
+   "width": 32,
+   "visa": true,
+   "isa": false,
+   "mask": "0xff8000000000",
+   "value": "0x018000000000",
+   "fixed_bits": 9,
+   "fields": [
+    {
+     "label": "compute[22:16]",
+     "hi": 38,
+     "lo": 32
+    },
+    {
+     "label": "compute[15:0]",
+     "hi": 31,
+     "lo": 16
+    }
+   ],
+   "source": "public Selache VISA width rule + PRM compute tables; firmware-checked",
+   "classic_keys": [],
+   "unconfirmed_bits": 0
   },
   {
    "name": "Type21p_undoc16",
@@ -2563,66 +2626,25 @@
    "source": "firmware (undocumented; the bit-25 words Type8a used to take; unconfirmed)",
    "classic_keys": [],
    "unconfirmed_bits": 8
-  },
-  {
-   "name": "Type19p_undoc48",
-   "width": 48,
-   "visa": true,
-   "isa": true,
-   "mask": "0xff0000000000",
-   "value": "0x150000000000",
-   "fixed_bits": 8,
-   "fields": [
-    {
-     "label": "u",
-     "hi": 39,
-     "lo": 39
-    },
-    {
-     "label": "g",
-     "hi": 38,
-     "lo": 38
-    },
-    {
-     "label": "idis[2:0]",
-     "hi": 37,
-     "lo": 35
-    },
-    {
-     "label": "is[2:0]",
-     "hi": 34,
-     "lo": 32
-    },
-    {
-     "label": "data[31:16]",
-     "hi": 31,
-     "lo": 16
-    },
-    {
-     "label": "data[15:0]",
-     "hi": 15,
-     "lo": 0
-    }
-   ],
-   "source": "firmware (undocumented; the 10101 gap between Type 18 and Type 19; unconfirmed)",
-   "classic_keys": [],
-   "unconfirmed_bits": 8
   }
  ],
  "notes": [
   "Type2b: fixed-bit values from PRM figure (overrides PGR; firmware-confirmed)",
   "Type3a: layout and values from PGR",
+  "Type7a: PRM fields ['breg', 'toby'] replaced with the classic grid's m[2:0], as in Type7b",
+  "Type7d: PRM Table 14-22 pins ['compute[15:0]', 'compute[22:16]', 'cond[4:0]']; the form is Type 7a with condition 11111 and an empty compute",
   "Type8a: split into Type8a_abs/Type8a_rel -- classic.json keeps these as separate absolute-or-indirect/PC-relative tables; see SPLIT_FORMS",
   "Type9a: split into Type9a_abs/Type9a_rel -- classic.json keeps these as separate absolute-or-indirect/PC-relative tables; see SPLIT_FORMS",
   "Type9b: split into Type9b_abs/Type9b_rel -- classic.json keeps these as separate absolute-or-indirect/PC-relative tables; see SPLIT_FORMS",
   "Type10a: split into Type10a_abs/Type10a_rel -- classic.json keeps these as separate absolute-or-indirect/PC-relative tables; see SPLIT_FORMS",
   "Type19a: PRM field declarations ['sc[1:0]', 'w'] dropped so the classic grid's fixed values at those bits are used",
   "Type25c_rframe: 16-bit form from PGR",
-  "Type23p_undoc16: provisional, from firmware only (0x023e x329, top-7 0000001 family = 62% of unknowns)",
+  "Type6b_shiftimm: public decoder selects 48 bits for the 0x02 prefix; the PRM Type6a no-memory mask and ShiftImm fields then decode the operation",
+  "Type19a_scaled: PRM Type19a BH sc=01 form; bit 39 selects SW/NW scaling",
+  "Type2a_short: 0x01 prefix with bit 39 set is a 32-bit unconditional compute (Selache VISA width rule); bit 39 clear keeps 48-bit Type2a",
   "Type21p_undoc16: provisional, from firmware only (the old Type21a prefix; 95% of its matches are not the all-zero NOP word)",
   "Type22p_undoc48: provisional, from firmware only (the old Type22a prefix; its strict word occurs in neither image; 48 bits as the loose Type22a read them -- a 16-bit reading strands the other two words)",
   "Type26p_undoc48: provisional, from firmware only (the old Type26a prefix; one instance per image, too few to judge)",
-  "Type8p_undoc48: provisional, from firmware only (bits 47-41 = 0000011 with bit 25 set, which no real Type 8a branch has; 32 across the two images)",
-  "Type19p_undoc48: provisional, from firmware only (bits 44-40 = 10101, which no manual documents; taken from Type19a when its mask is tightened to the nine bits the classic grid fixes)"
+  "Type8p_undoc48: provisional, from firmware only (bits 47-41 = 0000011 with bit 25 set, which no real Type 8a branch has; 32 across the two images)"
  ]
 }

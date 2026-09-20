@@ -32,6 +32,9 @@ def insn17a(ureg, value):
 
 class NameTest(unittest.TestCase):
     def test_names(self):
+        self.assertEqual(sharcimm.name_address(0x30024), 'CMMR_SYSCTL')
+        self.assertEqual(sharcimm.name_address(0x31400), 'SHBTB_CFG')
+        self.assertEqual(sharcimm.name_address(0x3E000), 'SHL1C_CFG')
         self.assertEqual(sharcimm.name_address(0x31030004), 'SPI2 CTL')
         self.assertEqual(sharcimm.name_address(0x3102D280), 'DMA27 (SPI2 RX) DSCPTR_NXT')
         self.assertEqual(sharcimm.name_address(0x310CA2E8), 'DAI1_GBL_SP_EN')

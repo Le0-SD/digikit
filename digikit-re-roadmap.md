@@ -72,7 +72,7 @@ complete.
 | --- | --- | --- |
 | Snapshots/checkpoints and bounded ColdFire runs support controlled comparisons. | Static/hardware delivery is incomplete; each run needs image identity and bounded endpoint. | `docs/TOOLS.md`; boundary plan |
 | Focused RAM and frame diffs can isolate a one-variable change. | — | findings: row refresh and frame map |
-| The byte-checked static chain and bounded direct-refresh experiment establish source `+0xa2` -> SRAM row -> TX `0x94 + 2*track` on DT2 1.16. | The indirect setter-notification/cache-invalidating front half and faithful 1.16 UI replay remain open; neither is evidence for the other. | findings; `a2-real-005`; boundary plan |
+| The byte-checked static chain and bounded direct-refresh experiment establish source `+0xa2` -> SRAM row -> TX `0x94 + 2*track` on DT2 1.16. A real-panel exact qualification separately establishes setter -> null-info notification dispatcher -> unconditional track-cache invalidate. | Natural vector-191 queue consumption still does not connect the two halves; neither half alone is end-to-end behavioral A2 evidence. | findings; `a2-real-005`; `a2-notification-invalidation/qualify-001`; boundary plan |
 | Encountered MCF5441x peripherals have a documentation-backed contract and Ghidra labels. | This is encountered-peripheral coverage, not a complete chip model. | `docs/TOOLS.md`; findings |
 | Frame fields are verified, including per-track machine type at TX `0x94 + 2i`. | ColdFire transmission does not prove the SHARC consumer or unknown-type behaviour. | findings; handover |
 | The SHARC loader, decoder, mapped memory view, and bounded affine tracer exist. | The tracer lacks the concrete input/predicate support required for the receive proof. | `docs/TOOLS.md`; boundary plan |
@@ -89,11 +89,13 @@ copy, validate, dispatch on, or transform it—and does that require type
 substitution or DSP modification for a new machine?
 
 ColdFire producer/wire evidence is established. A0/A1 established the
-controlled emulator laboratory on 1.15C, and a hash-gated 1.16 direct-refresh
-control established the narrow source-object -> SRAM row -> frame back half.
-A2 remains open until the real panel gesture drives that path on 1.16. This is
-deliberately compositional: A1's menu-open gesture and a direct function call
-are controls, not substitutes for an input-driven machine commit.
+controlled emulator laboratory on 1.15C, a hash-gated 1.16 direct-refresh
+control established the narrow source-object -> SRAM row -> frame back half,
+and an exact real-panel qualification established the setter -> notification
+-> cache-invalidation front half. A2 remains open until natural vector-191
+queue consumption joins those halves on 1.16. This is deliberately
+compositional: A1's menu-open gesture and a direct function call are controls,
+not substitutes for the input-driven provenance.
 
 ### Gates A0–A5
 
@@ -110,6 +112,15 @@ The byte-checked static producer/wire chain remains the baseline check, but the
 blocked SHARC receive seed is deliberately behind A0–A2 dynamic emulator
 evidence. The bounded plan is `docs/plans/EMULATOR-SHARC-BOUNDARY.md`; extend
 it rather than duplicating its commands here.
+
+The current SSI peer investigation has identified DAI1 pins 1-3 as PCG C
+clock, PCG C frame sync, and SPORT4A primary data, and pairs SPORT4A with
+SHARC DMA10. The same setup values are present in 1.15C and 1.16. This narrows
+the missing peer but does not close A2: PCG C divisors/source frequency,
+runtime DMA10 descriptors/buffers, and the producer of ColdFire's
+`0x007fffff` handover marker remain open. Do not turn the exploratory 48 kHz
+request profile or a `0x7fffffff` immediate elsewhere in SHARC code into a
+replay default without that producer path.
 
 ## 4. Workstream B — ColdFire machine template and static delivery
 
@@ -243,9 +254,10 @@ product-specific behaviour.
    hash-consistent repeated validation run and explicit SRAM diff.
 2. **A1 (complete):** `a1-real-002` establishes repeatable mapped-memory,
    panel-frame, block-entry and scoped UI-call differences for FUNC+SRC.
-3. **A2 (current):** faithful 1.16 panel input now reaches the relocated setter.
-   Connect its notification/invalidation front half to the calibrated
-   row/frame back half. `a2-real-005` is a control, not completion of this gate;
+3. **A2 (current):** faithful 1.16 panel input now reaches the relocated setter,
+   null-info notification dispatcher and unconditional track-cache invalidate.
+   Connect that qualified front half to the calibrated row/frame back half.
+   `a2-real-005` is a control, not completion of this gate;
    its producer is statically recovered as SSI0/eDMA50 vector 170 followed by
    an `INTFRCH1` software force. The narrow opt-in event source now reaches
    the generic vector-170 handler, but external SSI cadence and RX sync-marker
@@ -281,23 +293,28 @@ shorter preferred schedule is
 `out/experiments/panel-machine-commit/qualify-1.16-fast-001/`. Independent
 exact runs scale through eight workers on the current host without changing
 endpoint hashes (`out/benchmarks/exact-workers-1.16-001/report.json`). The
-exact next work remains A2: obtain the external SSI cadence and RX
-`0x007fffff` synchronization provenance needed for the generic vector-170
-handler to install the normal eDMA50 callback, then trace
-notification/invalidation through the now-calibrated CINT/force machinery
-into the refresh/row/frame back half. A host-patched callback control proves
+real-panel front half is qualified at
+`out/experiments/a2-notification-invalidation/qualify-001/`: one setter reaches
+the registered null-info dispatcher and `FUN_4002da38`, changing track 0's
+accepted-source cache from `0x426532ec` to zero, while refresh and row writes
+remain absent. The exact next work remains A2: obtain the external SSI cadence
+and RX `0x007fffff` synchronization provenance needed for the generic
+vector-170 handler to install the normal eDMA50 callback, then trace natural
+vector-191 queue consumption into the refresh/row/frame back half. A
+host-patched callback control proves
 normal vector 170 -> software-forced vector 191 but is not behavioral proof.
 A3 remains blocked until this input-driven provenance exists.
 
 ## 12. New-session handoff prompt
 
 > With the deterministic emulator **A0** runner, accepted **A1** FUNC+SRC
-> A/B experiment, faithful DT2 1.16 panel -> setter qualification, and direct
-> source -> row -> frame calibration complete, continue **A2** by recovering
+> A/B experiment, direct source -> row -> frame calibration, and real-panel
+> setter -> null-info dispatcher -> track-cache invalidation qualification
+> complete, continue **A2** by recovering
 > the external SSI cadence and RX synchronization needed for the new narrow
 > eDMA48/50 model's generic vector-170 handler to install the normal callback.
-> Then trace the natural setter -> notification/invalidation -> refresh ->
-> row -> frame path. Do not start A3
+> Then trace natural vector-191 queue consumption from the already-qualified
+> invalidation into refresh -> row -> frame. Do not start A3
 > until that input-driven provenance is recorded. Read
 > `HANDOVER-2026-09-16-machine-to-dsp.md`, current headings in
 > `docs/FINDINGS.md`, `docs/TOOLS.md`, and

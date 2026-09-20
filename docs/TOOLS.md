@@ -165,6 +165,11 @@ the model correctly does not invent the external `0x007fffff` sync word. The
 separate `vector-chain-control-001` host-patches only the vector slot and is
 calibration evidence, not behavioral evidence.
 
+`tools/guirun.py --poke ADDR=LONG` applies a repeatable big-endian 32-bit
+guest-memory write after snapshot restore and before execution. The run log
+labels every such write as a host calibration. Use it only for controls: a
+poke is never firmware or panel provenance.
+
 ### Exact-run throughput
 
 Use immutable snapshots and parallel processes for independent repetitions.
@@ -188,6 +193,19 @@ type-2 commit and setter call. The commands contain no `--weakptr`, whose
 default is false. This is the preferred schedule for repeating that
 experiment. It shortens the scenario; it does not make one emulated
 instruction execute faster.
+
+The same schedule's setter-notification qualification is recorded at
+`out/experiments/a2-notification-invalidation/qualify-001/report.json`. Four
+independent processes restore the same immutable checkpoint: two clean and
+two traced. The traced lanes hook only the commit, setter,
+`ValueWithMirror` notification, `Sound::updateMirror`, registered dispatcher,
+unconditional invalidate and refresh, plus the selected source/cache/row
+bytes. All four endpoint snapshots and panels are byte-identical. The traced
+runs prove real panel -> one setter -> null-info dispatcher ->
+`FUN_4002da38(track 0)` -> cache slot `0x8000470c` zero. They also record zero
+`FUN_4002d438` hits and no row-type write, so this qualifies only the
+notification/invalidation front half, not behavioral A2. Eight downstream
+observer hits are not eight setter calls.
 
 Do not use translation-block `icount` as exact executed-instruction
 accounting. The throwaway probe at `out/prototypes/tb-stepper/` combined whole
@@ -311,7 +329,10 @@ the incomplete SHARC+ language can decompile an entire receive path.
 
 A bounded, delay-aware abstract interpreter starting at an exact short-word
 PC. It currently models a proved subset of register moves, integer compute,
-DAG address updates, memory accesses, and two independent delay slots.
+DAG address updates, direct Type 14a DM/PM transfers, other memory accesses,
+and two independent delay slots. A normal Type 14a event marks that an
+unmodelled SIMD companion access is possible; forced-long-word Type 14a stops
+explicitly rather than pretending its neighboring register pair is one UREG.
 Unsupported or provisional forms stop the state explicitly.
 
 The default mode reads a flat extracted region and therefore requires
@@ -334,6 +355,18 @@ uv run python tools/sharc_trace.py \
 Symbolic arithmetic is affine, so expressions such as
 `receive_buffer + 0x94 + 2*track_index` survive copies, addition, subtraction,
 and multiplication by a constant. Non-affine operations become `Unknown`.
+
+The direct-transfer support is sufficient to recover the concrete DAI0/DAI1
+MMR stores in the 1.15C and 1.16 setup blocks. For example:
+
+```sh
+uv run python tools/sharc_trace.py \
+  out/sections/dt2-1.16/section_7_BLOB.bin \
+  --blob --start 0x1cb28b --max-steps 100 --json
+```
+
+This traces the primary PE through the DAI stores and then stops at the next
+unsupported `9b_abs` form; it is not a general SHARC emulator.
 
 ### `tools/sharc_candidates.py`
 

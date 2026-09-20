@@ -13,6 +13,7 @@ The manuals are not committed. Put `sc58x-2158x-prm.pdf` and
 |---|---|
 | **PRM:** SHARC+ Core Programming Reference Rev 1.5, `sc58x-2158x-prm.pdf` | Primary. The only source for SHARC+ additions. 54 vector bit-layout figures. |
 | **PGR:** SHARC Processor Programming Reference Rev 2.4 (classic core), `adsp-2136x_2137x_214xx_pgr_rev2.4.pdf` | Cross-check. Chapter 10 grid tables with binary constants. SHARC+ is documented as instruction-set compatible. |
+| **Selache:** public SHARC+ encoder/decoder at `js216/selache` | Independent cross-check for selected SHARC+-only field layouts; never replaces the primary manuals. |
 
 ## Scripts
 
@@ -81,18 +82,29 @@ differences are compatible:
 ### SHARC+-only encodings with no second source
 
 Types 3d, 4d, 7d, 12a (ureg), 14d, 22a, 25a (rframe), 26a (sync), and the new
-fields in 3b/4b/19a. Their digits don't match the template defaults (good
+fields in 3b/4b. Their digits don't match the template defaults (good
 sign), but that isn't proof. **Types 7a and 7d print identical fixed bits**
 (`000001001`) although they are different instructions, so at least one is
 wrong or the difference lies in field values.
+
+The former provisional `Type19p_undoc48` is not in this list. The PRM's
+Type19a BH table documents `sc=01` as enhanced address scaling, and Selache
+independently confirms the `0x15` form's `w/g/idis/is/data32` layout. It is now
+the confident `Type19a_scaled` form; `w=1` selects `(NW)` and `w=0` selects
+`(SW)`.
 
 ### Open questions
 
 - Types 25a/25c rframe: bits 23–4 (25a) / 31–20 (25c) are white with no label,
   and the PRM text doesn't say what they hold.
-- The VISA length rule: which prefixes select 16/32/48-bit decoding. Short forms
-  reuse long-form prefixes with a marker field (e.g. 1b = 1a with bits 22–16 =
-  `0111111`); this still needs to be stated from the text and tested.
+- The complete VISA length rule: which remaining prefixes select 16/32/48-bit
+  decoding. Short forms reuse long-form prefixes with a marker field (e.g. 1b
+  = 1a with bits 22–16 = `0111111`). A public independent decoder establishes
+  that first byte `0x02` selects a 48-bit immediate-shift form; its field layout
+  matches the PRM Type6a no-memory ShiftImm figure. The same decoder selects
+  32 bits for first byte `0x01` with bit 39 set; the table emits that as
+  `Type2a_short`. A whole-image comparison with that decoder found no other
+  width it gets right and this table gets wrong.
 - Classic 5a/6a pattern details differ slightly between the PRM and PGR in
   blank-vs-gray bits: must-be-zero or don't-care?
 

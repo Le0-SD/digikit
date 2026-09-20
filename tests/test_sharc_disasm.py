@@ -50,6 +50,58 @@ class TableTest(unittest.TestCase):
 
 
 class DisasmTest(unittest.TestCase):
+    def test_02_prefix_is_a_48_bit_shift_immediate(self):
+        data = struct.pack('<HHH', 0x023e, 0x3810, 0x8022)
+        rec = next(sharc_disasm.disassemble(data))
+        self.assertEqual((rec.type_name, rec.length_bytes, rec.kind),
+                         ('6b_shiftimm', 6, 'confident'))
+        self.assertEqual(rec.raw, 0x023e38108022)
+        self.assertEqual(rec.fields, {
+            'cond[4:0]': 0x1f,
+            'dataex[3:0]': 7,
+            'shiftimm[22:16]': 0x10,
+            'shiftimm[15:0]': 0x8022,
+        })
+
+    def test_01_prefix_bit39_selects_32bit_compute(self):
+        data = bytes.fromhex("a8018082" "0e0700001d00")
+        recs = list(sharc_disasm.disassemble(data))
+        self.assertEqual(
+            (recs[0].type_name, recs[0].length_bytes, recs[0].kind),
+            ("2a_short", 4, "confident"),
+        )
+        self.assertEqual(
+            recs[0].fields, {"compute[22:16]": 0x28, "compute[15:0]": 0x8280}
+        )
+        self.assertEqual(recs[1].type_name, "8a_rel")
+
+    def test_01_prefix_bit39_clear_stays_48bit_type2a(self):
+        rec = next(sharc_disasm.disassemble(bytes.fromhex("280180820e07")))
+        self.assertEqual(
+            (rec.type_name, rec.length_bytes, rec.kind), ("2a", 6, "confident")
+        )
+        self.assertEqual(rec.fields["cond[4:0]"], 20)
+
+    def test_15_prefix_is_documented_scaled_type19_modify(self):
+        data = bytes.fromhex("8715fffffeff")
+        rec = next(sharc_disasm.disassemble(data))
+        self.assertEqual(
+            (rec.type_name, rec.length_bytes, rec.kind),
+            ("19a_scaled", 6, "confident"),
+        )
+        self.assertEqual(rec.raw, 0x1587FFFFFFFE)
+        self.assertEqual(
+            rec.fields,
+            {
+                "w": 1,
+                "g": 0,
+                "idis[2:0]": 0,
+                "is[2:0]": 7,
+                "data[31:16]": 0xFFFF,
+                "data[15:0]": 0xFFFE,
+            },
+        )
+
     def test_walk(self):
         t = T.get_type('17b')
         hi, lo = t['fields']['ureg[6:0]']

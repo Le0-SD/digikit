@@ -74,10 +74,20 @@ MAX_INSN_BYTES = 32
 MIN_SECONDS = 0.5                    # smaller time differences are noise
 
 IMAGES = {
+    'dt2-1.15C': {
+        'blob': 'out/sections/dt2-1.15C/section_7_BLOB.bin',
+        'region': 'out/sharc/dt2-1.15C-main.bin',
+        'base_sw': 0x1C1338,
+        # DM 0x2d7148 is imported at unified-code SW 0x16b8a4.
+        'label_tables': ['16b8a4:4'],
+        'probes': [],
+    },
     'dt2-1.16': {
         'blob': 'out/sections/dt2-1.16/section_7_BLOB.bin',
         'region': 'out/sharc/dt2-1.16-main.bin',
         'base_sw': 0x1C1338,
+        # DM 0x2d7158 is imported at unified-code SW 0x16b8ac.
+        'label_tables': ['16b8ac:4'],
         'probes': [
             # R0 is set in the delay slot of the return (FINDINGS).
             {'name': 'returns 2748', 'kind': 'decompiles_to', 'sw': [0x1C136A],
@@ -91,6 +101,8 @@ IMAGES = {
         'blob': 'out/sections/dn2-1.11/section_7_BLOB.bin',
         'region': 'out/sharc/dn2-1.11-main.bin',
         'base_sw': 0x1C12E2,
+        # DM 0x2dd3d0 is imported at unified-code SW 0x16e9e8.
+        'label_tables': ['16e9e8:4'],
         'probes': [],
     },
 }
@@ -522,6 +534,16 @@ def timed_run(argv):
     return proc, round(time.perf_counter() - t0, 2)
 
 
+def sharc_import_args(blob, name, project, spec):
+    """Build sharc_import.py arguments for one image's configured seed tables."""
+    argv = [
+        sys.executable, os.path.join(TOOLS, 'sharc_import.py'), blob, '--name', name,
+        '--project', project, '--project-name', PROJECT_NAME]
+    for label_table in spec.get('label_tables', []):
+        argv.extend(['--label-table', label_table])
+    return argv + ['--seed-calls', '--analyze', '--overwrite']
+
+
 def measure_ghidra(image, spec, out_dir, timeout, max_functions, db=None):
     """Import, analyse and run the sharcflow pass in a throwaway project -> ghidra record."""
     project = os.path.join(out_dir, 'ghidra-project')
@@ -529,10 +551,7 @@ def measure_ghidra(image, spec, out_dir, timeout, max_functions, db=None):
     name = image + '_SHARC'
     blob = os.path.join(REPO, spec['blob'])
     region = os.path.join(REPO, spec['region'])
-    imp, import_seconds = timed_run([
-        sys.executable, os.path.join(TOOLS, 'sharc_import.py'), blob, '--name', name,
-        '--project', project, '--project-name', PROJECT_NAME,
-        '--seed-calls', '--analyze', '--overwrite'])
+    imp, import_seconds = timed_run(sharc_import_args(blob, name, project, spec))
     if imp.returncode:
         raise SystemExit('sharc_import.py failed:\n' + imp.stdout + imp.stderr)
     flow_json = os.path.join(out_dir, image + '-sharcflow.json')
