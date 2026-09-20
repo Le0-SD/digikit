@@ -965,6 +965,73 @@ def _float_clip(a: float, b: float) -> float:
     return a if abs(a) < abs(b) else math.copysign(abs(b), a)
 
 
+def _float_mantissa(
+    value: Value, expression: str
+) -> tuple[Value, Optional[bool], Optional[bool], Optional[bool]]:
+    """RN = mant FX (PRM Table 18-5 opcode 0xAD, p.427; PGR p.11-34/11-35).
+
+    Extracts the hidden bit plus the 23-bit fraction, left-justified as an
+    unsigned-magnitude 1.31 fixed-point word (bit31 the hidden bit, bits
+    30-8 the fraction, bits 7-0 zero-filled); the 24 significant bits
+    always fit exactly, so no rounding is performed (PGR: "no rounding is
+    performed because all results are inherently exact"). Denormal and
+    zero inputs flush to a zero mantissa (PGR: "Denormal inputs are
+    flushed to +-zero"). A NAN *or an infinity* input returns the fixed
+    all-1s sentinel (PGR: "A NAN or an infinity input returns an all 1s
+    result") -- unlike the arithmetic float ALU ops above, which only
+    override NAN, MANT also overrides infinity, since it is not an
+    ordinary IEEE operation. Returns (result, overflow=is-infinity,
+    negative=input-sign, invalid=is-NAN); AN is always cleared for this
+    op (PRM Table 3-3) and is not returned here.
+    """
+    if not isinstance(value, Const):
+        return Unknown(expression), None, None, None
+    bits = value.value
+    sign = bool(bits & 0x80000000)
+    exponent = (bits >> 23) & 0xFF
+    fraction = bits & 0x7FFFFF
+    if exponent == 0xFF:
+        is_nan = fraction != 0
+        return _FLOAT_ALL_ONES, not is_nan, sign, is_nan
+    if exponent == 0:
+        return Const(0), False, sign, False
+    return Const((0x800000 | fraction) << 8), False, sign, False
+
+
+def _float_scalb(
+    value: Value, scale: Value, expression: str
+) -> tuple[Value, Optional[bool], Optional[bool]]:
+    """FN = scalb FX by RY (PRM Table 18-5 opcode 0xBD, p.427; PGR p.11-33).
+
+    Adds the two's-complement fixed-point integer RY to FX's exponent
+    (i.e. FX * 2**RY). Overflow rounds to +-infinity (round-to-nearest,
+    the only rounding mode this tracer models, matching every other float
+    op here); a result whose magnitude underflows below the smallest
+    float32 normal (2**-126) flushes to +-zero rather than becoming a
+    subnormal (PGR: "Denormal returns +-zero" -- an explicit override of
+    struct's ordinary IEEE denormal rounding, the same kind of override
+    ``_float_to_fixed_trunc`` already applies for its own corner cases). A
+    NAN input returns the same all-1s sentinel ``_float_binary`` uses;
+    zero and infinity inputs pass through unchanged (``math.ldexp``
+    preserves both, matching the PRM, which documents no special case for
+    them). Returns (result, overflow, invalid).
+    """
+    a = _float32(value)
+    if a is None or not isinstance(scale, Const):
+        return Unknown(expression), None, None
+    if math.isnan(a):
+        return _FLOAT_ALL_ONES, False, True
+    shift = _signed32(scale.value)
+    try:
+        scaled = math.ldexp(a, shift)
+    except OverflowError:
+        scaled = math.copysign(math.inf, a)
+    if scaled != 0.0 and not math.isinf(scaled) and abs(scaled) < 2.0**-126:
+        return Const(0x80000000 if scaled < 0 else 0), False, False
+    bits, overflowed = _float32_bits(scaled)
+    return Const(bits), overflowed, False
+
+
 def _fixed_to_float(value: Value, expression: str) -> tuple[Value, Optional[bool]]:
     """FN = float RX (PRM Table 18-5 opcode 0xCA, p.427; PGR p.11-39 "without
     scaling factor"): numeric int32->float32 conversion, not a bit
@@ -1479,12 +1546,54 @@ def _compute(
         return rn, value, "float-negate", _astatx_from_updates(
             _float_alu_updates(value, av=False, ai=invalid)
         )
+    # PGR p.11-34/11-35: Rn = mant Fx. Bespoke flag dict, not
+    # ``_float_alu_updates``: the result is an unsigned-magnitude fixed
+    # word (no sign bit of its own to derive AZ/AN from), AN is
+    # architecturally fixed 0 (PRM Table 3-3), and AS/AV/AI come from the
+    # *input*'s sign/infinity/NAN rather than the result.
+    if cu == 0 and opcode == 0xAD:
+        value, overflow, negative, invalid = _float_mantissa(left, "mant F%d" % rx)
+        updates = {
+            AC_BIT: False,
+            AF_BIT: True,
+            AN_BIT: False,
+            AV_BIT: overflow,
+            AS_BIT: negative,
+            AI_BIT: invalid,
+            AZ_BIT: (value.value == 0) if isinstance(value, Const) else None,
+        }
+        return rn, value, "mant", _astatx_from_updates(updates)
     # PGR p.11-31: Fn = abs Fx. AN fixed 0; AS carries the *input*'s sign.
     if cu == 0 and opcode == 0xB0:
         value, overflow, invalid = _float_unary(left, "abs F%d" % rx, abs)
         return rn, value, "float-abs", _astatx_from_updates(
             _float_alu_updates(value, av=False, an_zero=True, as_source=left, ai=invalid)
         )
+    # PGR p.11-33: Fn = scalb Fx by Ry. Unlike abs/pass/etc., AN here
+    # follows the *result*'s sign (PRM Table 3-3 marks AN '*', not 0), so
+    # this reuses ``_float_alu_updates``'s default (as_source=None,
+    # an_zero=False) rather than the abs-style override.
+    if cu == 0 and opcode == 0xBD:
+        value, overflow, invalid = _float_scalb(
+            left, right, "scalb F%d by R%d" % (rx, ry)
+        )
+        return rn, value, "float-scalb", _astatx_from_updates(
+            _float_alu_updates(value, av=overflow, ai=invalid)
+        )
+    # PGR p.11-20/11-21: Rn = min/max(Rx, Ry) -- fixed-point, not the
+    # float min/max at 0xE1/0xE2 below. AV/AC/AS/AI/AF are all fixed 0
+    # (PRM Table 3-2, "AF Flag = 0"); only AZ/AN follow the chosen
+    # operand, the same rule ``_astatx_alu_logical`` already implements
+    # for pass/not/and/or/xor.
+    if cu == 0 and opcode in (0x61, 0x62):
+        name = "min" if opcode == 0x61 else "max"
+        if isinstance(left, Const) and isinstance(right, Const):
+            a, b = _signed32(left.value), _signed32(right.value)
+            pick_left = (a <= b) if name == "min" else (a >= b)
+            value = left if pick_left else right
+        else:
+            value = Unknown("%s(R%d, R%d)" % (name, rx, ry))
+        return rn, value, name, _astatx_alu_logical(value)
     # PGR p.11-46/11-47: Fn = min/max(Fx, Fy).
     if cu == 0 and opcode in (0xE1, 0xE2):
         name = "min" if opcode == 0xE1 else "max"
@@ -2826,12 +2935,17 @@ def _execute(state: State, insn: Instruction) -> List[State]:
         return _advance(state, insn)
     if name == "3a":
         # PRM Type 3a is a conditional compute plus one normal-word DM/PM
-        # transfer.  Long-word pairs remain deliberately unsupported.
+        # transfer. Table 13-1's syntax row is "IF cond compute, DM(Ia,Mb)
+        # = Ureg" -- cond gates the *whole* instruction, not just the
+        # compute half (PRM p.7924: a false condition "generate[s] NOPs
+        # on the processing element"), so a resolved-false predicate skips
+        # both the transfer and the compute, and an unresolved predicate
+        # forks into executed/skipped states exactly like every other
+        # conditional form here (2a, 5a_move, 9a_abs). Long-word pairs
+        # remain deliberately unsupported.
         if _field(f, "l"):
             return [_stop(state, insn, "unsupported Type3a long-word access")]
         cond = _field(f, "cond")
-        if cond != 0x1F:
-            return [_stop(state, insn, "unsupported Type3a predicate")]
         old = dict(state.uregs)
         compute_fields = dict(f)
         compute_field = _field(f, "compute")
@@ -2841,52 +2955,71 @@ def _execute(state: State, insn: Instruction) -> List[State]:
             compute = _compute(compute_fields, False, old, state.special)
         except ValueError as error:
             return [_stop(state, insn, str(error))]
-        bank = 8 if _field(f, "g") else 0
-        index, modifier = _field(f, "i") + bank, _field(f, "m") + bank
-        post_modify = bool(_field(f, "u"))
-        space = "PM" if bank else "DM"
-        iv, mv = _ureg(old, 16 + index), _ureg(old, 32 + modifier)
-        scale = _access_modifier_scale("normal-word", state.assume_nw32)
-        scaled_mv = _multiply(mv, Const(scale), "M%d * %d" % (modifier, scale))
-        modified = _add(iv, scaled_mv, "I%d + M%d * %d" % (index, modifier, scale))
-        address = iv if post_modify else modified
-        ureg = _field(f, "ureg")
-        if _field(f, "d"):
-            value = _ureg(old, ureg)
+
+        def run_transfer(target: State) -> None:
+            bank = 8 if _field(f, "g") else 0
+            index, modifier = _field(f, "i") + bank, _field(f, "m") + bank
+            post_modify = bool(_field(f, "u"))
+            space = "PM" if bank else "DM"
+            iv, mv = _ureg(old, 16 + index), _ureg(old, 32 + modifier)
+            scale = _access_modifier_scale("normal-word", target.assume_nw32)
+            scaled_mv = _multiply(mv, Const(scale), "M%d * %d" % (modifier, scale))
+            modified = _add(iv, scaled_mv, "I%d + M%d * %d" % (index, modifier, scale))
+            address = iv if post_modify else modified
+            ureg = _field(f, "ureg")
+            if _field(f, "d"):
+                value = _ureg(old, ureg)
+                _event(
+                    target,
+                    insn,
+                    "store",
+                    space=space,
+                    ureg=UREG_NAMES[ureg],
+                    value=value,
+                    address=address,
+                    expression=_render(address),
+                    concrete_write=_dm_write(target, address, 4, value)
+                    if space == "DM"
+                    else False,
+                    addressing_mode="post-modify" if post_modify else "pre-modify",
+                    access_width="normal-word",
+                )
+            else:
+                loaded = _load_normal_ureg(target, space, address, ureg)
+                _event(
+                    target,
+                    insn,
+                    "load",
+                    space=space,
+                    ureg=UREG_NAMES[ureg],
+                    address=address,
+                    expression=_render(address),
+                    concrete_value=loaded,
+                    addressing_mode="post-modify" if post_modify else "pre-modify",
+                    access_width="normal-word",
+                )
+            if post_modify:
+                target.uregs[16 + index] = modified
+            if compute is not None:
+                _apply_compute(target, insn, compute)
+
+        predicate = _predicate(state, cond)
+        if predicate is True:
+            run_transfer(state)
+            state.trace[-1].update(condition=cond, predicate_assumption=True)
+            return _advance(state, insn)
+        if predicate is False:
             _event(
-                state,
-                insn,
-                "store",
-                space=space,
-                ureg=UREG_NAMES[ureg],
-                value=value,
-                address=address,
-                expression=_render(address),
-                concrete_write=_dm_write(state, address, 4, value)
-                if space == "DM"
-                else False,
-                addressing_mode="post-modify" if post_modify else "pre-modify",
-                access_width="normal-word",
+                state, insn, "type3a-skipped", condition=cond, predicate_assumption=False
             )
-        else:
-            loaded = _load_normal_ureg(state, space, address, ureg)
-            _event(
-                state,
-                insn,
-                "load",
-                space=space,
-                ureg=UREG_NAMES[ureg],
-                address=address,
-                expression=_render(address),
-                concrete_value=loaded,
-                addressing_mode="post-modify" if post_modify else "pre-modify",
-                access_width="normal-word",
-            )
-        if post_modify:
-            state.uregs[16 + index] = modified
-        if compute is not None:
-            _apply_compute(state, insn, compute)
-        return _advance(state, insn)
+            return _advance(state, insn)
+        executed, skipped = _copy(state), _copy(state)
+        run_transfer(executed)
+        executed.trace[-1].update(condition=cond, predicate_assumption=True)
+        _event(
+            skipped, insn, "type3a-skipped", condition=cond, predicate_assumption=False
+        )
+        return _advance(executed, insn) + _advance(skipped, insn)
     if name == "14a":
         if _field(f, "l"):
             code = _field(f, "ureg")

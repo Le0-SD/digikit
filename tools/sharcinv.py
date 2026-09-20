@@ -27,7 +27,13 @@ a return-delimited span also opens a new function there. This two-pass
 scheme reproduces all ten hand-read ground-truth entries' boundaries
 exactly except one (0x1c71ec: 235 instructions found vs. 251 hand-counted,
 because 0x1c7442, embedded 16 instructions before its old end, is itself an
-external call target and gets split out -- see --ground-truth).
+external call target and gets split out -- see --ground-truth). Every such
+split is recorded on both halves (fn['entry_kind'] == 'interior_call_target'
+on the carved-out callee, fn['boundary_note'] on both sides) so a reader
+comparing n_insns against a hand count sees why they differ instead of just
+a mismatched number. A return-delimited span that decodes zero instructions
+(e.g. the header gap before a block's first real instruction) is dropped
+rather than emitted as a 0-instruction function.
 
 Feature vectors are counted from the decoded, merged instruction fields
 (e.g. data[31:16]/data[15:0] -> one 'data' value), classified with the
@@ -37,10 +43,23 @@ aluop_32_40bit (PRM Table 18-5, cross-checked against PGR Table 12-3/12-4,
 shiftop_shiftimm (PRM Table 18-9 / PGR Table 12-11), shortcompute (PRM
 Table 18-2 / PGR "Short Compute Opcodes", identical), and dual_add_subtract
 (PRM Table 18-10 p.433: "RA = RX + RY, RS = RX - RY", cu=0,
-opcode[19:16]=0111 fixed / 1111 float -- the FFT butterfly shape) plus its
-multifunction form multifn_mul_dual_addsub (PGR Table 12-1: compute-field
-bits[22:20] = 110 fixed / 111 float, a multiply done in parallel with the
-same dual add/subtract).
+opcode[19:16]=0111 fixed / 1111 float) plus its multifunction form
+multifn_mul_dual_addsub (PGR Table 12-1: compute-field bits[22:20] = 110
+fixed / 111 float, a multiply done in parallel with the same dual
+add/subtract).
+
+dual_add_subtract is a paired-sum-and-difference idiom, not an FFT tell by
+itself: it is the natural shape for a coefficient combine, a block average
+or a one-shot rotation, and 13 functions in the image carry 25 of them with
+no co-occurring FFT signal anywhere (see docs/findings/06, "The FFT /
+phase-vocoder reading was wrong"). label_function() only escalates the
+label toward an FFT claim when dual_add_sub is paired with at least two of
+four corroborating tells also carried in the vector: bitrev_addr (an actual
+bit-reversed address modify), loop_pow2_uniform (every literal hardware-loop
+trip count in the function is a power of two -- one non-power-of-two count,
+like the 15 in blk93@0x1c5615's [32, 15, 32], disqualifies it), a
+table-space literal touch (a named table or an 0x80xxxxxx literal), and
+nested_loops (one hardware loop's span strictly containing another's).
 
 The label heuristic is deliberately conservative: it only fires on a small
 set of vector shapes seen in the ten ground-truth reads (see
@@ -114,6 +133,12 @@ def merge_fields(fields: dict) -> dict:
 
 def float32(bits32: int) -> float:
     return struct.unpack('>f', struct.pack('>I', bits32 & 0xFFFFFFFF))[0]
+
+
+def sign_extend(value: int, bits: int) -> int:
+    if value & (1 << (bits - 1)):
+        return value - (1 << bits)
+    return value
 
 
 def _plausible_float(f: float) -> bool:
@@ -293,10 +318,13 @@ def analyze_block(data: bytes, blocks: dict, idx: int, min_depth: int = 8):
 
 
 def function_bounds(block: dict):
-    """[(entry_sw, exit_sw)] for a block: return-delimited spans, each
-    further split at any direct-call target that falls strictly inside it
-    (see the module docstring; validated against the ten ground-truth
-    functions in blk93)."""
+    """[(entry_sw, exit_sw, entry_kind)] for a block: return-delimited spans,
+    each further split at any direct-call target that falls strictly inside
+    it (see the module docstring; validated against the ten ground-truth
+    functions in blk93). entry_kind is 'return_boundary' for a span's first
+    piece (it starts just after a return) and 'interior_call_target' for any
+    later piece carved out of the same span at a call site -- the visible
+    marker for the 0x1c71ec/0x1c7442 case in the module docstring."""
     sites = block['sites']
     base_sw = block['base_sw']
     rets = sorted((r for r in sites['returns'] if r['after'] is not None),
@@ -311,11 +339,13 @@ def function_bounds(block: dict):
         lo = bisect.bisect_right(call_targets, entry)
         hi = bisect.bisect_left(call_targets, exit_)
         cur = entry
+        kind = 'return_boundary'
         for t in call_targets[lo:hi]:
             if t > cur:
-                out.append((cur, t))
+                out.append((cur, t, kind))
                 cur = t
-        out.append((cur, exit_))
+                kind = 'interior_call_target'
+        out.append((cur, exit_, kind))
     return out
 
 
@@ -337,6 +367,7 @@ def empty_vector():
         'int_alu': 0, 'float_alu': 0, 'float_mul': 0, 'mac': 0, 'plain_mul': 0,
         'shifter': 0, 'dual_add_sub': 0, 'multifn': 0, 'bitrev_addr': 0,
         'loop_literal': 0, 'loop_register': 0, 'loop_literal_values': [],
+        'loop_spans': [],
         'mem_dm_load': 0, 'mem_dm_store': 0, 'mem_pm_load': 0, 'mem_pm_store': 0,
         'mem_dual': 0, 'mem_by_form': Counter(),
         'float_immediates': [], 'literal_regions': Counter(),
@@ -423,6 +454,18 @@ def compute_vector(func_insns, sites_calls_by_sw, sites_indirect_by_sw):
             v['loop_literal_values'].append(val)
         elif t == LOOP_REGISTER_FORM:
             v['loop_register'] += 1
+        if t in (LOOP_LITERAL_FORM, LOOP_REGISTER_FORM):
+            # Type12a's reladdr is the loop-end offset from this instruction
+            # (PC-relative, 23 bits signed); the loop body runs from just
+            # after this instruction to there. Same formula as
+            # tools/sharc_trace.py's _start_counted_loop, computed statically
+            # here (no execution) so nested_loops can be a feature-vector
+            # count rather than only visible under the tracer.
+            reladdr = f.get('reladdr')
+            if reladdr is not None and insn.length_bytes:
+                start_sw = sw + insn.length_bytes // 2
+                end_sw = sw + sign_extend(reladdr, 23)
+                v['loop_spans'].append((start_sw, end_sw))
 
         # addressing mode tells
         if t == '19a_bitrev':
@@ -445,8 +488,29 @@ def compute_vector(func_insns, sites_calls_by_sw, sites_indirect_by_sw):
     return v
 
 
+def _count_nested_loops(spans):
+    """How many of a function's hardware-loop spans sit strictly inside
+    another one of its own hardware-loop spans -- a real corroborating tell
+    for staged (e.g. FFT) loop nests, as opposed to N flat, sequential
+    loops (see blk69@0xb8063e in the module docstring: 17 loops, all
+    flat)."""
+    nested = 0
+    norm = [(min(s, e), max(s, e)) for s, e in spans]
+    for i, (lo1, hi1) in enumerate(norm):
+        for j, (lo2, hi2) in enumerate(norm):
+            if i != j and lo1 < lo2 and hi2 <= hi1:
+                nested += 1
+                break
+    return nested
+
+
 def finalize_vector(v):
-    """JSON-safe copy: sets->sorted lists, Counters->dicts."""
+    """JSON-safe copy: sets->sorted lists, Counters->dicts. Also derives the
+    FFT corroborator features that need more than one instruction to see:
+    loop_pow2_uniform (every literal loop trip count in the function is a
+    power of two -- one non-power-of-two count disqualifies the whole
+    function, see blk93@0x1c5615's [32, 15, 32] in the module docstring) and
+    nested_loops (see _count_nested_loops)."""
     out = dict(v)
     out['mem_by_form'] = dict(v['mem_by_form'])
     out['literal_regions'] = dict(v['literal_regions'])
@@ -455,6 +519,11 @@ def finalize_vector(v):
     out['mem_store'] = v['mem_dm_store'] + v['mem_pm_store']
     out['compute_total'] = (v['int_alu'] + v['float_alu'] + v['float_mul'] + v['mac']
                              + v['plain_mul'] + v['shifter'] + v['dual_add_sub'])
+    values = v['loop_literal_values']
+    out['loop_pow2_uniform'] = int(bool(values)
+                                    and all(x > 0 and (x & (x - 1)) == 0 for x in values))
+    out['nested_loops'] = _count_nested_loops(v['loop_spans'])
+    del out['loop_spans']
     return out
 
 
@@ -468,7 +537,13 @@ def label_function(fv: dict, n_insns: int, n_callers: int, n_callees: int, is_le
     fv['dual_add_sub'] and fv['bitrev_addr'] are reported regardless of the
     label chosen here -- a single incidental dual add/subtract in an
     otherwise memory-gather-shaped function should not by itself relabel it
-    FFT-like (see 0x1cd286 in --ground-truth)."""
+    (see 0x1cd286 in --ground-truth). When dual add/subtract does dominate a
+    function's compute, the default reading is 'paired sum/difference
+    (coefficient combine)' -- a plain sum-and-difference idiom, also used
+    for block averages and one-shot rotations -- and only escalates toward
+    an FFT claim when at least two of four corroborating tells also show up
+    in the vector (bitrev_addr, loop_pow2_uniform, a table-space literal
+    touch, nested_loops); see the module docstring."""
     reasons = []
     compute = fv['compute_total']
     mem_lo, mem_st = fv['mem_load'], fv['mem_store']
@@ -492,8 +567,24 @@ def label_function(fv: dict, n_insns: int, n_callers: int, n_callees: int, is_le
         return 'driver/peripheral', 0.5, reasons
 
     if fv['dual_add_sub'] >= 2 or (fv['dual_add_sub'] >= 1 and compute <= 20):
-        reasons.append(f"{fv['dual_add_sub']} dual add/subtract op(s) dominate a small compute budget")
-        return 'FFT-like (dual add/subtract)', 0.7, reasons
+        tells = []
+        if fv['bitrev_addr'] > 0:
+            tells.append(f"{fv['bitrev_addr']} bit-reversed address modify(s)")
+        if fv.get('loop_pow2_uniform'):
+            tells.append(f"power-of-two hardware-loop trip count(s) {fv['loop_literal_values']}")
+        table_hits = len(fv['named_tables_touched']) + fv['literal_regions'].get('external_0x80xxxxxx', 0)
+        if table_hits > 0:
+            tells.append(f"{table_hits} table-space literal touch(es)")
+        if fv.get('nested_loops'):
+            tells.append(f"{fv['nested_loops']} nested hardware loop(s)")
+        if len(tells) >= 2:
+            reasons.append(f"{fv['dual_add_sub']} dual add/subtract op(s) plus {len(tells)} "
+                            f"corroborating spectral tells: " + '; '.join(tells))
+            return 'FFT-like (dual add/subtract + spectral tell)', 0.7, reasons
+        reasons.append(f"{fv['dual_add_sub']} dual add/subtract op(s) dominate a small compute budget"
+                        + (f"; one uncorroborated tell present ({tells[0]}) -- not enough alone, worth a look"
+                           if tells else "; no corroborating spectral tell"))
+        return 'paired sum/difference (coefficient combine)', 0.55, reasons
 
     if fv['bitrev_addr'] > 0:
         reasons.append(f"{fv['bitrev_addr']} bit-reversed address modify(s)")
@@ -547,12 +638,37 @@ def build_inventory(blob_path, block_idxs, min_depth=8):
     functions = []
     entry_to_func = {}
     for idx, block in analyzed.items():
-        for entry, exit_ in function_bounds(block):
+        for entry, exit_, entry_kind in function_bounds(block):
+            if not instructions_in(block, entry, exit_):
+                # Header/padding gap before the block's first decodable
+                # instruction (or some other span with nothing in it) --
+                # not a real function; see blk1@0x1201f8 in the module
+                # docstring.
+                continue
             fid = f'blk{idx}@{entry:#x}'
-            fn = {'id': fid, 'block': idx, 'entry': entry, 'exit': exit_}
+            fn = {'id': fid, 'block': idx, 'entry': entry, 'exit': exit_,
+                  'entry_kind': entry_kind}
             functions.append(fn)
             entry_to_func.setdefault(entry, []).append(fid)
     by_id = {fn['id']: fn for fn in functions}
+
+    # Cross-reference interior-call-target splits so both halves carry a
+    # human-readable note (the module docstring's 0x1c71ec/0x1c7442 case):
+    # the carved-out callee names the routine it was split from, and that
+    # routine names the callee its tail was split into.
+    exit_index = {(fn['block'], fn['exit']): fn for fn in functions}
+    for fn in functions:
+        if fn['entry_kind'] != 'interior_call_target':
+            continue
+        prev = exit_index.get((fn['block'], fn['entry']))
+        if prev is None:
+            continue
+        fn['split_from'] = prev['id']
+        fn['boundary_note'] = (f"entry is an interior call target split out of {prev['id']}'s "
+                                f"return-delimited span")
+        prev['tail_split_into'] = fn['id']
+        prev['boundary_note'] = (f"tail split off as {fn['id']} (a shared, independently "
+                                  f"callable routine) -- n_insns here is short by that amount")
 
     # owning function for every call/indirect-call site, by (block, sw)
     def owner_of(idx, sw):
@@ -631,7 +747,7 @@ def check_ground_truth(functions):
         rows.append({'addr': addr, 'found': True, 'n_insns': fn['n_insns'],
                      'expected': gt['n_insns'], 'label': fn['label'],
                      'n_callers': len(fn['callers']), 'n_callees': len(fn['callees']),
-                     'note': gt['note']})
+                     'note': gt['note'], 'boundary_note': fn.get('boundary_note')})
     return rows
 
 
@@ -673,12 +789,16 @@ def main(argv=None):
                 continue
             match = '=' if row['n_insns'] == row['expected'] else '!='
             exp = row['expected'] if row['expected'] is not None else '?'
-            print(f"  {row['addr']:#08x}  n_insns={row['n_insns']} {match} expected={exp}"
-                  f"  label={row['label']}  callers={row['n_callers']} callees={row['n_callees']}"
-                  f"  -- {row['note']}")
+            line = (f"  {row['addr']:#08x}  n_insns={row['n_insns']} {match} expected={exp}"
+                    f"  label={row['label']}  callers={row['n_callers']} callees={row['n_callees']}"
+                    f"  -- {row['note']}")
+            if row.get('boundary_note'):
+                line += f"  [{row['boundary_note']}]"
+            print(line)
 
     if args.top:
-        interesting_labels = {'FFT-like (dual add/subtract)', 'FFT-like (bit-reversed addressing)',
+        interesting_labels = {'FFT-like (dual add/subtract + spectral tell)',
+                               'FFT-like (bit-reversed addressing)',
                                'interpolating table lookup / wavetable oscillator',
                                'IIR or recurrence', 'envelope or gain', 'unclassified/mixed'}
 

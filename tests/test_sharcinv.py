@@ -13,11 +13,47 @@ import unittest
 sys.path.insert(0, os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
 
+import sharc_disasm  # noqa: E402
 import sharc_visa_tables as T  # noqa: E402
 import sharcflow  # noqa: E402
 import sharcinv  # noqa: E402
 from test_sharc_disasm import encode  # noqa: E402
 from test_sharcflow import cjump, load, push3c, store, words  # noqa: E402
+
+
+def field_insn(name, **values):
+    """A `name` instruction with each of its fields set from `values` (by
+    merged base name, e.g. reladdr=0x1234 covers both reladdr[22:16] and
+    reladdr[15:0]) -- generalizes compute23's per-chunk placement below to
+    any form whose fields are split across non-overlapping bit ranges, such
+    as Type12a's data/reladdr."""
+    t = T.get_type(name)
+    insn = t['opcode_value']
+    for label, (hi, lo) in t['fields'].items():
+        base = label.split('[')[0]
+        if base not in values:
+            continue
+        if '[' in label:
+            chi, clo = label[label.index('[') + 1:-1].split(':')
+            chi, clo = int(chi), int(clo)
+            chunk = (values[base] >> clo) & ((1 << (chi - clo + 1)) - 1)
+        else:
+            chunk = values[base] & ((1 << (hi - lo + 1)) - 1)
+        insn |= chunk << lo
+    nwords = t['bits'] // 16
+    ws = [(insn >> (t['bits'] - 16 * (i + 1))) & 0xFFFF for i in range(nwords)]
+    return struct.pack('<%dH' % nwords, *ws)
+
+
+def loop_insn(sw, count, reladdr, form='12a_imm'):
+    """(sw, Instruction) for a Type12a hardware-loop setup at `sw`, trip
+    count `count` (12a_imm) and end offset `reladdr` short-words ahead of
+    the loop body's start (PRM Table 12a: reladdr is PC-relative from the
+    setup instruction itself, see sharcinv.compute_vector)."""
+    data = field_insn(form, data=count, reladdr=reladdr & 0x7FFFFF, mode=0) \
+        if form == '12a_imm' else field_insn(form, ureg=count, reladdr=reladdr & 0x7FFFFF, mode=0)
+    insn = next(sharc_disasm.disassemble(data))
+    return sw, insn
 
 
 def compute23(name, field23):
@@ -70,9 +106,11 @@ class BoundariesTest(unittest.TestCase):
         block = self._block(data, 0x1000)
         spans = sharcinv.function_bounds(block)
         self.assertEqual(len(spans), 2)
-        (a_entry, a_exit), (b_entry, b_exit) = spans
+        (a_entry, a_exit, a_kind), (b_entry, b_exit, b_kind) = spans
         self.assertEqual(a_entry, 0x1000)
         self.assertEqual(b_entry, a_exit)
+        self.assertEqual(a_kind, 'return_boundary')
+        self.assertEqual(b_kind, 'return_boundary')
 
         b_insns = sharcinv.instructions_in(block, b_entry, b_exit)
         v = sharcinv.compute_vector(b_insns, {}, {})
@@ -82,7 +120,9 @@ class BoundariesTest(unittest.TestCase):
 
         fv = sharcinv.finalize_vector(v)
         label, conf, reasons = sharcinv.label_function(fv, len(b_insns), 0, 0, True)
-        self.assertEqual(label, 'FFT-like (dual add/subtract)')
+        # A single dual add/subtract with no corroborating spectral tell is
+        # a plain paired sum/difference, not an FFT claim.
+        self.assertEqual(label, 'paired sum/difference (coefficient combine)')
         self.assertTrue(reasons)
 
     def test_call_target_inside_a_span_splits_it(self):
@@ -95,8 +135,11 @@ class BoundariesTest(unittest.TestCase):
                 + load(0, 0) + ret() + load(0, 0) + rframe())
         block = self._block(data, 0x1000)
         spans = sharcinv.function_bounds(block)
-        entries = [e for e, _ in spans]
+        entries = [e for e, _, _ in spans]
         self.assertIn(inner_target, entries)
+        kinds = {e: k for e, _, k in spans}
+        self.assertEqual(kinds[0x1000], 'return_boundary')
+        self.assertEqual(kinds[inner_target], 'interior_call_target')
 
 
 class ComputeClassifyTest(unittest.TestCase):
@@ -182,6 +225,95 @@ class SwBaseTest(unittest.TestCase):
 
     def test_outside_any_window(self):
         self.assertIsNone(sharcinv.sw_base_for_target(0x10000000))
+
+
+class LoopFeatureTest(unittest.TestCase):
+    """loop_pow2_uniform and nested_loops -- the two new corroborating
+    features derived (in finalize_vector) from Type12a's reladdr, the same
+    end_sw formula tools/sharc_trace.py uses at runtime, computed here
+    statically from the instruction alone."""
+
+    def test_pow2_uniform_true_when_every_literal_count_is_a_power_of_two(self):
+        insns = [loop_insn(0x1000, 32, 0x10), loop_insn(0x1100, 16, 0x10)]
+        fv = sharcinv.finalize_vector(sharcinv.compute_vector(insns, {}, {}))
+        self.assertEqual(fv['loop_pow2_uniform'], 1)
+
+    def test_pow2_uniform_false_with_one_non_power_of_two(self):
+        # blk93@0x1c5615's real shape: literal trip counts [32, 15, 32] --
+        # the 15 disqualifies the whole function (see the module docstring).
+        insns = [loop_insn(0x1000, 32, 0x10), loop_insn(0x1100, 15, 0x10),
+                 loop_insn(0x1200, 32, 0x10)]
+        fv = sharcinv.finalize_vector(sharcinv.compute_vector(insns, {}, {}))
+        self.assertEqual(fv['loop_pow2_uniform'], 0)
+
+    def test_pow2_uniform_false_with_no_literal_loops(self):
+        fv = sharcinv.finalize_vector(sharcinv.compute_vector([], {}, {}))
+        self.assertEqual(fv['loop_pow2_uniform'], 0)
+
+    def test_nested_loops_detected(self):
+        # outer: setup at 0x1000, body [0x1003, 0x1020); inner: setup at
+        # 0x1010 (inside the outer body), body [0x1013, 0x1015) -- strictly
+        # inside the outer span.
+        outer = loop_insn(0x1000, 4, 0x20)
+        inner = loop_insn(0x1010, 8, 0x5)
+        fv = sharcinv.finalize_vector(sharcinv.compute_vector([outer, inner], {}, {}))
+        self.assertEqual(fv['nested_loops'], 1)
+
+    def test_flat_sequential_loops_are_not_nested(self):
+        # blk69@0xb8063e's real shape: 17 loops, all flat -- disjoint spans,
+        # one after another, never one inside another.
+        a = loop_insn(0x1000, 4, 0x8)
+        b = loop_insn(0x1010, 4, 0x8)
+        fv = sharcinv.finalize_vector(sharcinv.compute_vector([a, b], {}, {}))
+        self.assertEqual(fv['nested_loops'], 0)
+
+
+class DualAddSubLabelTest(unittest.TestCase):
+    """label_function's strengthened dual-add/subtract rule: the plain,
+    accurate label by default, escalating to an FFT claim only once two or
+    more of the four corroborating tells also show up."""
+
+    def _fv(self, **overrides):
+        fv = sharcinv.finalize_vector(sharcinv.empty_vector())
+        fv.update(overrides)
+        return fv
+
+    def test_dual_addsub_alone_is_paired_sum_difference_not_fft(self):
+        fv = self._fv(dual_add_sub=2, compute_total=2)
+        label, conf, reasons = sharcinv.label_function(fv, 50, 0, 0, True)
+        self.assertEqual(label, 'paired sum/difference (coefficient combine)')
+        self.assertTrue(reasons)
+
+    def test_one_corroborator_is_not_enough_to_claim_fft(self):
+        # blk93@0x1cb647's real shape: dual add/subtract plus a single
+        # power-of-two loop (the block-average case in the module
+        # docstring) -- flagged as worth a look, but not labelled FFT-like.
+        fv = self._fv(dual_add_sub=3, compute_total=3, loop_pow2_uniform=1,
+                      loop_literal_values=[32])
+        label, conf, reasons = sharcinv.label_function(fv, 168, 0, 0, True)
+        self.assertEqual(label, 'paired sum/difference (coefficient combine)')
+        self.assertIn('uncorroborated', ' '.join(reasons))
+
+    def test_two_corroborators_escalates_to_fft_like(self):
+        fv = self._fv(dual_add_sub=2, compute_total=2, bitrev_addr=1, nested_loops=1)
+        label, conf, reasons = sharcinv.label_function(fv, 50, 0, 0, True)
+        self.assertEqual(label, 'FFT-like (dual add/subtract + spectral tell)')
+        self.assertTrue(reasons)
+
+    def test_table_touch_and_nesting_together_also_escalate(self):
+        fv = self._fv(dual_add_sub=2, compute_total=2, nested_loops=2,
+                      named_tables_touched=['cosine_a'])
+        label, conf, reasons = sharcinv.label_function(fv, 50, 0, 0, True)
+        self.assertEqual(label, 'FFT-like (dual add/subtract + spectral tell)')
+
+    def test_dual_addsub_not_dominant_does_not_reach_the_rule_at_all(self):
+        # one dual add/subtract in a function whose compute is otherwise
+        # large (>20) never triggers either label -- see 0x1cd286 in
+        # --ground-truth, an honest abstention this rule must not disturb.
+        fv = self._fv(dual_add_sub=1, compute_total=40, bitrev_addr=1, nested_loops=1)
+        label, conf, reasons = sharcinv.label_function(fv, 148, 1, 0, False)
+        self.assertNotIn('dual add/subtract', label)
+        self.assertNotIn('paired sum/difference', label)
 
 
 if __name__ == '__main__':

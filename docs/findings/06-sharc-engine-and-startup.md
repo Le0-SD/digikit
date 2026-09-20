@@ -1876,3 +1876,133 @@ label should be renamed; "FFT-like" is misleading.
 Tracer gap found while doing this: `_compute()` still lacks the ALU opcodes
 `mant` (`0x0`) and `scalb` (`0xbd`), both documented in PRM Table 18-5. They
 stall a trace of `0xb8063e` at step ~45.
+
+## The call graph was incomplete: Type 8a CALL was never decoded **[C][V]**
+
+The most consequential finding of this pass, and it invalidates a recurring
+claim. `tools/sharcflow.py` (and `tools/sharcinv.py`, which builds on it)
+recognise only **Type 25a** `CJUMP` and **Type 9b** indirect calls. They do not
+decode **Type 8a with `b=1`**, which is an ordinary PC-relative `CALL` (SHARC+
+PRM p.357).
+
+Decoding all Type 8a calls in blk93 finds **51 real call sites that every
+previous pass missed**. So **every "no static caller" claim in this document is
+unsafe** -- including the ones about `FUN_1c71ec`, `FUN_1c2b24`, the
+ring-construction function and `0x1cb4b2`. They may well have had callers all
+along. The 12-indirect-calls-are-returns correction still stands (that was about
+Type 9b), but "callerless, therefore reached at runtime only" does not.
+
+50 of those 51 target one address: **`0x1c06ba`**, a heavily shared primitive
+reached from all over the engine, including from stage 3's envelope routine
+`0x1cb3d8`. It is **RECIPS followed by three Newton-Raphson iterations** -- the
+reciprocal idiom the SHARC+ PRM documents verbatim. The inventory's guess of
+"IIR or recurrence" for it is wrong.
+
+Two further tracer gaps surfaced, neither previously known: multifunction
+categories **`0x1e`/`0x1f`** (MUL+MAX and MUL+MIN, PGR Table 12-12 p.588) are
+not modelled -- only `0x18`/`0x19` (MUL+ADD/SUB) are -- and they stop every
+symbolic path through `0x1c207b`.
+
+## [C] The dispatch lead: right shape, wrong table
+
+The `JUMP(M13,I12)` sites in `0x1c642a` are real and the form is genuinely an
+indirect jump. But the instruction **order** recorded above is backwards, and
+that changes the conclusion. Re-read from the bytes:
+
+```
+0x1c6569  17a      I4  = 0x8055c840        ; a literal -- NOT I14
+0x1c656c  3b       I12 = DM(I4 + M4*4)     ; the jump target is fetched HERE
+0x1c656e  5b_move  I4  = I14 (= 0x254d98)  ; only now, AFTER the fetch
+0x1c6579  9b_abs   JUMP(M13,I12)
+```
+
+All three sites follow this shape, with base literals `0x8055c840`,
+`0x8055c858`, `0x8055c874` -- **exactly** the three "point-reads into the
+exponential tail" already recorded independently for this function, which is a
+strong cross-check that this is the real fetch.
+
+So `0x254d98` is **an argument passed to the callee**, not the source of the
+jump target. The actual fetch base sits in the `0x8055c8xx` float-table region.
+`M4` is copied from `R6`, an incoming parameter of `0x1c642a` itself, which is
+why the target cannot be resolved -- not because I14 was unresolved (it is
+concrete).
+
+**Machine-type dependence is not established, and two traced paths argue against
+it.** The four writes to `0x254d78`/`80`/`88`/`90` happen in `FUN_1c2b24` at
+`~0x1c2c5e`, **1800+ instructions before** the machine-type read at
+`0x1c33c1`, with no dataflow between them. The three writes to
+`0x254d98`/`9c`/`a0` are in `0x1c18a6`'s prologue on an unconditional
+single path (0 branches in 400 traced steps).
+
+The one untraced hop that could still connect it: `R4` at `0x1c1928` is an
+incoming argument, and `FUN_1c2b24` passes `R4 = caller frame[-17]`. Where that
+frame slot comes from is **[O]**.
+
+The region resolves as **one 11-word object**, `0x254d78`-`0x254da0`, whose
+middle six words `0x1c18a6` loads into `I3,I12,M1-M4`. Writers found only in
+blk93. The scan saw only direct-literal address operands, so a store through a
+computed base would be invisible.
+
+## Four more functions read
+
+Full notes in `docs/findings/functions/`.
+
+**`blk88@0x1c0d68`** -- 127 instructions, leaf, **15 callers**, and the most
+useful of the four. Convergent evidence makes it a shared **`base^x` evaluator**:
+`R4` across all 15 callers takes almost exclusively one of **2.0, 10.0 or pi**,
+selecting a base (pitch doubling, decade/dB, angle). Callers set up
+`R12 = 64.0` with `R8 ~= 1/12` (the semitone fraction) and one uses
+`R13 = 220.0` (A3). So this is the engine's **pitch and dB conversion
+primitive**. It reads three hard-coded RAM cells (`0x2411c8`, `0x241210`,
+`0x241234`) that no caller passes -- shared global state. Its single dual
+add/subtract is a plain register-pair sum/difference, not an indexed FFT walk --
+another data point for the image-wide conclusion. Two float ALU opcodes
+(`0xd9`, `0xda`) are absent from the public table, so no exact formula **[O]**.
+
+**`blk93@0x1c207b`** (303 instructions) -- per-track gain smoothing and soft
+limiting. Float constants **0.8465 and 0.1534** (summing to ~1.0, a one-pole
+blend pair), **3.1623** (sqrt(10), the +10 dB amplitude ratio), 1.0, 8.0, 1/32.
+Real `clip Fx by F1` ops, a MUL+ADD and a MUL+MAX multifunction followed by a
+single `min` -- a clamp built from two ALU ops. 14 loop setups, **all literal**:
+ten of count 16 span 24, one 16/59, one 15/24, and one **count 3 span 94** that
+holds essentially all the heavy compute. Writes state back into the shared
+context struct `0x252d3c` at `+4`/`+12`.
+
+**`blk93@0x1c14e7`** (98 instructions) -- the last call in the render chain, and
+a candidate for the missing ring writer. Five literal loops (256, 16, 16, 32,
+16). The `R12`/`R8`/`R4` context arguments are **never dereferenced**; every
+address it uses is a hard-coded literal in `0x252d3c`-`0x254800`, all RAM. Its
+32-count loop walks a **32-entry pointer table at `0x252d78`** (= `R12+0x3c`),
+one slot per track, dereferences each and writes **16 floats through it**
+(8x2, stereo-shaped) scaled by 1.0965000391. `MODE1.PEYEN` (SIMD) is on for
+every compute loop. Where those floats land is unknowable statically because the
+table is runtime-written **[O]** -- but a per-track pointer table written through
+is exactly the shape the ring writer would have.
+
+**`blk93@0x1cb4b2`** (183 instructions) -- normalises a state-struct integer via
+the `+2^32` unsigned-to-float idiom, calls the shared reciprocal `0x1c06ba`,
+then either emits one saturated value through the `x <- x*(2-|x|)` polynomial
+(**four** iterations here, against stage 3's three) or refreshes a run of values
+through a register-counted loop blending a second array via six dual float-MACs.
+
+## Tool changes **[V]**
+
+`tools/sharc_trace.py`: added `mant` (`0xad`) and `scalb` (`0xbd`) with their
+bespoke flag behaviour (MANT overrides infinity to the all-ones sentinel, unlike
+ordinary float ops; SCALB overrides IEEE subnormal rounding on underflow), plus
+fixed-point `min`/`max` (`0x61`/`0x62`), plus **Type3a predicates** -- which
+turned out to be contained: PRM Table 13-1 shows `IF cond` gates the whole
+instruction, compute and transfer, so it uses the same fork pattern as the other
+predicated forms.
+
+`tools/sharcinv.py`: the **"FFT-like" label is renamed "paired sum/difference
+(coefficient combine)"**, and the rule now requires corroboration -- bit-reversed
+addressing, uniform power-of-two loop counts, a table touch, or nested loops --
+before claiming anything spectral. Two new vector features, `loop_pow2_uniform`
+and `nested_loops`. Of the 13 functions carrying dual add/subtract, **11 have
+zero corroborators and none reaches the threshold of two**: a clean zero,
+confirming the FFT result from a second direction. Also filters a 0-instruction
+boundary artifact (1228 -> 1227 functions) and annotates interior-call splits so
+the `0x1c71ec` 235-vs-251 mismatch is visible rather than confusing.
+
+Tests: **521 -> 545 passed**, 5 skipped, 174 subtests.
