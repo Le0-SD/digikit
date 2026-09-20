@@ -41,9 +41,15 @@ Evidence classes follow `docs/FINDINGS.md`: **[V]** verified by running it here 
   from a blocker to a convenience.
 - **No raw peek/poke.** There is no arbitrary-memory read/write command. Live
   data access is filesystem-shaped (`FsSample*`, `Data*`), not RAM-shaped.
-- **`DigisharcSysexRpc`** is the RPC container class name (§3). "Digisharc" =
-  SHARC — a possible SysEx path toward the DSP, relevant to the machine work.
-  Lead only, not chased. **[O]**
+- **`DigisharcSysexRpc` is not a path to the DSP** (checked, ruled out). Despite
+  the name, its handler (`"Handle sysex RPC"` worker, callback `0x40122952`)
+  never calls the DSPI2 driver or touches the SHARC transport; its one payload
+  op just returns the hardcoded string `"MY ANALOG FOUR"` (shared-codebase
+  cruft). "Digisharc" is a serialization namespace shared with DSP-side
+  structs, not a wire into the DSP. Matches the 1.15C "Ruled out as the control
+  link" finding in `FINDINGS.md`. **[D]** There is **no discovered live
+  SysEx→SHARC channel**; host→DSP influence is only the machine-type byte in
+  the periodic DSPI2 frame (§ the ColdFire↔SHARC boundary in `FINDINGS.md`).
 
 ## 1. Live device round-trip **[V]**
 
@@ -250,7 +256,8 @@ status, `0xEC07000C` data). Commands include `#HELLO`, `#READ`, `#WRITE`,
    snooping the official Transfer/Overbridge traffic, or by a bounded read-only
    Ping probe against hardware.
 2. Whether responses echo the request `seq` (§5).
-3. `DigisharcSysexRpc` — is there a SysEx→SHARC path? (§2, name lead only.)
+3. ~~`DigisharcSysexRpc` — SysEx→SHARC path?~~ Ruled out (see "Why this
+   matters"): host-side only, returns `"MY ANALOG FOUR"`, no DSPI2/SHARC reach.
 4. `FsSampleOpenFile*` path confinement (§6).
 5. `FUN_400e27ec`'s inner jump table `0x400e2830`; the `0x10`, `0x60-0x6F`,
    `0x78`, `0x7E-0x7F` handlers (§2).
