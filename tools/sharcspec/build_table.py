@@ -38,6 +38,21 @@ PAIRS = {
 }
 ISA_ONLY = {"Type10a"}  # PRM heading "Type 10a ISA (...)"; every other form is ISA/VISA or VISA
 
+# The PRM heading marks the whole Type10a figure "ISA" (no "VISA" or
+# "ISA/VISA", unlike its siblings 8a/9a "ISA/VISA" and 9b "VISA" -- see
+# docs/sharc/SOURCES.md), so ISA_ONLY above keeps both Type10a_abs and
+# Type10a_rel out of the VISA table by default. Firmware contradicts that
+# for the rel (PC-relative jump) half: `sw 0x1c5030` in blk93@0x1c4f81
+# decodes as Type10a_rel by the classic PGR p.458 "with PC-relative jump"
+# bit layout (fixed 111 at bits 47-45, then D/DMI/DMM/COND/RELADDR/DREG/
+# COMPUTE -- the same split this file already derives from SPLIT_FORMS
+# below), inside code this tool otherwise decodes as VISA and that
+# desyncs immediately without this form. The abs (register-indirect jump)
+# half has no such firmware evidence yet, so it stays ISA-only pending
+# that; see build_table.py's own Type6b_shiftimm/Type2a_short precedent
+# for overriding a PRM ISA/VISA heading on firmware evidence.
+VISA_OVERRIDE = {"Type10a_rel"}
+
 # Forms where the PRM figure's fixed bits are correct and the PGR disagrees.
 # Firmware decoding confirms the PRM value; the earlier "stale template digit"
 # call against the PRM was wrong for these.
@@ -252,7 +267,7 @@ def fixed_bits_for(width, fields, keys, prm=None, gap_bits=()):
 def make_form(name, width, fields, fixed, source, keys=()):
     mask = sum(1 << b for b in fixed)
     value = sum(v << b for b, v in fixed.items())
-    isa_only = name.split("_")[0] in ISA_ONLY
+    isa_only = name.split("_")[0] in ISA_ONLY and name not in VISA_OVERRIDE
     return {
         "name": name, "width": width, "visa": not isa_only, "isa": width == 48,
         "mask": f"0x{mask:012x}", "value": f"0x{value:012x}", "fixed_bits": len(fixed),

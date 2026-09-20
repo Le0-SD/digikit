@@ -2135,3 +2135,136 @@ table; ALU opcode `0xe0` is unsupported; multifunction categories `0x1a` and
 `0x1e` and opcode `0xda` were identified by hand as
 `FM=Fx*Fy, FA=float RXA by RYA / max(...)` and `FN=float RX by RY`. Also:
 `--blob` and `--base-sw` are mutually exclusive in `sharc_trace.py`, by design.
+
+## A named musical computation: MIDI note to frequency **[D]**
+
+`blk93@0x1cbe19` (100 instructions) is **not** the "envelope or gain" its label
+claimed. Its constant set is decisive: **220.0, 69.0, 12.0, 1/12, 2.0** -- that is
+the 12-tone equal temperament formula
+
+```
+f = 220 * 2^((note - 69) / 12)
+```
+
+and it calls `blk88@0x1c0d68` with `R4 = 2.0`, which is exactly that shared
+`base^x` primitive's pitch branch. Its final output, after the `base^x` call and
+a reciprocal call, is **clamped between 20.0 and 22000.0** -- the audio frequency
+range. It writes that to `*(I5+60)`, and it sits immediately before
+`0x1cbf07`, stage 6 of the wavetable pipeline (the `0x1fff`-masked 8192-entry
+lookup). So this computes the frequency that drives a wavetable oscillator.
+
+This is the first end-to-end *musical* computation identified in the DSP, and it
+confirms the library reading: a note number goes in, a clamped frequency comes
+out, via a shared exponential primitive.
+
+It also uses a **new ROM table at DM `0x26b338`** (byte `0x2826b338`, file offset
+`0x66c8` in blk37 -- real payload, not RAM): **128 entries, monotonic and
+concave, 0.0 at index 0 rising to 1.0 at index 127**. A 0..127 response curve,
+read with the same scale-by-127 / clamp / two-adjacent-taps idiom as `0x1c18a6`
+and the `0x2c2cc0` table. Closed form not determined **[O]**.
+
+A third callee was found that the tools had missed -- a Type 8a call to the
+shared reciprocal -- plus a thin forwarder `0x1cc6c4` to `0x1c12b4`, next to the
+`ln(10)` log primitive, plausibly another shared-math sibling **[O]**.
+
+Of the two call sites in the orchestrator, only `R4` is reliably set by both;
+the extra `R12` traffic at `0x1c6e88` is caller-side scheduling the callee never
+reads.
+
+## [C] The polyphase resampler is in the render chain, and `I4` is not the frame
+
+Two corrections to the `0x1c4f81` entry above, both from re-running the caller
+search with Type 8a decoding fixed.
+
+**It is not an independently called function.** Nothing calls it -- no 25a, no
+Type 8a, and its address appears nowhere as data in any block, both
+endiannesses. What reaches it is an `8a_rel` **conditional JUMP** (`b=0`,
+`cond=23`) at `sw 0x1c4f25`, from *inside* the preceding span `0x1c4ecf`, well
+before that span's own return. Its exit jumps backward into `0x1c4ecf`'s restore
+epilogue. **The two inventory "functions" are architecturally one routine**,
+split only because a return belonging to `0x1c4ecf`'s non-resampling path
+happens to sit just before `0x1c4f81` begins.
+
+And `0x1c4ecf` has exactly one reference in the program: a `25a_direct` call at
+`sw 0x1c6b00`, inside `0x1c642a`. So the chain is:
+
+```
+FUN_1c2b24 -> 0x1c642a -> call 0x1c4ecf  (sw 0x1c6b00)
+                       -> cond=23 branch to 0x1c4f81  [the resampler]
+                       -> jump back into 0x1c4ecf's epilogue
+```
+
+**The resampler is in the per-frame render chain**, two calls deep behind a
+conditional gate. That closes the "reached some other way" open item.
+
+**`I4` is not the parameter frame.** Tested numerically against the confirmed
+SRC-page layout: word offsets 98-101 would land on **track 1's amp/FX fields**,
+not the SRC page; 104-107 on track 2's SAMP/LEN/LEV, skipping TUNE, PLAY, CFADE
+and STRT entirely; 108-109 fall past the page. The two reads that seed the phase
+step, `DM(I4+98)`/`DM(I4+99)`, would read amp parameters, and **no track's TUNE
+is read anywhere under this hypothesis**.
+
+The clinching argument is alignment: every per-track block starts at frame byte
+`0xda`, which is **2 mod 4**, so a 4-byte-granularity read from a 4-aligned base
+can never land on a track's TUNE field at all. The apparent SRC-page hits were
+modulo coincidences.
+
+What `I4` is remains **[O]**, but a per-voice DSP-side struct now has direct
+precedent in the same call chain: `0x1c207b` uses its own per-track buffer
+family with the same `0x60` stride at an unrelated base (~`0x252c58`/`0x252cb8`).
+Closing this needs the tracer to reach `sw 0x1c6b00` and read `I4` there.
+
+`blk93@0x1cdbb2` (115 instructions) is the third of three back-to-back sibling
+calls in the orchestrator (`0x1cbe19`, `0x1cbdea`, `0x1cdbb2`). It uses the
+`R4 -> I4`, `R8 -> I5`, `R12 -> I3` convention already confirmed for `0x1cb4b2`
+-- evidence of a shared function family -- with a genuine read-modify-write at
+`I4+12`/`+16`, so state persists across calls. Its shape matches none of the
+confirmed six; proposed as a conditional per-track state accumulator **[O]**.
+
+## Tooling: a function dossier, and six decode gaps closed **[V]**
+
+**`tools/sharcfn.py`** produces a **function dossier** in one command, replacing
+the setup work six agents had each been doing by hand (each wrote its own
+annotated disassembler in the scratchpad):
+
+```
+uv run python tools/sharcfn.py BLOB.bin ADDR [--json OUT] [--listing]
+uv run python tools/sharcfn.py BLOB.bin --batch A,B,... --out-dir DIR
+```
+
+It gives identification (block, the `base_sw` convention stated explicitly, file
+offset, sha check), bounds with **both known hazards flagged** -- an internal
+branch target that is not a function, and a backward jump into a preceding
+span's epilogue -- the call graph including a local conditional-return scan that
+`sharcflow.py` does not do, an annotated listing with resolved operands, named
+regions, RAM-vs-ROM, decoded IEEE-754 constants and loop trip counts, and the
+inventory feature vector.
+
+Validated against all fourteen hand-read functions: instruction counts match
+everywhere except `0x1c71ec`'s already-documented tail split. It found two real
+bugs in itself during validation (`RETURN` not recognised; multiply opcode
+`0x30` and the whole MUL+ALU space decoded against the wrong table) and
+reproduced `0x1c4f81`'s backward-epilogue hazard exactly. Dossiers for the top
+25 shortlist are pre-generated.
+
+**Decode gaps closed** in `sharc_trace.py` and `sharcspec/`:
+
+| gap | resolution |
+|---|---|
+| `Type10a_rel` | was already split out by `build_table.py` but flagged `visa=False` because the PRM heading says "ISA". Firmware evidence overrides it: `sw 0x1c5030` decodes cleanly as this form inside VISA code and desyncs without it. Narrow `VISA_OVERRIDE`, same precedent as `Type2a_short`/`Type6b_shiftimm` |
+| ALU `0xe0` | `FN = FX copysign FY` (PRM p.19-19, PGR Table 12-4 p.574) |
+| multifunction `0x1a`/`0x1e`/`0x1f` | MUL+float-by-scale, MUL+MAX, MUL+MIN (PGR Table 12-12 pp.587-588), reusing the dual-result path |
+| `0xd9`/`0xda`/`0xdd`/`0xc9` | the `fix`/`float`/`trunc ... by RY` scaled-convert family, plus the unscaled `fix` that was also missing |
+| ALU `0x05`/`0x06` | add/subtract with carry (PRM p.438) |
+| Type 2b | the whole form was unhandled |
+| shifter `0xb0` | **absent from both PRM Table 17-9 and PGR Table 12-11.** Decodes now, but value and flags return `Unknown` -- no public source, nothing invented |
+
+The hand-derived guesses from the previous round all verified correct against the
+manuals: `0x1a` = `FA=float RXA by RYA`, `0x1e` = max, `0xda` = `FN=float RX by RY`.
+
+Tests **556 -> 593**. **One honest gap: the opcode work added no opcode-specific
+tests** -- the agent ran out of time. That should be filled in the style of
+`FloatComputeTest` before the next opcode pass.
+
+Newly surfaced and still open: `cu=2` opcode `0x10`, `cu=1` opcode `0x48`,
+form `1a`, and Type 9b indirect targets.
