@@ -1717,3 +1717,162 @@ register file holds 32 bits per ureg), denormal flush-to-zero, the AI flag where
 the manual gives no formula, RECIPS/RSQRTS values (the seed comes from an
 undocumented ROM table, so they decode but return Unknown), and the 3-result MUL
 Dual Add/Subtract form, which still raises a clear error.
+
+## The per-frame render chain, and a RAM-backed dispatch candidate **[V][O]**
+
+Reading the top of the inventory shortlist located the structure the whole
+project has been circling.
+
+**`FUN_1c2b24` is the per-frame render orchestrator, not just the frame reader.**
+After its documented 32 per-track calls to `0x1c24e9` (parameter conversion), it
+calls the image's heaviest compute functions in sequence:
+
+```
+0x1c307a  R12 = 0x00252d3c          ; shared context pointer
+0x1c3083  call 0x1c642a             ; 1458 instrs -- the largest function in the image
+0x1c308d  R4 = caller frame[-17], R8 = frame[-18]
+0x1c3090  call 0x1c18a6             ; 654 instrs
+0x1c3097  call 0x1c207b
+          call 0x1c14e7
+```
+
+`R12 = 0x252d3c` is passed through as a shared context pointer across several of
+these calls, and `0x1c18a6` reuses the same constant for its own three tail
+calls into the L2 overlay. So there is one per-frame context object threaded
+through the render chain.
+
+### `0x1c642a` -- the largest function, one caller, 33 callees **[V]**
+
+Confirmed a single function: exactly one return in its span, and no call in the
+image targets an address strictly inside it. It ends at `0x1c71e7`, with its
+delay slots finishing at `0x1c71ec` -- which is `FUN_1c71ec`'s entry. **That is
+code adjacency, not a relationship**: `FUN_1c71ec` is not among its callees and
+its return goes to `0x1c308a` in its caller. Easy to misread; recorded so nobody
+does.
+
+51 call sites over 33 distinct targets, 30 in blk93, three in the L2 overlay
+(`0xb80105`, `0xb88f06`, `0xb88f70`), one in blk88 (`0x1c0d68`). Its tail --
+after the last call -- is five literal-count loops (32, 32, 32, 16, 16) each
+immediately followed by a register-counted loop, and that tail is where it
+touches **both halves of the cosine pair** (`0x8055c440` at `0x1c70a5`/`0x1c70b3`,
+`0x8055c640` at `0x1c70b6`/`0x1c70b9`), the 32-float table (`0x8045c3c0` at
+`0x1c6c22`), and three point-reads into the exponential tail at `0x8055c840`,
+`0x8055c858`, `0x8055c874`.
+
+It does **not** touch the 1024-float pair, the 829-float table, stage 5's table,
+or any audio ring -- so the biggest function is not the ring writer either.
+
+### The dispatch candidate **[O]**
+
+Three sites in `0x1c642a` use an indirect jump that is **structurally different
+from the return idiom**: `pmi=4` -> I12 as usual, but `pmm=5` -> **M13**, and
+`j=0` (non-delayed) -- `JUMP(M13,I12)`, at `0x1c6579`, `0x1c66ec`, `0x1c6c25`.
+Every confirmed return in this image uses **M14** and is delayed. `sharc_trace.py`
+independently stops at the first of these with "unknown `9b_abs` indirect target
+through I12/M13", treating it as a genuinely unresolved indirect jump.
+
+Crucially, I12 is **not restored from a frame slot** at these sites -- it is
+freshly loaded from memory:
+
+```
+I4 <- I14                  ; I14 set once in the caller FUN_1c2b24 at 0x1c2ce0
+                           ; to the literal 0x254d98
+I12 = DM(I4,M4)            ; 3b load -- a function pointer out of memory
+JUMP(M13,I12)              ; non-delayed indirect jump
+```
+
+`tools/sharcldr.py --addr 0x254d98 --addr-space byte` reports that address as
+**not covered by any loaded block** -- it is RAM, not loader-initialised ROM.
+So this reads a **runtime-written function pointer**. The other two sites take
+their base from I9, reloaded from a stack slot, consistent with the same object
+having three dispatched slots.
+
+**This is the first genuine computed-call shape found in the image**, and it is
+the natural explanation for why no per-machine branch has ever turned up: the
+selection would be a pointer written into RAM, not a compare. It is **[O]** --
+nobody has found the writer of `0x254d98`, and nothing yet ties its contents to
+the machine type at frame `0x94`. Finding that writer is the next step, and it
+is a bounded search.
+
+Note the contrast with the 12 sites debunked above: those were `M14`, delayed,
+with I12 restored from a frame slot. These three are `M13`, non-delayed, with
+I12 loaded from RAM. The distinction is what makes them credible.
+
+### `0x1c18a6` -- a 128-entry interpolated coefficient table **[V]**
+
+654 instructions, exact match to the inventory. The same interpolation idiom as
+the wavetable stages but against a **previously uncatalogued table pair**:
+
+```
+R7 = 0x43000000 (128.0)   ; index scale
+F8 = F2 * F7
+R11 = 0x42fe0000 (127.0)  ; clamp
+F9 = min(F0, 127.0)
+R0 = trunc F9 ; R12 = R0+1
+M2 = R8 ; M4 = R2
+R8  = DM(I2 post-mod M2)   ; I2 = 0x256588
+R14 = DM(I1 post-mod M2)   ; I1 = 0x256388
+R13 = DM(I2 post-mod M4)
+R6  = DM(I1 post-mod M4)
+```
+
+Two contiguous 128-float tables (`0x256588 - 0x256388 = 0x200`), two adjacent
+taps from each, blended by the fraction. A 128-entry table indexed by a scaled
+parameter is the shape of a **note/pitch to coefficient conversion** (128 = the
+MIDI note range) **[D]**.
+
+Then six more loops (31, 31, 16, 31, 30, 31) of float MAC traffic, one of them
+bracketed by `SET MODE1,0x200000` / `CLEAR MODE1,0x200000` -- **SIMD mode**, so
+16 iterations is 32 scalar. Inside it, six words from `DM(0x254d80..0x254da0)`
+are loaded into `I3,I12,M1-M4`, and the loop then gathers one element from each
+of **four separately-based arrays** per index -- the shape of a polyphase or
+windowed-sinc kernel gathering coefficient and sample streams **[D]**.
+
+It touches **no** known named table and no audio ring, and does not read the
+parameter frame. Its three tail calls hand off to the L2 overlay with external
+pointers `0x80459388`, `0x8005912c`, `0x80000018`.
+
+## The FFT question is settled: there is no FFT **[V]**
+
+`blk69@0xb8063e`, the strongest candidate (602 instructions, 4 dual
+add/subtracts), was read in full. **blk69's address convention differs** -- its
+target is `0x20000000` = the L2 byte base, so `base_sw = 0xb80000` and the
+`byte = 0x28000000 | 2*sw` alias used for blk93/1/88 does **not** apply.
+
+The checklist, item by item:
+
+| test | result |
+|---|---|
+| nested log2(N) x N/2 loops | **absent** -- 17 loops, all flat, **zero literal-count**; 15 contain no butterfly at all, and the 2 that do are both counted by the same external register M7 |
+| twiddle table or on-the-fly twiddles | **absent** -- zero `0x80xxxxxx` literals anywhere in the function |
+| bit-reversed addressing | **absent** -- and none in the image |
+| power-of-two transform size | **absent** -- no 64/128/256/512/1024 literal |
+| in-place vs ping-pong | single indexed traversal, no alternating buffers |
+
+The four butterflies sit in two near-identical blocks, each **five float
+multiplies feeding a chain of two dual add/subtracts** plus single adds and
+subtracts -- a 5-product linear-combination network, not a 2-input radix-2
+butterfly repeated across stages. Its caller `blk69@0xb80fd0` calls seven
+distinct routines once each in sequence (an audio pipeline), not one butterfly
+repeatedly (an FFT driver), and one of its own callees is independently labelled
+IIR/recurrence.
+
+The shape check on the other four high-count functions kills the idea entirely:
+
+- `blk93@0x1c5ed4` (128 instrs, **0 loops**) carries the float immediates
+  **pi (3.14159274)**, **pi/8**, and **96000.0** -- a filter-coefficient
+  calculator of the classic `2*pi*f/fs` form. **The sample rate is 96 kHz.**
+- `blk93@0x1cb647` has one loop of 32 with the immediate `1/32 = 0.03125` -- a
+  fixed 32-sample block average.
+- `blk93@0x1c5615` has literal loop counts `[32, 15, 32]` -- 15 breaks any
+  power-of-two staging.
+- `blk69@0xb80c6c` has **zero loops** -- it cannot be a transform stage.
+
+So the classifier's dual-add/subtract rule catches a real and recurring idiom --
+paired sum and difference for coefficient combines, block averaging and
+one-shot rotations -- that **never co-occurs with any other FFT tell**. The
+label should be renamed; "FFT-like" is misleading.
+
+Tracer gap found while doing this: `_compute()` still lacks the ALU opcodes
+`mant` (`0x0`) and `scalb` (`0xbd`), both documented in PRM Table 18-5. They
+stall a trace of `0xb8063e` at step ~45.
