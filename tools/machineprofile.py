@@ -8,10 +8,10 @@ tool stops on an unknown image instead of writing 1.15C offsets into it. Same
 contract as `tools/framelink.py`.
 
 What the anchors are, and why each one matters to a patch, is in
-docs/FINDINGS.md: "The ColdFire machine dispatch", "The display names are a
-separate table", "Type 7 did not stick: a permission check was the sixth
-bound", "Copying SLICE's behaviour to type 7" and "Digitone II 1.11 has the
-same machine machinery, with five machines".
+docs/findings/02-machines-and-parameters.md: "The ColdFire machine dispatch",
+"The display names are a separate table", "Type 7 did not stick: a
+permission check was the sixth bound", "Copying SLICE's behaviour to type 7"
+and "Digitone II 1.11 has the same machine machinery, with five machines".
 
 Anchor keys:
 
@@ -51,7 +51,8 @@ Anchor keys:
   cave_a, cave_b    free space. cave_b needs at least 0x400 bytes.
 
 `None` means not found, not "absent": see the `missing` tuple on each profile
-for what was searched for and not located, and docs/FINDINGS.md for which of
+for what was searched for and not located, and
+docs/findings/02-machines-and-parameters.md for which of
 those are believed genuinely absent rather than merely unfound.
 
 `checks` are byte preconditions at fixed addresses, in the shape

@@ -127,8 +127,9 @@ def parse_args(argv):
     p.add_argument('--ips', type=parse_when, default=None)
     p.add_argument('--ips-at', action='append', default=[], type=parse_ips_at)
     # Timer rate applied once the intro hands over to the OS. At the default
-    # rate the UI task falls behind the 30 Hz DTIM3 tick (FINDINGS: "MACHINE
-    # SEL closes itself"). 0 keeps the default rate. Ignored when --ips or
+    # rate the UI task falls behind the 30 Hz DTIM3 tick
+    # (docs/findings/03-ui-and-panel.md: "MACHINE SEL closes itself"). 0 keeps
+    # the default rate. Ignored when --ips or
     # --ips-at is given.
     p.add_argument('--post-intro-ips', type=parse_when,
                    default=4 * INSTR_PER_SEC)

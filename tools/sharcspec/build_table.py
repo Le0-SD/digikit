@@ -47,7 +47,8 @@ PRM_VALUE_WINS = {"Type2b"}
 # whole word, not a prefix. The classic PGR grid leaves the low bits blank, and
 # the merge rule below treats a blank as "any value" -- which let Type21a match
 # any first word 0x0000-0x007f and swallow the one or two short instructions
-# after it (docs/FINDINGS.md, "Type21a is the all-zero word"). Figure 17-5
+# after it (docs/findings/05-sharc-isa-and-decoding.md, "Type21a was
+# swallowing the two words after it"). Figure 17-5
 # draws Type21a as 48 zero bits and Figure 17-6 draws Type21c as 0x0001.
 # The value is the whole printed word; `free` lists bits the figure draws as a
 # field rather than a digit (Type22a's `emu` selects idle from emuidle).
@@ -185,7 +186,9 @@ UNDOCUMENTED = [
 # merge (see the generic loop below) collapsed both classic tables into a
 # single decode form and lost the addressing-mode distinction: the merged
 # "addr"/pmi+pmm field cannot represent both an absolute address and a
-# signed PC-relative displacement. See FINDINGS.md / task report for the
+# signed PC-relative displacement. See
+# docs/findings/05-sharc-isa-and-decoding.md, "The Type 8a branch forms were
+# taking words that are not branches" / task report for the
 # firmware evidence (branch-target landing rate) that this split is right.
 #
 #   shared_target=<label>  : Type8a only -- the merged figure's own field at
@@ -424,7 +427,8 @@ type12a_ureg["unconfirmed_bits"] = 0
 # 23-bit ShiftImm field renders through the PRM opcode table without any new
 # semantic mapping.  This corrects the old firmware-only interpretation of the
 # first 0x023e parcel as a standalone reserved 16-bit Type 23 instruction.
-# See docs/sharc/SOURCES.md and docs/FINDINGS.md.
+# See docs/sharc/SOURCES.md and docs/findings/06-sharc-engine-and-startup.md,
+# "`0x023e` is the first parcel of a 48-bit immediate shift".
 type6a_nomem = next(f for f in forms if f["name"] == "Type6a (nomem)")
 forms.append({
     **type6a_nomem,

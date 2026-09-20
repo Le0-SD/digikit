@@ -641,7 +641,8 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(w2b.trace[0]["destination"], "B4")
 
     def test_type7d_firmware_instance_stops_without_a_concrete_source(self):
-        # Strict-run cluster boundary at 0x1c1460 (docs/FINDINGS.md "Current
+        # Strict-run cluster boundary at 0x1c1460
+        # (docs/findings/06-sharc-engine-and-startup.md "Current
         # boundaries"): raw 0x04bfc0800000 decodes g=0, is=7 (is[2:2]=1,
         # is[1:0]=3), breg=0, toby=0, idis=0, i.e. "I7 = B2W(I7)".
         fields = {
@@ -3176,7 +3177,7 @@ def shiftimm_fields(opcode, data8, rn, rx, dataex=0):
 class AstatxFlagsTest(unittest.TestCase):
     """Focused tests for each op's ASTATX flags and the LT/GE/LE/GT/etc.
     condition predicates, from the verified per-instruction PRM table
-    (docs/FINDINGS.md-style citations inline)."""
+    (docs/findings/-style citations inline)."""
 
     def astatx_after(self, fields, short, values, old_astatx, special=None):
         rn, value, operation, update = T._compute(fields, short, values, special)

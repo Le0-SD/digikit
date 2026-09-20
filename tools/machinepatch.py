@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Relocate the UI's source machine-list table into the MAIN OS cave, live.
 
-Milestone A of adding an eighth machine. `docs/FINDINGS.md`'s "The ColdFire
+Milestone A of adding an eighth machine.
+`docs/findings/02-machines-and-parameters.md`'s "The ColdFire
 machine dispatch" section established that the UI's *source* machine list is
 seven big-endian u32 at rodata `0x401e1958`-`0x401e1974` (`{0,1,2,3,6,4,5}`),
 copied into a `std::vector<int>` by `FUN_40051fbc` via two `pea` bounds at
