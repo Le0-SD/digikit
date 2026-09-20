@@ -1289,6 +1289,13 @@ measurement, not just this trace.
 
 ## SRC-page parameters do not travel in the vector-191 DSP frame **[V][C][O]**
 
+> **Superseded.** The headline claim of this section is wrong: it treated
+> `mirror_index` as a word offset from `0x80005b50` and missed the 17-word
+> (`0x22`-byte) row header, which shifts every index by 17. SRC-page
+> parameters *are* in the frame, in the first of the four block copies. See
+> "The mirror index to TX frame map, and the 17-word header" below. The
+> pointer strides and the frame-field inventory recorded here are correct.
+
 Pointer strides in the vector-191 frame builder, pinned from the instructions
 rather than the decompiler's element arithmetic
 (`disasm/4002dd0c_vector_191_handler.s`, loop `LAB_4002eb2a` .. `0x4002ecf4`):
@@ -1427,6 +1434,12 @@ synthesis is the SHARC's.
 
 ## No ColdFire consumer of SRC-page mirror indices 25-34 **[V][O]**
 
+> **Partly superseded.** The negative result is right but the reason was
+> missed: there is no ColdFire consumer because these parameters go to the
+> SHARC. The "index 29 is clobbered with raw index 12" claim below is also
+> wrong -- `A1` advances before the second and third reads, so all three are
+> same-index copies. See the correction section below.
+
 An exhaustive search from the write side found no audio-path consumer of mirror
 indices 25-34 on the ColdFire. The write formula was re-confirmed at instruction
 level from `FUN_4002d7a4` (the decompiler hides a pointer-type trap here):
@@ -1509,7 +1522,7 @@ TCD base `0xfc045000`, channel = `(addr - 0xfc045000) / 0x20`.
 | --- | ------------ | ------------------------- | ------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 28  | `0xfc045380` | `FUN_400cd2bc`            | `0xec038034` = **DSPI2** PUSHR | `0x80001bc0` staging, rebuilt per call | the SHARC link. `NBYTES=2`, `CITER` = word count. Armed with `EDMA_SERQ=0x1c` **[V]**                                                                                                                                                                         |
 | 14  | `0xfc0451c0` | `FUN_400cd48a`            | `0xfc03c034` = **DSPI1** PUSHR | `0x4fe79340` SDRAM staging             | a _different bus_. Completion vector at `0x40000158`; `INTC0_CIMR=0x16`. Sole caller `FUN_400124a0` under 9 wrappers implementing a command/response protocol: 4-byte command out, then a `0x300`/`0xb40`/`0x10`-byte read-back. Peer unidentified **[D][O]** |
-| 50  | `0xfc045640` | _(no writer found)_       | —                              | —                                      | RX; real, live (`vector_170_handler` acks it). Only `SADDR` (+0) and `DLAST_SGA` (+0x18) are ever touched, and only by **reads**, from four sites. `refscan` finds zero writes **[V]**                                                                        |
+| 50  | `0xfc045640` | `FUN_400d30c2` **[C]**    | —                              | —                                      | **[C]** not RX and not unwritten: SADDR `0x4fe58100`, DADDR `0xfc0bc000` = SSI0_TX0, ping-pong via scatter-gather. The writer stages the TCD in RAM and blits it with a generic memcpy, so no literal store exists to find. See the correction section below **[V]**                                                                        |
 | 59  | `0xfc045760` | several unrelated drivers | —                              | —                                      | likely USB or storage, not traced **[D]**                                                                                                                                                                                                                     |
 
 Channel 50 having no visible programming site is the substantive open item.
@@ -1554,3 +1567,217 @@ Still unresolved after eliminating the periodic frame, `DAT_8000dd40`, the
 3. The real `vector_191_handler` is 5796 bytes and only about 1150 have been
    read. It reads channel 50's bank-select word at its own entry; what it does
    with that is unexplored.
+
+## The mirror index to TX frame map, and the 17-word header **[C][V]**
+
+This corrects the central claim of "SRC-page parameters do not travel in the
+vector-191 DSP frame" above. They do. The error was reading `mirror_index` as a
+word offset from `0x80005b50`, missing a 17-word (`0x22`-byte) header at the
+start of every row. Everything downstream of that -- "the frame is fully
+accounted for and the SRC page is not in it", and the search for another
+transport that followed -- was chasing a gap that does not exist.
+
+The header is explicit in `FUN_400d907e`, which writes the smoothing target:
+
+```
+400d907e  move.l (Stack[0x4],SP),D0    ; track
+400d9082  move.l #0x8e,D1
+400d9088  lea (0x8000dd40).l,A0
+400d908e  muls.l D1,D0                 ; track*0x8e
+400d909a  addi.l #0x22,D0              ; + the header
+400d90a0  lsr.l  #0x1,D0               ; /2 -> word index
+400d90a2  add.l  (Stack[0xc],SP),D0    ; + idx
+400d90a6  move.l D1,(0x0,A0,D0*0x4)
+```
+
+`0x22` is exactly where a row's parameter array starts: the raw mirror row base
+is `0x80003340` and its parameters begin at `0x80003362`. So a row is 71 words,
+of which the first 17 are header and **only indices 0..53 are parameters**.
+
+`FUN_400d92a2`'s filter loop is software-pipelined, which is where the second
+trap sits: `A2` is pre-decremented to `0x80005b4c` and each iteration stores the
+*previous* iteration's result. The one-iteration delay and the pre-decrement
+cancel exactly -- verified two ways, arithmetically and by the final flush
+address (`0x80005b4c + 612*4 = 0x800064dc` = `0x80005b50 + 4*611`). Net skew is
+zero, so the smoothed buffer's row layout is byte-identical to the raw mirror's:
+
+```
+row_offset(idx)          = 0x22 + 2*idx                 (0 <= idx <= 53)
+addr_raw(track,idx)      = 0x80003340 + track*0x8e + row_offset(idx)
+addr_smoothed(track,idx) = 0x80005b50 + track*0x8e + row_offset(idx)
+```
+
+The bypass loop confirms this independently and without any pipelining: its
+source and destination row offsets are identical (`0x2a`, `0x3a`, `0x4a` on both
+sides), which pins the two buffers to the same layout directly.
+
+Applying `idx = (offset - 0x22)/2` to the four block copies' source offsets:
+
+| copy | frame offset | len | mirror indices | page |
+|---|---|---|---|---|
+| 1 | `+0xda` | `0x14` | **25-34** | **SRC -- the machine's own parameters** |
+| 2 | `+0xfa` | `0x1c` | 35-48 | filter |
+| 3 | `+0x116` | `0x1a` | 49-61 | amp and FX sends |
+| 4 | `+0x130` | `0x0a` | 64-68 | FX |
+
+So, per track, with `A4 = 0x80005348 + track*0x60`:
+
+```
+idx 25-34: frame_offset = 0xda  + 2*(idx-25)
+idx 35-48: frame_offset = 0xfa  + 2*(idx-35)
+idx 49-61: frame_offset = 0x116 + 2*(idx-49)
+idx 64-68: frame_offset = 0x130 + 2*(idx-64)
+```
+
+The four destination ranges tile one contiguous `0x60`-byte block per track
+(`0xda` to `0x13a`), so tracks do not overlap.
+
+The confirmation that matters: four memcpy ranges derived only from `pea`
+operands land exactly on four page boundaries -- 25, 35, 49, 64 -- derived only
+from the parameter table's `mirror_index` distribution. Boundary for boundary,
+with no fudge. Indices 62-63 (Portamento) are skipped between copies 3 and 4.
+
+Anchor check: the type-4/6 literal `FUN_400d907e(track, val, 0x1f)` at
+`0x4002e61c` writes index 31, which for those types is Slice Select. It lands at
+frame offset `0xda + 2*(31-25) = 0xe6`, inside copy 1 -- an audibly load-bearing
+parameter, provably in the frame.
+
+**CFADE reaches the DSP.** Mirror index 27 maps to frame offset
+`0xda + 2*(27-25)` = **`0xde`** (absolute `0x80005348 + track*0x60 + 0xde`). The
+copy is an unconditional 20-byte memcpy with no machine-type test, so slot 2
+transits to the SHARC for every track on every tick regardless of whether the
+track's machine exposes it. Today it always carries whatever the UI never wrote.
+Wiring `0xcc`/`0xfa` into a machine's descriptor field 2 would put a real user
+value there through the ordinary plumbing.
+
+Two further corrections fall out:
+
+**[C]** The bypass loop is a *same-index* copy, not the cross-index copy recorded
+above. `A1` advances a full row before the second and third reads, so
+`(-0x54,A1)` and `(-0x44,A1)` resolve back into the same track's row:
+
+```
+400d9322  move.w (0x2a,A1),(A0)
+400d9326  lea (0x8e,A1),A1             ; advances FIRST
+400d932a  move.w (-0x54,A1),(0x10,A0)  ; = +0x3a of the old A1
+400d9330  move.w (-0x44,A1),(0x20,A0)  ; = +0x4a of the old A1
+```
+
+Row offsets `0x2a`/`0x3a`/`0x4a` are mirror indices **4, 12 and 20** -- the LFO1,
+LFO2 and LFO3 destination selectors. They are written raw, after the filter loop
+has already passed over them, because interpolating a destination index would be
+meaningless. Nothing is clobbered.
+
+**[O]** The row overrun survives the correction and is a separate fact. A row
+holds only indices 0..53, so copy 3's source range runs `0x10` bytes past the row
+end and copy 4's lies entirely past it -- for track `t` those bytes come from
+track `t+1`'s *header*. Where parameters with `mirror_index >= 54` actually live
+for a track is unresolved; the `FUN_400d914e` lead is dead (a raw 4-byte literal
+scan of the whole image finds zero references to it, so it is unreferenced in
+1.16), and `FUN_400d91e4` turns out to be a MIDI-CC writer. The smoothing sweep
+is 1224 words, not a multiple of the 71-word row, which is a loose end pointing
+at another structure after the 16 rows.
+
+## eDMA channel 50 is SSI0 transmit, and its TCD writer hides behind a memcpy **[C][V]**
+
+Verified independently, field by field. `FUN_400d30c2` (`0x400d30c2`-`0x400d333c`),
+whose sole caller is the boot init chain `FUN_400cc864` at `0x400ccc32`, stages
+two descriptors in RAM and blits each into the hardware TCD table:
+
+```
+400d32ea  pea (0x20).w
+400d32ee  move.l A3,-(SP)              ; src = 0x4fe57080 (staged TCD50)
+400d32f0  pea (DAT_fc045640).l         ; dest = channel 50's TCD
+400d32f6  jsr (A4)                     ; A4 = FUN_401360ac, a plain memcpy
+400d32fc  lea (EDMA_SERQ).l,A0
+400d3302  move.b #0x30,(A0)            ; arm channel 48
+400d3306  move.b #0x32,(A0)            ; arm channel 50
+```
+
+Channel 50: SADDR `0x4fe58100`, ATTR `0x0202` (32-bit both sides), SOFF 4,
+NBYTES `0x20`, DADDR **`0xfc0bc000` = SSI0_TX0**, CITER/BITER `0x40`, DOFF 0,
+DLAST_SGA `0x4fe570a0`, CSR `0x0012` (E_SG + INT_MAJOR). The scatter-gather
+partner at `0x4fe570a0` carries SADDR `0x4fe58900` and points back -- a true
+ping-pong ring. `NBYTES * BITER = 0x800`, matching the buffer size used
+throughout. Channel 48 is the mirror image: SADDR `0xfc0bc008` (SSI0_RX0), DADDR
+`0x4fe57100`, CSR `0x0010` (no INT_MAJOR, hence no separate ISR).
+
+`0xFC0B_C000` = SSI0_TX0 and `0xFC0B_C008` = SSI0_RX0 per the MCF5441X reference
+manual (`out/refs/MCF5441XRM/all.txt` lines 59252 and 59258, SS35.3.1/35.3.4,
+pp. 35-8/35-11).
+
+This is a **third static-analysis blind spot**, distinct from trampolines and
+vtable dispatch: the hardware address appears only as a `pea` argument to a
+generic helper, which Ghidra tags `DATA` rather than `WRITE`, and the actual
+stores inside the memcpy are register-pointer moves with no displacement
+immediates. No literal-address search and no TCD-field-offset pattern search can
+see it. The way in was to enumerate writers of `EDMA_SERQ` (`0xFC04_4018`) and
+read backwards.
+
+**[C]** The TCD field layout is ATTR `+0x04`, SOFF `+0x06`, CITER `+0x14`, DOFF
+`+0x16`, BITER `+0x1c`, CSR `+0x1e` -- i.e. three pairs swapped relative to the
+Kinetis ordering. Confirmed from the manual's own per-register address formulas
+(`all.txt` lines 20802, 20848, 20978, 21029, 21070, 21124; pp. 385-390). This
+resolves the open question flagged in
+`docs/refs/dspi2-edma-blocker-and-register-sources.md` S7 -- MQX's Kinetis TCD
+layout is **not** byte-compatible with ColdFire eDMA. Nothing currently relies on
+the wrong ordering: `emu/edma.py`, `docs/contracts/mcf5441x-reference-v1.json`
+and the emulator findings already use the ColdFire ordering. Reading the same
+bytes under the Kinetis layout yields an incoherent descriptor (CITER 0, E_SG
+clear despite a built scatter-gather chain), which is an independent check.
+
+## The `DAT_4031b264` node list is USB audio streaming, not voices **[V]**
+
+A 16-slot pool of `0x40`-byte nodes, drained every tick by `FUN_40003376` into
+the SSI0 TX ring, looked like a voice list. It is not. Two independent passes
+agree:
+
+- **Activation is a USB control request.** `FUN_400030b0` (builds the list) and
+  `FUN_400030e6` (tears it down) are called only from `FUN_40005ff6`, a USB EP0
+  SETUP dispatcher decoding `_DAT_47db4198` as bmRequestType/bRequest. The value
+  that reaches `FUN_400030b0` is `0x010b0000` -- **SET_INTERFACE** -- with an
+  interface selector of 6 and alternate setting 2. Its only caller is
+  `vector_134_handler`. Nothing in the sequencer, note-on or UI reaches it.
+- **Nodes are submitted to the USB controller.** `FUN_40002eac` ends with
+  `FUN_40005a86(3, node)`, which drives registers at `0xfc0b014c`/`0140`/`01b0`/
+  `01b8`. `0xFC0B_0000` is the USB On-the-Go controller (`all.txt:2578`). Every
+  node is a USB endpoint-3 buffer descriptor.
+- **No synthesis.** `FUN_401360ac` is a pure block move that overwrites rather
+  than accumulates; `FUN_40135ad8` is a zero fill (silence insertion). Grepping
+  `FUN_40003376`, `FUN_40002eac`, `FUN_401360ac` and `FUN_40135ad8` for
+  `mac|movclr|acc0|emac` returns **zero matches**. It walks one singly-linked
+  FIFO from one head and writes non-overlapping output positions -- a drain, not
+  a mixer. Clock skew is handled by skip/silence accounting, not resampling.
+
+So this is the Digitakt acting as a USB audio interface in the speaker
+direction: host PCM in over USB, out through SSI0 to the DAC.
+
+**[C]** `0x8000cb40 + n*0x100` is not page-aligned (`0xb40` low bits); it is a
+256-byte-stride DMA buffer array with a mid-page base. Node `+0x30`, the pointer
+`FUN_40003376` actually dereferences for data, is written by neither the
+allocator nor anything else found -- presumably the USB RX-complete handler
+**[O]**.
+
+Two unnamed handlers at `0x40002cb8` and `0x40002db6` sit in a gap between
+Ghidra functions and are invisible to any function-based search -- the
+trampoline blind spot again. They maintain the USB-clock/audio-clock drift
+state, masking a frame counter with `0x7ff`.
+
+## `FUN_400cec70` confirmed as the debug-console player **[V]**
+
+Independently verified. Installed at `0x400ceee8` into `0x400002fc` (vector 191);
+the normal handler `FUN_4002dd0c` is installed separately at `0x4002d51e`. The
+sole caller of `FUN_400cea94` is `0x400cb6e8` inside `FUN_400cae8c`, confirmed by
+both the `calls` table and `refscan` at 99.63% coverage. The four command strings
+sit at `0x4024161c`, `0x40241637`, `0x40241642`, `0x4024165c` and are referenced
+only from within that parser.
+
+The "zero-length send" is more precisely a **hardcoded zero destination
+pointer**: `FUN_400cec70` passes `(0x802, &DAT_42948b3c, 0, 0)`, and inside
+`FUN_400cd2bc` a `tst.l`/`beq` on argument 4 unconditionally skips the staging
+copy.
+
+**[C]** confirmed: the apparent second install site at `0x400d15f6` is spurious.
+`400d15f4: b4 af 00 30` is a four-byte `cmp.l (local_c,SP),D2`, and `0x400d15f6`
+is its third byte. A whole-image `refscan` finds exactly one literal reference to
+`0x400cec70`, at `0x400ceee8`.
