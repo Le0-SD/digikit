@@ -1026,3 +1026,154 @@ Point 3 is the strongest remaining lead: `FUN_1c24e9` is the 396-instruction
 uniform per-track routine with no per-machine branch, it is called 32 times with
 an integer 0..31, and an index-to-address computation inside it is exactly the
 shape that point 1 says a literal search cannot see.
+
+## The ColdFire frame is mapped into SHARC DM at `0x2558dc` **[V]**
+
+The link's other end, found by decoding `FUN_1c24e9` and reading its literal
+bases back against the ColdFire frame map. This closes the transport question
+that the per-track-block audit above left open: the SHARC does receive the
+parameter pages, at byte-identical offsets.
+
+`FUN_1c24e9` computes a per-track pointer with a literal multiply -- which is
+why the earlier scan for a `0x60` stride, and the scan for shift/add synthesis
+of 96, both missed it: it is neither an immediate displacement nor a shift
+sequence, it is an integer multiply by a register loaded with `0x60`.
+
+```
+0x1c250e  m4=r12                        ; M4 := track index
+0x1c2512  r2=0x60
+0x1c2514  r2=r12*r2 (ssi) , m3=r8       ; R2 := track * 0x60
+0x1c251a  i4=r2
+0x1c2537  i2=modify (i4,0x2559b6)       ; I2 := track*0x60 + 0x2559b6   (19a, unscaled)
+```
+
+Subtract a common base of `0x2558dc` from every literal this function and its
+caller use, and all eleven known per-track scalar frame offsets land exactly:
+
+| SHARC literal | - `0x2558dc` | ColdFire frame field |
+|---|---|---|
+| `0x2558de` | `0x02` | per-track scalar |
+| `0x255910` | `0x34` | per-track scalar |
+| `0x255930` | `0x54` | read by `FUN_001c2b24` |
+| `0x255950` | `0x74` | per-track scalar |
+| `0x255970` | `0x94` | machine type |
+| `0x255990` | `0xb4` | per-track scalar |
+| `0x256018` | `0x73c` | read by `FUN_001c2b24` |
+| `0x256038` | `0x75c` | read by `FUN_001c2b24` |
+| `0x256058` | `0x77c` | per-track scalar |
+| `0x256078` | `0x79c` | per-track scalar |
+| `0x256098` | `0x7bc` | per-track scalar |
+
+Eleven independent hits with no exceptions is not coincidence. And
+`0x2559b6 - 0x2558dc = 0xda` -- exactly the frame offset where the per-track
+`0x60`-byte parameter block begins. So `I2 = 0x2559b6 + track*0x60` **is** track
+`t`'s parameter page, in the frame's own byte numbering.
+
+**Addressing units, resolved** (this has caused repeated errors, so it is worth
+stating precisely): the unit is per *instruction form*, not global.
+
+| form | scaling |
+|---|---|
+| `19a` (`modify`, classic) | raw bytes, always x1 |
+| `19a_scaled` (`modify (nw)`) | x2/x4 by width |
+| `15b`/`4a`/`4b` (`dm(K,I)`) | x4 under 32-bit normal words |
+| `3b`/`3c` (M-register indexed) | x2 if short-word tagged, else x4 |
+
+32-bit normal words is already established for this firmware. So base pointers
+built with `modify` stay byte-exact, while loads through them advance four bytes
+per immediate unit -- each mirrored 16-bit ColdFire field occupying one 32-bit
+SHARC slot. That also explains the descriptor-shaped structure at `0x268220`
+carrying `XCNT = 1025`, `XMOD = 4`: `0x802 / 2 = 1025` words, one per 32-bit
+slot. The two facts are the same mechanism seen from two sides, not a
+contradiction.
+
+## `FUN_1c24e9` is the filter/amp/FX converter, and it does not read the SRC page **[V]**
+
+Mapping every `I2`-relative read through the scaling rules above:
+
+| site | form | block byte | mirror | page |
+|---|---|---|---|---|
+| `0x1c26a5` `r11=dm(0x5,i2)` | 15b, x4 | `0x14` | -- | slice sub-block |
+| `0x1c2699` `r14=dm(0x6,i2)` | 15b, x4 | `0x18` | -- | slice sub-block |
+| `0x1c268b` `r4=dm(0x7,i2)` | 15b, x4 | `0x1c` | -- | slice sub-block |
+| `0x1c26b7` `r10=dm(0xa,i2)` | 15b, x4 | `0x28` | 39 | filter |
+| `0x1c2652` `r4=dm(0xb,i2)` | 15b, x4 | `0x2c` | 41 | filter |
+| `0x1c268e` `r14=dm(0xc,i2)` | 15b, x4 | `0x30` | 43 | filter |
+| `0x1c26d1` `r2=dm(0xd,i2)` | 4a, x4 | `0x34` | 45 | filter |
+| `0x1c2659` `r8=dm(0x17,i2)` | 15b, x4 | `0x5c` | 67 | FX |
+| `0x1c2622` `i0=modify(i2,0x22)` | 19a, x1 | `0x22` | 36 | filter |
+| `0x1c267f` `i4=modify(i2,0x3e)` | 19a, x1 | `0x3e` | 50 | amp |
+| `0x1c262d` `i0=modify(i2,0x42)` | 19a, x1 | `0x42` | 52 | amp |
+| `0x1c2615` `i3=modify(i2,0x46)` | 19a, x1 | `0x46` | 54 | amp |
+| `0x1c2633` `i1=modify(i2,0x4e)` | 19a, x1 | `0x4e` | 58 | amp |
+| `0x1c263d` `i3=modify(i2,0x52)` | 19a, x1 | `0x52` | 60 | amp |
+| `0x1c266d` `i4=modify(i2,0x56)` | 19a, x1 | `0x56` | 64 | FX |
+| `0x1c2630` `i3=modify(i2,0x5a)` | 19a, x1 | `0x5a` | 66 | FX |
+
+All sixteen feed a dense `leftz`/`float`/multiply/spill chain running to about
+`0x1c2870` -- an ordinary audio-parameter conversion pipeline, values turned into
+floats and scaled.
+
+**Every one of them is filter, amp, FX or the slice sub-block. Not one touches
+block bytes `0x00`-`0x12`, which is the entire SRC page** -- TUNE, PLAY, CFADE,
+SAMP, STRT/SLICE, LEN, BARS/GRID/LOOP, LEV. This routine is the continuous
+per-track parameter converter for the pages *after* the machine's own; the SRC
+page must be consumed somewhere else, plausibly at note-on. **[O]**
+
+**CFADE (block byte `0x04`, mirror 27) is not read here [V].** Three
+register-indexed reads (`dm(m6,i2)`, `dm(m5,i2)`, `dm(m4,i2)`) have unresolved
+offsets because M5/M6/M7 are never assigned in this function or its caller and
+must come from further up the chain **[O]** -- but none looks like a CFADE
+consumer: M6's feeds bit tests, M5's and M4's feed straight float/multiply
+chains. And since nothing on the ColdFire side writes mirror 27 today, any such
+read would see a constant zero.
+
+**The function is uniform, confirmed [V].** Its only branches are four `8a_rel`
+conditionals at `0x1c25c4`-`0x1c2604`, all testing bits of a flags word via
+`btgl`. The bit positions come from a **track-independent global** (`R14`, from
+`r1=dm(0x255902)` = frame offset `0x26`, no track index) and from a hardcoded
+zero (`R3`, `r3=r3-r3`). The machine type is not loaded into any register until
+`0x1c26d4`, *after* all four branches. So these are not a per-machine dispatch.
+
+## `FUN_001c2b24` passes the track in R12 and a 0..31 counter in R8 **[C][V]**
+
+Refines the correction above. The loop is:
+
+```
+0x1c2c91  r13=r13-r13 , r15=m5
+0x1c2c94  lcntr=0x10, do (pc,0x1e) until lce
+0x1c2c97  r8=pass r15 , r12=r13
+0x1c2c9a  cjump 0x1c24e9 (db)
+0x1c2ca3  r8=r15+1 , r12=r13          ; same R13 -- not yet incremented
+0x1c2ca6  r15=r15+r14 , r11=m7        ; R14=2, so R15 += 2 per iteration
+0x1c2ca9  cjump 0x1c24e9 (db)
+0x1c2cac  r13=r13+1 , dm(i7,m7)=r2    ; R13 increments in the delay slot
+```
+
+So **R12 is the plain track index 0..15**, identical for both calls in an
+iteration, and it is what drives the `*0x60` block addressing. **R8** is the
+0..31 counter (`R15`, `R15+1`), and inside the callee it indexes a second
+structure with stride `0xdc`: `0x1c2560 r0=r8*r0(ssi)` with `r0 = 0xdc`. Two
+sub-slots per track; which two is **[O]**.
+
+## Two search gaps from the earlier audit, closed **[D]**
+
+**Shift/add synthesis: none.** Over the same 22,646-instruction decode of blk93,
+all 600 shift-immediate instructions (`Type6a(mem)`, `Type6a(nomem)`,
+`Type6b_shiftimm`) were decoded; 27 have an immediate of +-2, +-4, +-5 or +-6,
+and none sits near a second shift on the same source register. Cross-referencing
+against all 78 fixed-point ADD/SUB (`Type2a`, `Type2a_short`) within a
+12-instruction window gave 6 candidate pairs, all rejected on inspection (the
+add precedes the shift, so it uses the pre-shift value). Not enumerated:
+`Type2c`/ShortCompute add/sub, and the "M register loaded with 96 from memory"
+sub-case. The negative is moot anyway -- the stride turned out to be a literal
+multiply.
+
+**The receive descriptor.** A descriptor-shaped structure is built at `0x268220`
+around `0x1c7e30`-`0x1c7f10`: ADDRSTART `0x268240`, CFG `0x00100000`, XCNT
+`1025`, XMOD `4`, YCNT/YMOD from M5 (~0). `ADDRSTART + XCNT*XMOD = 0x269244`,
+which is independently loaded into R4 two instructions earlier -- a self-checking
+coincidence that supports the field reading. It is submitted via `0x1c834a` and
+`0x1c83ff`, neither decoded. Note this destination is `0x268240`, **not**
+`0x2558dc`, so it is not obviously the same buffer; whether there are two
+descriptors, a TX/RX pair, or a generic builder is **[O]**.
