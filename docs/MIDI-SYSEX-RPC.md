@@ -15,12 +15,19 @@ version.
 Evidence classes follow `docs/FINDINGS.md`: **[V]** verified by running it here ·
 **[D]** documented by reading the image once, not re-checked · **[O]** open.
 
-> **Verification status.** Only the live device round-trip in §1 is **[V]**.
-> Every static decode below is single-agent, read once — **[D]** — and has *not*
-> had the project's required second-agent byte-check against the image. The
-> refscan-backed liveness claims in §6 are stronger but still one pass. Do not
-> promote anything here to **[V]** without the second check. Addresses are for
-> follow-up, not yet independently confirmed.
+> **Two distinct protocols.** Device-id `0x14` (§2–§9) is the OS-**upgrade**
+> container path: 8-in-7 packed body, `type | 0x80` responses, a trailing
+> checksum+length. Device-id **`0x10` (§11)** is the **live** path Elektron
+> Transfer actually uses: raw body, no packing, no checksum, no length, no
+> response bit. They share the `MidiRpcMessage` class and type enum but nothing
+> else. A live round-trip against real hardware is confirmed for the `0x10`
+> path (§11).
+
+> **Verification status.** The `0x10` protocol in §11 is confirmed by a live
+> hardware round-trip **[V]** plus a firmware trace. The `0x14`/upgrade static
+> decode in §2–§9 is single-agent, read once — **[D]** — and has *not* had the
+> project's required second-agent byte-check. Do not promote §2–§9 to **[V]**
+> without that check. Addresses are for follow-up.
 
 ## Why this matters
 
@@ -248,6 +255,64 @@ status, `0xEC07000C` data). Commands include `#HELLO`, `#READ`, `#WRITE`,
 5. `FUN_400e27ec`'s inner jump table `0x400e2830`; the `0x10`, `0x60-0x6F`,
    `0x78`, `0x7E-0x7F` handlers (§2).
 6. SDS length/number validation upstream in `SdsManager` (§8).
+
+## 11. The live Transfer protocol (device 0x10) **[V]**
+
+This is the path Elektron Transfer uses and the one we can drive from a host.
+Confirmed two ways: a firmware trace of the `0x10` descriptor, and a live
+round-trip against the real device on 2026-09-20 (`tools/devrpc.py`).
+
+### Frame
+
+```
+F0 00 20 3C 10 00 <cmd> <seq_hi> <seq_lo> 09 <ctr> <type> <payload...> F7
+```
+
+- `10` device id, `00` separator — the descriptor at `0x4021e08c` requires the
+  separator to be exactly `0x00` (`+0x00` devid `0x10`, `+0x01` sep `0x00`,
+  `+0x04` jump-table ptr `0x402b40f8`, `+0x08/+0x0c` cmd range `0..0x7f`).
+- **`cmd` is ignored by the receiver.** All 128 entries of the jump table at
+  `0x402b40f8` point to the same handler `0x4011efb8`, so any `cmd` in
+  `0x00..0x7f` routes identically. (Observed values: `0x04`/`0x05`, and a second
+  channel `0x0c`/`0x0d` when a new connection opens.)
+- `seq_hi seq_lo` (`u16` BE) then `09 ctr` (a second `u16`-shaped field, high
+  byte constant `0x09` in all traffic, low byte a per-channel counter) then
+  `type` — these are the 5-byte `MidiRpcMessage` header parsed by `0x4013d864`,
+  aligned to frame bytes 7–11. `seq` is caller-chosen; the device assigns its
+  own `seq`/`ctr` in the reply, so **match replies on devid `0x10` + `type`,
+  not on any echo.**
+- **No checksum, no length, no 8-in-7 packing** — verified absent in the
+  receive chain (`0x4011efb8` → `0x40125184` → `0x4013d864`); the body is raw
+  bytes. Binary values that would exceed `0x7f` appear 7-bit encoded (the
+  `DeviceUID` `u32` comes back as 5 bytes); the general ≥`0x80` escape on this
+  path is not yet decoded. **[O]**
+- `type` reuses the shared enum: `0x01` Ping, `0x02` SoftwareVersion, `0x03`
+  DeviceUID, `0x05` StorageSpace, `0x09` Query, `0x53` DataList. There is **no
+  `0x80` response bit** on this path; request vs response is only by direction.
+
+### Live round-trip (verified against hardware)
+
+Sent `F0 00 20 3C 10 00 04 00 01 09 00 01 F7` (Ping). Replies observed:
+
+- Ping → capability blob + NUL-terminated name string `"Digitakt II"`.
+- SoftwareVersion → NUL-terminated strings `"00"`, `"79"`, `"1.16"`.
+- DeviceUID → 5-byte (7-bit-encoded) value.
+- StorageSpace, Query, DataList (dir listing with `"projects"`, `"soundbanks"`)
+  all respond.
+
+Tools: `tools/midisniff.py` (passive capture, transmits nothing) and
+`tools/devrpc.py` (read-only queries: `--ping --version --uid --storage
+--query`). Nothing on the USB path can reach the irreversible bootstrap
+(DIN-only, §7).
+
+### 0x10 key addresses
+
+```
+device 0x10 descriptor       0x4021e08c (sep 0x00, jump table 0x402b40f8)
+jump table (all -> handler)  0x402b40f8  -> 0x4011efb8 (128× identical)
+receive chain                0x4011efb8 -> 0x40125184 -> 0x401243c6
+MidiRpcMessage header parse  0x4013d864 (shared with 0x14 path)
+```
 
 ## Key addresses
 
