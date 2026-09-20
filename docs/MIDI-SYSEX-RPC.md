@@ -358,14 +358,35 @@ opens a real +Drive file. FsSample opens resolve through a real directory walk
 desync check against the server's own position, not a seek. No path maps to a
 fixed address or MMIO base.
 
+The **`MemoryStream` / backup route is also ruled out [V]**:
+`MemoryStreamReader`/`Writer` (ctors `0x400ee58c`/`0x400ee6b4`) are a raw
+`{base, length, cursor}` memcpy wrapper with no bounds/ownership check on
+`base` — the exact mechanism a memory primitive would need — and they *are*
+MIDI-reachable (the Data RPC's `BackupFileExportAdapter` `0x400e77de` /
+`ImportAdapter`, via `DataReadOpen`→`0x400e85aa` and
+`DataWritePartial`→`0x400e8896`). But across **all 9** construction sites
+(xrefs + `refscan.py`, exhaustive) the `base` is always a firmware-owned struct
+field or a fresh heap allocation — never a wire value. The backup path is a
+typed router (`RouteResolver` + `Project`/`Soundbank`/`Kit`/`BackupHandler`)
+over named content objects, streaming a small `BackupFileHeader` (31/12 bytes)
+through the embedded streams; the client picks *which named object* and read vs
+write, not an address.
+
 **Still open [O]** (so "no memory access over MIDI" is not fully proven): the
-~70 less-common MidiRpc handlers were not all read; a **backup import/export
-adapter** (`BackupFileImportAdapter` `0x400e77de` / `Export` `0x400e7832`) is
-the one place `MemoryStreamReader`/`MemoryStreamWriter` are constructed — which
-RPC (if any) reaches it is untraced and is the best remaining lead; and whether
-an FsSample path can `..`-traverse the +Drive is unconfirmed (a file-disclosure
-question, still real files, not RAM). Live RAM inspection via the plain protocol
-is not available; the UART console (§9) exposes only 11 named test-points.
+compiled `RouteResolver` route table (per-handler lambdas) was not fully
+enumerated, so a route whose stream-type-1 ("Memory") callback hands back a
+wider region than a single bounded object is ~5% not-excluded; the ~70
+less-common MidiRpc handlers were not all read; and whether an FsSample path can
+`..`-traverse the +Drive is unconfirmed (file disclosure, still real files, not
+RAM). Live RAM inspection via the plain protocol is not available; the UART
+console (§9) exposes only 11 named test-points.
+
+**Net across six audited surfaces** (Data partial R/W, Data/FsSample path
+resolvers, `FsRaw`, `DigisharcSysexRpc`, the UART console, and
+`MemoryStream`/backup): no arbitrary, wire-controlled memory read/write is
+reachable over MidiRpc. If a live report says otherwise it likely means content
+(a modified project/sound reloaded live), the `OsUpgradeWrite` flash path, or a
+non-MIDI transport — pending the specifics.
 
 ### Live, self-driven (verified against hardware)
 
