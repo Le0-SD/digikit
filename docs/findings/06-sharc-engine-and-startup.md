@@ -2006,3 +2006,132 @@ boundary artifact (1228 -> 1227 functions) and annotates interior-call splits so
 the `0x1c71ec` 235-vs-251 mismatch is visible rather than confusing.
 
 Tests: **521 -> 545 passed**, 5 skipped, 174 subtests.
+
+## Type 8a fixed, and what survived the re-check **[V]**
+
+`tools/sharcflow.py` now decodes Type 8a calls. Bit 39 `b` is the CALL/JUMP
+selector (`b=1` call, `b=0` branch); bit 26 `j` is delayed vs non-delayed, not a
+call selector; bits 37:33 carry the condition, which is unconditional on every
+call in this image. **The offset formula is identical to 25a's** -- the earlier
+report that "9 targets didn't resolve sanely" was a **missing 24-bit wraparound
+mask**, not a different convention. Adding that mask also fixed a **pre-existing
+25a bug**: blk88's call at `0x1c0fa5` had been silently resolving to a negative
+garbage target, and is now correctly `0xb893e2` in blk69.
+
+Call sites **1720 -> 1780** (+51 blk93, +7 blk69, +2 blk88); distinct targets
+546 -> 551. Tests **545 -> 556**.
+
+The re-check matters more than the counts:
+
+- **`0x1c06ba` goes from 0 to 30 caller functions** across 55 call sites. It is
+  the shared reciprocal (RECIPS + three Newton-Raphson iterations).
+- **`FUN_1c71ec`, the ring-construction function `0x1c75d8`, and `0x1cb4b2` are
+  still genuinely callerless** in the corrected graph -- none of the five new
+  targets is any of them. So that part of the runtime-dispatch story holds.
+- `FUN_1c2b24`'s caller was already known (`0x1c75d8` at `0x1c771e`) and is
+  unaffected.
+- Callerless total 719 -> 718.
+
+The inventory still mislabels `0x1c06ba` as "IIR or recurrence" -- its leaf-ish
+vector cannot distinguish RECIPS+Newton-Raphson from a real recurrence **[O]**.
+
+## blk69 and blk93 are one library **[V]**
+
+The strongest evidence yet, and it settles a question open since blk69 was
+found. `blk69@0xb819bd`'s caller (span `0xb820b1`-`0xb821ee`) fires eight calls
+in sequence: six into blk69, and **two directly into blk93 at `sw 0x1ccbd8`** --
+which is stage 1 of the `FUN_1c71ec` wavetable pipeline. That is a live
+cross-block call, not merely shared bytes. One call graph, one DSP library,
+spanning both address spaces.
+
+`blk69@0xb819bd` itself (212 instructions) is **the polynomial envelope
+saturator** `x <- x*(2-|x|)`, applied to three fields (`+8`/`+112`/`+120`) of
+nodes in a short pointer chain, first a fixed set then a register-counted loop.
+Same idiom as blk93's stage 3. The inventory's "wavetable lookup" label is
+wrong; the dominant instruction mix is the envelope. No peripheral literals, so
+**not driver code**.
+
+## A 6-tap polyphase resampler, and a candidate SRC-page consumer **[D][O]**
+
+`blk93@0x1c4f81` (375 instructions) is the most interesting function read so
+far. It is **not** the simple two-tap blend its label predicted -- the label
+fired on three `0x80000000` literals that are `-0.0` compare sentinels, not
+table addresses. What it actually contains:
+
+- a **64-bit fixed-point phase accumulator** (`R4:R13`, add-with-carry), with
+  the step pair built from `I4+98`/`I4+99`
+- two Type 8a calls to the shared reciprocal `0x1c06ba` with the documented
+  `2^32` correction
+- **two structurally identical 64-count hardware loops, each doing a
+  phase-indexed 6-tap MAC** -- windowed-sinc or polyphase interpolation, not a
+  2-tap blend
+
+A 64-bit phase accumulator feeding a 6-tap polyphase kernel is **proper
+sample-rate conversion** -- the shape of a good pitch-shifter or resampler, and
+the obvious engine for REPITCH.
+
+It reads a **new table at `0x25d940`**, not in the catalogue, RAM-only
+(runtime-populated), indexed by a phase-derived M-register offset, three
+consecutive 8-byte long-word entries per access -- a plausible polyphase kernel
+bank **[O]**.
+
+**And the parameter-frame question.** `I4` is its sole meaningful incoming
+register, read at word offsets **98-109** and, via dynamically indexed
+M-register reads, **380-444**. **If `I4` is the frame base `0x2558dc`, all of
+that lands inside the parameter frame** -- which would make this the
+long-missing SRC-page consumer. Not provable without a caller trace, and the
+Type 8a gap had been hiding callers **[O]**. **This is the single most promising
+open thread.**
+
+Bounds caveat worth knowing generally: this function's live exit is an
+unconditional jump **backward** into the shared register-restore epilogue of the
+*preceding* return-delimited span (`0x1c4f56`-`0x1c4f7c`), not through its own
+nominal tail. So "375 instructions" undercounts what executes, and the
+return-delimited boundary model has a blind spot here.
+
+## Three more functions, and a not-a-function **[D]**
+
+Full notes in `docs/findings/functions/`.
+
+**`blk93@0x1cddff` is not a function.** It is the cold `else` branch of
+`blk93@0x1cdd8b` (55 instructions, called once from `0x1c642a`), reached by a
+**Type 8a conditional JUMP** (`b=0`, `cond=GT`) at `0x1cddb5`, and its own
+unconditional jump at `0x1cdec8` rejoins the parent's shared 13-register restore
+epilogue. Nothing calls it, anywhere, and its address appears nowhere as data --
+verified across the whole blob in both endiannesses. This is why every
+"no callers" scan missed it, and it is a caution for the whole inventory: a
+return-delimited span can contain a branch target that looks like a function and
+is not. Its body is 8 MAC pairs interleaved with min/max/trunc clamps against
+127.0 and one literal 14-iteration loop -- a new shape, not the envelope, not
+the one-pole blend **[O]**.
+
+**`blk93@0x1ccfa4`** (180 instructions, straight-line, no loop, no branch) is
+**multi-table two-tap interpolated coefficient synthesis**: two textbook
+interpolated lookups (`idx = trunc(x*N)`, `idx2 = min(idx+1, N-1)`, lerp)
+against a **128-entry table at `0x2c2cc0`** and a **1024-entry table at
+`0x2c2018`** -- both RAM, neither in the catalogue. Not the envelope (no float
+abs anywhere). It makes **six** calls, not the two the tools reported: four
+Type 8a to the reciprocal, plus two to **`0x1c1284`, a previously undocumented
+~30-instruction helper whose constant is `ln(10) = 2.302585`** -- a log or dB
+primitive, distinct from the `base^x` evaluator. One caller builds a 6-slot
+struct with `0.995` per slot before calling, a plausible one-pole coefficient.
+
+**`blk88@0x1c1199`** (90 instructions, genuine leaf, no loop) is **not** the
+"IIR or recurrence" the label claims -- the same mislabel already corrected for
+`0x1c06ba`. It **inlines** RECIPS + three Newton-Raphson iterations **twice**
+rather than calling the shared routine, and evaluates a 3-coefficient Horner
+polynomial with constants `-0.19033`, `-7.13793`, `-42.8277`. `R8` is guarded
+against `< 2^-12` immediately before the first reciprocal, so `R8` is the
+operand being inverted. Three exit points, two of them conditional returns --
+which `sharcflow.py` also misses, since it matches only the unconditional return
+word **[O]**.
+
+## Tracer and table gaps found this round **[O]**
+
+Recorded so they are not rediscovered: `Type10a_rel` ("with PC-relative jump",
+classic PGR p.458) is **absent from `tools/sharc_visa_tables.py` entirely**;
+Type 2b shifter opcode `0xb0` is missing from `compute_table.json`'s shiftop
+table; ALU opcode `0xe0` is unsupported; multifunction categories `0x1a` and
+`0x1e` and opcode `0xda` were identified by hand as
+`FM=Fx*Fy, FA=float RXA by RYA / max(...)` and `FN=float RX by RY`. Also:
+`--blob` and `--base-sw` are mutually exclusive in `sharc_trace.py`, by design.

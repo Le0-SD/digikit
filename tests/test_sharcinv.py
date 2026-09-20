@@ -18,7 +18,7 @@ import sharc_visa_tables as T  # noqa: E402
 import sharcflow  # noqa: E402
 import sharcinv  # noqa: E402
 from test_sharc_disasm import encode  # noqa: E402
-from test_sharcflow import cjump, load, push3c, store, words  # noqa: E402
+from test_sharcflow import call8a_rel, cjump, load, push3c, store, words  # noqa: E402
 
 
 def field_insn(name, **values):
@@ -140,6 +140,32 @@ class BoundariesTest(unittest.TestCase):
         kinds = {e: k for e, _, k in spans}
         self.assertEqual(kinds[0x1000], 'return_boundary')
         self.assertEqual(kinds[inner_target], 'interior_call_target')
+
+    def test_type8a_call_target_inside_a_span_also_splits_it(self):
+        # Same shape as above, but the split is driven by a Type 8a CALL
+        # (the decoder gap this module's docstring describes) rather than a
+        # CJUMP -- sharcinv needs no code change to pick it up, since it only
+        # reads sites['calls']['target'].
+        inner_target = 0x1003  # right after the 8a call's own 3 short words
+        data = (call8a_rel(inner_target - 0x1000, j=0) + load(0, 0) + ret() + load(0, 0) + rframe())
+        block = self._block(data, 0x1000)
+        spans = sharcinv.function_bounds(block)
+        entries = [e for e, _, _ in spans]
+        self.assertIn(inner_target, entries)
+        kinds = {e: k for e, _, k in spans}
+        self.assertEqual(kinds[0x1000], 'return_boundary')
+        self.assertEqual(kinds[inner_target], 'interior_call_target')
+
+    def test_type8a_branch_does_not_split_a_span(self):
+        # b=0 is a JUMP, not a CALL: it must not appear in sites['calls'], so
+        # it must not open a new function inside the span either.
+        target = 0x1003
+        data = (call8a_rel(target - 0x1000, b=0, j=0) + load(0, 0) + ret() + load(0, 0) + rframe())
+        block = self._block(data, 0x1000)
+        spans = sharcinv.function_bounds(block)
+        entries = [e for e, _, _ in spans]
+        self.assertNotIn(target, entries)
+        self.assertEqual(len(spans), 1)
 
 
 class ComputeClassifyTest(unittest.TestCase):
