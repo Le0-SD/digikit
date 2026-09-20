@@ -1479,3 +1479,82 @@ compiler-generated C, and circumstantial evidence this code is interrupt-adjacen
 No per-machine dispatch here: none of the 12 indirect-call sites falls inside the
 body, and every conditional branch tests a shifter or ALU flag around lock and
 retry sequences, never a small-integer compare or table load.
+
+## Reading the DSP: the `FUN_1c71ec` pipeline is a wavetable engine, not an FFT **[C][D]**
+
+First systematic *read* of SHARC code rather than a search over it. Seven
+functions decoded in parallel, one agent each. Context for why this took so
+long: blk93 holds about **410 functions** and until this pass we had read
+**five**, roughly 1% of the SHARC code. Every earlier pass was a literal scan.
+
+**[C] The FFT / phase-vocoder reading was wrong.** It rested on a single
+butterfly-shaped instruction at `0x1c72a0` in the orchestrator. Six independent
+reads of the stages now argue against it: **no dual add/subtract butterfly, no
+bit-reversed addressing, no twiddle table and no log2(N) nested loop appears in
+any of the six.** Stage 3 checked the dual-add/subtract encodings explicitly
+(`mf=0,cu=00`, opcode top nibble `0x7`/`0xF`; `mf=1`, opcode6 `0x20`-`0x3F`) --
+zero hits in 98 instructions. What the stages actually contain is
+**phase-accumulator-driven, two-tap interpolated table lookup** -- a wavetable
+or granular resampling engine.
+
+Every stage's trip count is a **runtime register value**, never a literal. The
+`1023` bound that supported the "1024-point FFT" reading is inside stage 5's
+body, not the orchestrator.
+
+| stage | addr | instrs | what it does |
+|---|---|---|---|
+| orchestrator | `0x1c71ec` | 251 | interpolated cosine lookup, inline butterfly, then the call chain |
+| 1 | `0x1ccbd8` | 59 (leaf) | streaming **two-state linear recurrence**: `f1 = f11 + f0*f4` with `f11`,`f8` updated per sample, two state words persisted to the caller struct at `+6`/`+7`. Either a two-pole IIR or a coupled-form quadrature oscillator |
+| 2 | `0x1cdecb` | 51 | **gated block copy**: tests a float against 0.0, then either a SIMD (PEYEN) stride-2 copy or, on the other path, `out = a*(1-frac) + b*frac` linear interpolation |
+| 3 | `0x1cb3d8` | 98 | **on-the-fly polynomial envelope**: iterates `x <- x*(2-|x|)` three times to synthesise a saturating S-curve, then applies it multiplicatively along a ramp over the sample stream |
+| 4 | `0x1cd286` | 148 | gathers **9 field-pairs** from the argument struct into two parallel arrays, then a MAC loop with a data-dependent count. Guarded by "if struct word 12 == 0, return". Float compute opcodes undecoded **[O]** |
+| 5 | `0x1cc79e` | 173 | **table-interpolated resampler**: unsigned 32-bit phase to float (with the `+2^32` correction), a reciprocal helper for step size, then per sample `trunc` -> index, `index+1`, two `DM(I2,M)` taps, linear blend, `clip`. Table base `0x26bb68` |
+| 6 | `0x1cbf07` | 133 | **two-tap interpolated lookup** with `2^32` and `8192.0` constants and an `0x1fff` mask -- a 13-bit wavetable index from a fixed-point phase accumulator. Persists index and position back to the caller struct |
+
+Stages 5 and 6 are independently the same shape: fixed-point phase accumulator,
+integer index plus fraction, two adjacent taps, linear blend. That is a
+**wavetable oscillator**, twice. With stage 1's recurrence, stage 3's envelope
+and stage 4's per-item accumulation over a runtime count, the whole reads as a
+**bank of interpolating oscillators with per-partial state** -- additive or
+granular resynthesis -- rather than a spectral transform.
+
+**These are shared utilities, not machine-specific code.** Stage 3 is called
+from **four** sites: `0x1c7387` (the orchestrator) plus `0x1c2307`, `0x1c231f`,
+`0x1c6c59`, all unrelated. Stage 2 has a second caller at `0x1c6c44`. So the
+engine is assembled from a common DSP library, which is why no per-machine
+dispatch shows up as a branch -- the differences are likely in *which* routines
+run and with what arguments, not in a switch.
+
+**[C] The orchestrator makes nine calls, not six.** After the six there is a 7th
+to `0x1ccd96` (argument `r12 = 0x8045c3c0`, the 32-float table), an 8th that
+**re-calls stage 6** `0x1cbf07` with a different argument shape, and a 9th to
+`0x1c4e70`. Its true bounds are `0x1c71ec`-`0x1c7461`, 251 instructions. A
+conditional `rts` at `0x1c7292` means the chain is not even unconditionally
+reached from entry.
+
+**Dataflow.** Calls 1-3 pass a single value in R8/R12, with 2 and 3 re-reading
+through an `(i3,m5)` cursor. Calls 4-6 pass **two**: a shared base pointer in
+I3, constant across all three, plus a per-call offset built from a local and one
+of **I14, I11, I10**. So stages 4, 5 and 6 work on one shared context at three
+different offsets. The asymmetry between {1,2,3} and {4,5,6} suggests two
+phases. Each call returns through a shared landing-pad trampoline at
+`0x1c6eb7`/`0x1c6ef2`/`0x1c6f0a` -- a compiler code-size optimisation, not
+pipeline structure.
+
+**None of the seven reads the parameter frame.** All take pointers as arguments.
+The orchestrator's own first four reads are off **I13**, a caller-supplied
+context pointer, at offsets `-0x1a`/`+0x1d`/`-0x1b`/`+0x1c`. I13's provenance is
+unresolved **[O]** -- it is the remaining link between the frame and the engine.
+
+The orchestrator's address `0x1c71ec` does **not** appear as data anywhere: all
+six firmware sections were scanned for the raw short-word `0x001c71ec`, the byte
+form `0x2838e3d8`, and a bare 3-byte `1c 71 ec`, both endiannesses. Zero hits.
+So it is not reached through a static function-pointer table **[V]**.
+
+Tooling note worth acting on: `tools/sharc_trace.py`'s `_compute()` models only
+the integer ALU, multiplier and shifter forms. It stops on the first float op in
+every one of these functions. One agent extended a scratchpad copy using
+`tools/sharcspec/compute_table.json`'s `aluop_32_40bit`/`mulop_32_40bit` tables
+and got a full symbolic walk of stage 5. **Folding float compute into the real
+tool would unblock every further read** -- stage 4's loop body is undecoded for
+exactly this reason.
