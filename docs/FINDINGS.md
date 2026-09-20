@@ -62,6 +62,12 @@ Section 2's `dest` is not a load address. All 101 absolute call targets in it
 land in `0x8000____`; solving for the base that makes its pointer table hit real
 string starts gives `0x80000400` with 96 hits. **[V]**
 
+The above is the offline OS-**upgrade** container. The device's *runtime* SysEx
+command surface on 1.16 — the live MidiRpc protocol (Ping, version/UID queries,
+`FsSample*` file I/O, the `OsUpgrade*` flash channel) and the SDS handler — is a
+separate topic, in `docs/MIDI-SYSEX-RPC.md`. A live device round-trip is
+confirmed there; the static decode is **[D]** pending a second byte-check. **[D]**
+
 ## Integrity — not a barrier to patching
 
 - Per-packet transport checksum; 32-bit content checksum; **HMAC-SHA256** trailer.
