@@ -2002,6 +2002,69 @@ relation to machine type. I6+124 and external-table readers remain open. The
 next automated seed is computed-writer/ownership analysis for `0x252658`, then
 table-reader control flow. **[O]**
 
+### [C] `0x252658` is zero-filled at boot and has no SHARC writer **[V][C][O]**
+
+**[C]** The "R2 store slice returned no seeds" limitation recorded above was a
+defect in `tools/ghidraq.py`, not a decompiler limit. `memory_access_operands`
+classified a HighFunction `COPY` as a store only when the destination was
+direct memory and the source was not, and as a load only the mirror way, so a
+`COPY` with direct memory on *both* ends matched neither branch and was
+dropped. Ghidra folds `R2 = DM(0x252658); DM(0x254d9c) = R2` into exactly that
+form. The decompiled C of `FUN_001c18a6` in `sharc-batch-dt2-116` always
+contained both `_DAT_00254d98 = _DAT_00254d9c;` and
+`_DAT_00254d9c = _DAT_00252658;`; only the query layer could not see the
+second. With the classifier fixed (`COPY_MEM_TO_MEM_WRITE` and
+`COPY_MEM_TO_MEM_READ`), an unbounded whole-image `stores sw:0x254d9c` reports
+the store at `sw 0x1c191d` (p-code `0x38323a` = 2 x `0x1c191d`) as
+`exact-constant-target`, with `address_slice` root `ram 0x4a9b38` and
+`value_slice` root `ram 0x4a4cb0`. Ghidra dataflow now proves the R2 path
+`DM(0x254d9c) <- DM(0x252658)` independently of the byte-level replay, which it
+previously could not. **[V]**
+
+All three chain addresses lie inside one zero-FILL loader block, in every
+image. DT2 1.15C and 1.16 share a byte-identical header at file offset
+`0x2bc0`, `01 01 ea ad c0 12 24 28 c8 50 01 00 00 00 00 00`: block 18,
+`block_code 0xadea0101` with BFLAG_FILL set, `target_address 0x282412c0`,
+`byte_count 86216`, `argument 0x00000000`, covering `0x282412c0..0x28256388`.
+DN2 1.11 block 16, at file offset `0x2b70`, has the same shape:
+`target_address 0x28241290`, `byte_count 114728`, `argument 0`, covering
+`0x28241290..0x2825d2b8`. A second agent re-parsed every block of all three
+files with an independent struct walk and confirmed that no later block
+re-covers any of these addresses, so last-write-wins leaves the fill standing.
+The loaded value at `0x252658`, `0x254d98` and `0x254d9c`, and at DN2
+`0x25d00c` and `0x25d010`, is 32-bit zero at boot. **[V]**
+
+For this program's data blocks the loader byte address is the Ghidra displayed
+address plus `0x28000000`: Ghidra places loader block 1, `target_address
+0x282403f0`, at displayed `0x2403f0`. Probing `sharcldr` with the bare
+displayed address, or with `sw_to_byte` applied to it, both miss, and two
+separate reviews in this batch made exactly those two mistakes. In the same
+program `read` and `range` take the displayed word address while `xrefs` and
+the symbol table take the doubled p-code byte offset, so a plain-address
+`xrefs` silently returns nothing. **[C]**
+
+**[C]** `tools/sharcldr.py --addr` previously printed "not covered by any
+loaded block" for an address inside a FILL block, because `offset_for_address`
+reports *file* offsets and a FILL block contributes no file bytes. That message
+produced a wrong "the loader never touches this address" conclusion in this
+batch. `fill_block_for_address` now backs a separate report naming the fill
+block, its constant and its range. **[V]**
+
+**[O]** With the fixed classifier, an unbounded whole-image `stores
+sw:0x252658` over DT2 1.16 returns no genuine writer, in either
+`sharc-batch-dt2-116` (564 bounded functions) or `elektron-sharc` (1999). The
+single match in each is a self-copy `DM(0x252658) = DM(0x252658)` attached to
+an `INDIRECT` call-effect node, with no raw instruction at its p-code address
+(`pcode 0x383640` returns `no-instruction`); it is a decompiler
+value-preservation placeholder, not a store. Ghidra's reference table likewise
+holds exactly one reference to the address, the read at `0x3831da`. The value
+is therefore zero at boot and no SHARC instruction Ghidra can see ever changes
+it. That bounds the owner to a ColdFire/host write over the link, a DMA path,
+or a SHARC store outside Ghidra's function boundaries, without deciding
+between them. `elektron-sharc`'s decompilation of this function is truncated
+by `halt_baddata()`, so `sharc-batch-dt2-116` is the better witness here
+despite its smaller function count. **[O]**
+
 ## Four more functions read
 
 Full notes in `docs/findings/functions/`.
