@@ -813,6 +813,31 @@ def main():
         for ret, n in ev['satisfied_by'].most_common(15):
             print('  ret=0x%08x  %d' % (ret, n))
     print('[guirun] faults: %d distinct pages touched' % len(m.fault_pages))
+    if ev.get('esdhc') is not None:
+        esdhc = ev['esdhc']
+        cmd_counts = collections.Counter(idx for idx, _arg in esdhc.log)
+        overlay = esdhc.card.overlay
+        print('[guirun] esdhc: %d commands (%s), overlay %d bytes'
+              % (len(esdhc.log),
+                 ' '.join('CMD%d=%d' % (c, n)
+                          for c, n in sorted(cmd_counts.items())),
+                 len(overlay)))
+        if overlay:
+            lo, hi = min(overlay), max(overlay)
+            print('[guirun] esdhc overlay byte range: 0x%x-0x%x (sectors %d-%d)'
+                  % (lo, hi, lo // 512, hi // 512))
+            sectors = sorted({off // 512 for off in overlay})
+            runs = []
+            for s in sectors:
+                if runs and s == runs[-1][1] + 1:
+                    runs[-1] = (runs[-1][0], s)
+                else:
+                    runs.append((s, s))
+            print('[guirun] esdhc overlay sector runs: %s'
+                  % ', '.join(('%d' % a) if a == b else ('%d-%d' % (a, b))
+                              for a, b in runs))
+        print('[guirun] esdhc log tail: %s'
+              % ' '.join('CMD%d@%#x' % (c, a) for c, a in esdhc.log[-12:]))
     if args.trace_ui_json:
         with open(args.trace_ui_json, 'w') as f:
             json.dump({
