@@ -6,7 +6,9 @@ from pathlib import Path
 from emu import symbols
 
 
-DT15 = Path("sections/section_3_MAIN_OS.bin")
+# The pinned per-version extracts, not the shared sections/ directory, which
+# holds whichever firmware was extracted last.
+DT15 = Path("out/sections/dt2-1.15C/section_3_MAIN_OS.bin")
 DT16 = Path("out/sections/dt2-1.16/section_3_MAIN_OS.bin")
 
 
@@ -30,6 +32,19 @@ class DigitaktResolverTest(unittest.TestCase):
                     ),
                     values,
                 )
+
+    def test_display_semaphore_resolves_in_both_images(self):
+        # Unresolved on 1.16, the display semaphore was faked and the
+        # "INITIALIZING +DRIVE..." screen starved the job worker.
+        expected = {
+            DT15: (0x40125F4E, 0x44E2D148),
+            DT16: (0x4013352A, 0x44E460D8),
+        }
+        for path, values in expected.items():
+            with self.subTest(path=path):
+                profile = symbols.resolve(path.read_bytes())
+                self.assertEqual((profile.display_frame_post, profile.display_sem), values)
+                self.assertNotEqual(profile.display_sem, profile.frame_sem)
 
 
 if __name__ == "__main__":

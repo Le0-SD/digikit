@@ -42,11 +42,18 @@ GOLDEN_ALL5 = (
 )
 
 
+# These plans pin 1.15C bytes, so prefer the pinned 1.15C extract over
+# config.main_image(), which follows whichever firmware sections/ holds.
+PINNED_1_15C = os.path.join('out', 'sections', 'dt2-1.15C', 'section_3_MAIN_OS.bin')
+
+
 def _try_main_image():
-    try:
-        path = config.main_image()
-    except Exception:
-        return None
+    path = PINNED_1_15C
+    if not os.path.exists(path):
+        try:
+            path = config.main_image()
+        except Exception:
+            return None
     if not os.path.exists(path):
         return None
     try:

@@ -275,6 +275,36 @@ class SigWhere:
                                      % (load_addr + hits[0], self.equals, self.at))
 
 
+class SigAt:
+    """A masked signature that must match at a fixed distance from an
+    already-resolved symbol.
+
+    For a routine compiled more than once, whose copies mask to the same
+    signature and differ only in an operand we do not yet know, but which
+    sits in the same place relative to a neighbour in every build: the
+    display module's PIT3 handler is the copy that lives 0x174 bytes before
+    `display_wait`. The signature check keeps a layout change from quietly
+    resolving to the wrong bytes."""
+
+    def __init__(self, ref_hex, symbol, delta, lo=0x40000000, hi=0x40400000):
+        self.raw = bytes.fromhex(ref_hex)
+        self.symbol, self.delta = symbol, delta
+        self.regex = re.compile(_mask_pattern(self.raw, lo, hi), re.DOTALL)
+
+    def resolve(self, img, load_addr, got):
+        base = got.get(self.symbol)
+        if base is None:
+            return None, "'%s' unresolved" % self.symbol
+        addr = base + self.delta
+        off = addr - load_addr
+        if not (0 <= off <= len(img) - len(self.raw)):
+            return None, '0x%08x is outside the image' % addr
+        if self.regex.match(img, off) is None:
+            return None, ('masked signature does not match at %s%+d (0x%08x)'
+                          % (self.symbol, self.delta, addr))
+        return addr, 'masked-signature match at %s%+d (0x%08x)' % (self.symbol, self.delta, addr)
+
+
 class OperandGroup:
     """The first `take` DISTINCT big-endian abs32 values in [lo, hi) found by
     scanning `span` bytes starting at `<resolved base symbol>`. Resolves to a
@@ -589,7 +619,13 @@ SYMBOLS = [
     # screen's frame semaphore here (`pea.l display_sem` before the give);
     # the progress-screen task pends on it once per frame at 0x40126132 as
     # well as at display_wait.
-    ('display_frame_post', Fixed(0x40125f4e, verify='487944e2d1488081'), False),
+    # The same routine as intro_pit3_isr's, so its bytes cannot pick it out;
+    # its place can: 0x174 bytes before display_wait on 1.15C (0x40125f4e)
+    # and on 1.16 (0x4013352a). A fixed 1.15C address left display_sem
+    # unresolved on 1.16, so the display semaphore was faked there and the
+    # "INITIALIZING +DRIVE..." screen starved the job worker.
+    ('display_frame_post', SigAt('487944e2d148808130804eb94000148c4cef0303',
+                                 'display_wait', -0x174, hi=DATA_HI), False),
     ('display_sem', Operand('display_frame_post', at=2), False),
 
     ('pump_wait', Sig('42002f43002849f94018c0a41f40002c2f034e96'
