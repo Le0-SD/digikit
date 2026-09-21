@@ -39,7 +39,7 @@ Never patch the bootstrap or updater sections. See
 | Tool | Purpose |
 | --- | --- |
 | `tools/ghidradump.py` | Export an analysed Ghidra program into grep-friendly disassembly/decompilation plus SQLite indexes. |
-| `tools/ghidraq.py` | Run read-only PyGhidra queries for functions, callers, references, strings, ranges, and decompilation. Queries can be chained with `--then` so one JVM answers several questions. |
+| `tools/ghidraq.py` | Run read-only PyGhidra queries for functions, callers, references, strings, ranges, decompilation, and bounded HighFunction dataflow. Queries can be chained with `--then` so one JVM answers several questions. |
 | `tools/refscan.py` | Exhaustively scan a raw ColdFire image for direct references into an address range. Use this to check Ghidra's incomplete reference tables. |
 | `tools/codeseeds.py` | Recover likely function entries from vectors, calls, and code pointers. |
 | `tools/ghidraapply.py` | Apply code seeds or RTTI discoveries to a Ghidra project. |
@@ -69,6 +69,52 @@ Typical read-only query:
 uv run python tools/ghidraq.py /section_3_MAIN_OS.bin callers 0xADDRESS \
   --project ~/ghidra-projects/dt2-emac --project-name dt2-emac
 ```
+
+### Raw instruction p-code and bounded HighFunction dataflow
+
+`pcode PC` reports raw `Instruction.getPcode()` at exactly one listed instruction,
+without decompiling, changing references, or inferring SSA. Its JSON includes
+requested, logical, and displayed coordinates, instruction length, ordered p-code
+operations, and address/language metadata. `no-instruction`, empty, and malformed
+p-code are structured statuses. It is a diagnostic, not an SSA slice.
+
+`slice PC SELECTOR` finds the containing function and follows a bounded backward slice;
+selectors include `store:value`, `store:address`, `load:value`, `load:address`,
+`input:N`, `output`, and `reg:NAME`. `stores TARGET [LO HI]` and its symmetric
+`loads TARGET [LO HI]` inspect memory writes and reads globally or for function
+entries in `[LO, HI)`, reporting exact direct addresses separately from computed
+or unresolved candidates. Raw `STORE`/`LOAD` and HighFunction direct-memory
+`COPY` forms are normalized with `STORE`, `LOAD`, `COPY_DIRECT_WRITE`, or
+`COPY_DIRECT_READ` representations. Both use the normal decompile timeout,
+report failures/partial results instead of stopping a `--then` chain, and do
+not save the project.
+
+For the ColdFire program, raw/displayed addresses are unprefixed:
+
+```sh
+uv run python tools/ghidraq.py /section_3_MAIN_OS.bin pcode 0x40008000 \
+  --json --project ~/ghidra-projects/dt2-emac --project-name dt2-emac
+uv run python tools/ghidraq.py /section_3_MAIN_OS.bin slice 0x40008000 store:value \
+  --json --project ~/ghidra-projects/dt2-emac --project-name dt2-emac
+```
+
+For SHARC, replace `SHARC_PROGRAM` and `SHARC_PROJECT` with the program path
+and project containing that program. The program must be imported with
+`SHARC_VISA:LE:32:default`; use `sw:` for short-word PC and word-addressed DM
+targets, but leave byte-addressed external targets unprefixed:
+
+```sh
+uv run python tools/ghidraq.py SHARC_PROGRAM pcode sw:0x1c1928 \
+  --json --project SHARC_PROJECT --project-name SHARC_PROJECT
+uv run python tools/ghidraq.py SHARC_PROGRAM loads sw:0x254d98 \
+  --json --project SHARC_PROJECT --project-name SHARC_PROJECT
+uv run python tools/ghidraq.py SHARC_PROGRAM stores 0x8055c874 \
+  --json --project SHARC_PROJECT --project-name SHARC_PROJECT
+```
+
+Results identify p-code by sequence PC/time and structured varnode fields, not
+Java display strings. SHARC_VISA results include byte/short-word metadata and
+the caveat that HighFunction p-code does not model delay-slot execution.
 
 ## Emulator measurement tools
 

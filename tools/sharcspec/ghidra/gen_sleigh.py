@@ -453,6 +453,90 @@ def conditional_semantics(cond_fname, semantic):
     return head + ["if (!holds) goto inst_next;", stmt]
 
 
+def constrained_terms(word_terms, field_info, constraints, tag):
+    """Clone `word_terms` and pin `constraints` using private pattern fields."""
+    result = {word: list(terms) for word, terms in word_terms.items()}
+    for label, value in constraints:
+        _base, _shift, chunks, _hi, _lo = field_info[label]
+        assert len(chunks) == 1
+        word, _fname, clo, nbits = chunks[0]
+        alias = FIELDS.get(word, clo + nbits - 1, clo, tag)
+        result[word].append(f"{alias}=0x{value:x}")
+    return result
+
+
+def type14a_scalar_constructors(
+    mnem, disp_ops, word_terms, nwords, active_words, field_info
+):
+    """Scalar direct-DM Type14a load/store constructors, separate from Type3b."""
+    _base, _shift, high_chunks, _hi, _lo = field_info["addr[31:16]"]
+    _base, _shift, low_chunks, _hi, _lo = field_info["addr[15:0]"]
+    _base, _shift, ureg_chunks, _hi, _lo = field_info["ureg[6:0]"]
+    assert len(high_chunks) == len(low_chunks) == len(ureg_chunks) == 1
+    _word, high, _clo, _nbits = high_chunks[0]
+    _word, low, _clo, _nbits = low_chunks[0]
+    _word, ureg, _clo, _nbits = ureg_chunks[0]
+    address = [
+        f"local high16:2 = {high};",
+        f"local low16:2 = {low};",
+        "local addr:4 = (zext(high16) << 16) | zext(low16);",
+    ]
+    constructors = []
+    for direction, transfer in (
+        (0, [f"{ureg} = *[ram]:4 addr;"]),
+        (1, [f"*[ram]:4 addr = {ureg};"]),
+    ):
+        constructors.append(
+            Constructor(
+                mnem,
+                disp_ops,
+                constrained_terms(
+                    word_terms,
+                    field_info,
+                    (("g", 0), ("d", direction), ("l", 0)),
+                    "type14a_scalar",
+                ),
+                nwords,
+                semantic_lines=address + transfer,
+                active_words=active_words,
+            )
+        )
+    return constructors
+
+
+def type3b_exact_constructors(
+    mnem, disp_ops, word_terms, nwords, active_words, field_info
+):
+    """The traced scalar Type3b reader; its specialization is independent of Type14a."""
+    terms = constrained_terms(
+        word_terms,
+        field_info,
+        (
+            ("u", 0),
+            ("i[2:0]", 4),
+            ("m[2:0]", 4),
+            ("cond[4:0]", COND_TRUE),
+            ("g", 0),
+            ("d", 0),
+            ("l", 0),
+            ("ureg[6:0]", 28),
+            ("w", 1),
+            ("x", 1),
+        ),
+        "type3b_exact",
+    )
+    return [
+        Constructor(
+            mnem,
+            disp_ops,
+            terms,
+            nwords,
+            semantic_lines=["local addr:4 = I4 + M4;", "I12 = *[ram]:4 addr;"],
+            active_words=active_words,
+        )
+    ]
+
+
 # Shared branch-target subtables, keyed by (mode, bit-shape) -- NOT by mode
 # alone, because "pcrel" now covers two unrelated field shapes: Type25a_pcrel/
 # Type8a_rel's 24-bit reladdr (words 1-2) and Type9a_rel/Type9b_rel's 6-bit
@@ -829,6 +913,21 @@ def gen_constructor(form):
 
             if cond_true is False:
                 semantic = conditional_semantics(cond[1], semantic)  # pyright: ignore[reportOptionalSubscript]
+
+            # Keep each form's specializations in its own helper: adding one
+            # cannot replace the other's constructors or its generic fallback.
+            if name == "Type14a":
+                ctors.extend(
+                    type14a_scalar_constructors(
+                        mnem, disp_ops, wt, nwords, active_words, field_info
+                    )
+                )
+            if name == "Type3b":
+                ctors.extend(
+                    type3b_exact_constructors(
+                        mnem, disp_ops, wt, nwords, active_words, field_info
+                    )
+                )
             ctors.append(
                 Constructor(
                     mnem,
@@ -894,13 +993,15 @@ def gen_crossing_resolvers(ctors_by_form):
             # Remove the bare field reference this resolver's extra
             # constraint subsumes (can't be both bare and value-constrained).
             drop_names = {
-                n for n in FIELDS.used_names if n.startswith(spec["drop_label"] + "_")
+                n
+                for n in FIELDS.used_names
+                if n.startswith(spec["drop_label"] + "_")  # pyright: ignore[reportOperatorIssue]
             }
             for w in wt:
                 wt[w] = [t for t in wt[w] if t not in drop_names]
             disp_ops = [o for o in disp_ops if o not in drop_names]
 
-        for hi, lo, val in spec["extra"]:
+        for hi, lo, val in spec["extra"]:  # pyright: ignore[reportOptionalIterable]
             chunks = split_by_word(hi, lo)
             # Both current cases (compute[22:16]; a single status bit) fit in
             # one word; `val` is taken as already being that whole field's

@@ -54,6 +54,42 @@ def branch(name, cond=None, b=None, target=None):
     return encode(name, extra)
 
 
+def type14a(**values):
+    """Encode a scalar Type14a direct-DM transfer, defaulting to R4 at 0x254d98."""
+    defaults = {
+        "g": 0,
+        "d": 0,
+        "l": 0,
+        "ureg[6:0]": 4,
+        "addr[31:16]": 0x25,
+        "addr[15:0]": 0x4D98,
+    }
+    defaults.update(values)
+    return encode(
+        "14a", sum(field("14a", name, value) for name, value in defaults.items())
+    )
+
+
+def type3b(**values):
+    """Encode a Type3b instruction, defaulting to raw 493e0e3f's fields."""
+    defaults = {
+        "u": 0,
+        "i[2:0]": 4,
+        "m[2:0]": 4,
+        "cond[4:0]": sharcpcode.COND_TRUE,
+        "g": 0,
+        "d": 0,
+        "l": 0,
+        "ureg[6:0]": 28,
+        "w": 1,
+        "x": 1,
+    }
+    defaults.update(values)
+    return encode(
+        "3b", sum(field("3b", name, value) for name, value in defaults.items())
+    )
+
+
 def immediate_move(name, ureg, data):
     """-> bytes of a Type17 immediate move to UREG code `ureg`."""
     extra = field(name, "ureg[6:0]", ureg)
@@ -63,6 +99,39 @@ def immediate_move(name, ureg, data):
     else:
         extra |= field(name, "data[15:0]", data)
     return encode(name, extra)
+
+
+class GeneratorSource(unittest.TestCase):
+    def test_type14a_and_type3b_specializations_coexist(self):
+        """Pure generator-output regression: neither form may erase the other."""
+        tmp = tempfile.mkdtemp(prefix="sharcspec-source-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        spec = os.path.join(tmp, "sharcspec")
+        shutil.copytree(
+            os.path.join(sharcpcode.TOOLS, "sharcspec"),
+            spec,
+            ignore=shutil.ignore_patterns("SHARC_VISA", "__pycache__"),
+        )
+        subprocess.run(
+            [sys.executable, os.path.join(spec, "ghidra", "gen_sleigh.py")],
+            check=True,
+            capture_output=True,
+        )
+        with open(
+            os.path.join(
+                spec, "ghidra", "SHARC_VISA", "data", "languages", "sharc_visa.slaspec"
+            )
+        ) as f:
+            generated = f.read()
+        self.assertIn("type14a_scalar_w0_9_9=0x0", generated)
+        self.assertIn("type14a_scalar_w0_8_8=0x0", generated)
+        self.assertIn("type14a_scalar_w0_8_8=0x1", generated)
+        self.assertIn("ureg_w0_6_0 = *[ram]:4 addr;", generated)
+        self.assertIn("*[ram]:4 addr = ureg_w0_6_0;", generated)
+        self.assertIn("type3b_exact_w0_12_12=0x0", generated)
+        self.assertIn("I12 = *[ram]:4 addr;", generated)
+        self.assertGreaterEqual(generated.count(":Type14a "), 3)
+        self.assertGreaterEqual(generated.count(":Type3b "), 2)
 
 
 @unittest.skipUnless(have_pypcode(), "needs pypcode (pyproject.toml)")
@@ -92,6 +161,23 @@ class GeneratedLanguage(unittest.TestCase):
             if cls.lint["compile"]["returncode"] == 0
             else None
         )
+        cls.temp_slaspec = os.path.join(src, "sharc_visa.slaspec")
+        cls.temp_sla = os.path.join(cls.tmp, "lang", "sharc_visa.sla")
+        cls.artifact_diagnostics = {
+            "temporary_slaspec": cls.temp_slaspec,
+            "temporary_slaspec_sha256": sharcpcode.sha256_file(cls.temp_slaspec),
+            "temporary_sla": cls.temp_sla,
+            "temporary_sla_sha256": sharcpcode.sha256_file(cls.temp_sla)
+            if os.path.exists(cls.temp_sla)
+            else None,
+            "in_tree_slaspec": os.path.join(sharcpcode.LANG_DIR, "sharc_visa.slaspec"),
+            "in_tree_sla": os.path.join(sharcpcode.LANG_DIR, "sharc_visa.sla"),
+        }
+        for kind in ("slaspec", "sla"):
+            path = cls.artifact_diagnostics[f"in_tree_{kind}"]
+            cls.artifact_diagnostics[f"in_tree_{kind}_sha256"] = (
+                sharcpcode.sha256_file(path) if os.path.exists(path) else None
+            )
 
     @classmethod
     def tearDownClass(cls):
@@ -173,6 +259,93 @@ class GeneratedLanguage(unittest.TestCase):
                 if lifted_value & (1 << (source.size * 8 - 1)):
                     lifted_value |= 0xFFFFFFFF << (source.size * 8)
                 self.assertEqual(lifted_value & 0xFFFFFFFF, expected)
+
+    def test_temporary_artifacts_match_in_tree_when_present(self):
+        """Report both paths/hashes if a generated or compiled artifact goes stale."""
+        if self.artifact_diagnostics["in_tree_slaspec_sha256"] is not None:
+            self.assertEqual(
+                self.artifact_diagnostics["temporary_slaspec_sha256"],
+                self.artifact_diagnostics["in_tree_slaspec_sha256"],
+                self.artifact_diagnostics,
+            )
+        if self.artifact_diagnostics["in_tree_sla_sha256"] is not None:
+            self.assertEqual(
+                self.artifact_diagnostics["temporary_sla_sha256"],
+                self.artifact_diagnostics["in_tree_sla_sha256"],
+                self.artifact_diagnostics,
+            )
+
+    def test_type14a_scalar_direct_dm_load_and_store(self):
+        # Capture words are big-endian; pypcode receives little-endian words.
+        raw_store = bytes.fromhex("110400254d98")
+        observed_store = b"".join(
+            raw_store[i : i + 2][::-1] for i in range(0, len(raw_store), 2)
+        )
+        self.assertEqual(observed_store, type14a(d=1))
+        raw_load = bytes.fromhex("100400254d98")
+        observed_load = b"".join(
+            raw_load[i : i + 2][::-1] for i in range(0, len(raw_load), 2)
+        )
+        self.assertEqual(observed_load, type14a(d=0))
+        for direction, buf, expected_name in (
+            ("load", observed_load, "LOAD"),
+            ("store", observed_store, "STORE"),
+        ):
+            with self.subTest(direction=direction):
+                names, ops = self.lift(buf)
+                self.assertEqual(
+                    names,
+                    ["INT_ZEXT", "INT_LEFT", "INT_ZEXT", "INT_OR", expected_name],
+                )
+                access = ops[-1]
+                self.assertEqual(access.inputs[0].getSpaceFromConst().name, "ram")
+                # The direct address is assembled without a byte-scale: the
+                # memory-space wordsize applies it when Ghidra uses the p-code.
+                self.assertEqual(ops[0].inputs[0].offset, 0x25)
+                self.assertEqual(ops[2].inputs[0].offset, 0x4D98)
+                self.assertEqual(access.inputs[1].offset, ops[3].output.offset)
+                self.assertEqual(access.inputs[1].size, 4)
+                if direction == "load":
+                    self.assertEqual(access.output.getRegisterName(), "R4")
+                    self.assertEqual(access.output.size, 4)
+                else:
+                    self.assertEqual(access.inputs[2].getRegisterName(), "R4")
+                    self.assertEqual(access.inputs[2].size, 4)
+
+    def test_type14a_pm_or_lw_selector_does_not_inherit_scalar_dm_pcode(self):
+        for selector, buf in (("PM", type14a(g=1)), ("LW", type14a(l=1))):
+            with self.subTest(selector=selector):
+                names, _ops = self.lift(buf)
+                self.assertNotIn("LOAD", names)
+                self.assertNotIn("STORE", names)
+
+    def test_type3b_exact_reader_loads_i12_from_i4_plus_m4(self):
+        # Capture words are big-endian; pypcode receives little-endian words.
+        raw = bytes.fromhex("493e0e3f")
+        observed = b"".join(raw[i : i + 2][::-1] for i in range(0, len(raw), 2))
+        self.assertEqual(observed, type3b())
+        names, ops = self.lift(observed, sw=0x1C6C19)
+        loads = [op for op in ops if op.opcode.name == "LOAD"]
+        self.assertEqual(names.count("LOAD"), 1)
+        self.assertEqual(len(loads), 1)
+        load = loads[0]
+        self.assertEqual(load.inputs[0].getSpaceFromConst().name, "ram")
+        self.assertEqual(load.inputs[1].size, 4)
+        self.assertEqual(load.output.getRegisterName(), "I12")
+        self.assertEqual(load.output.size, 4)
+        self.assertEqual(
+            [(op.opcode.name, op.output.getRegisterName()) for op in ops if op.output],
+            [("INT_ADD", ""), ("LOAD", "I12")],
+        )
+        self.assertEqual(ops[0].inputs[0].getRegisterName(), "I4")
+        self.assertEqual(ops[0].inputs[1].getRegisterName(), "M4")
+        self.assertFalse(
+            any(op.output and op.output.getRegisterName() == "I4" for op in ops)
+        )
+
+    def test_type3b_nearby_selector_does_not_inherit_exact_reader_pcode(self):
+        names, _ops = self.lift(type3b(g=1))
+        self.assertNotIn("LOAD", names)
 
     def test_ureg_attachment_uses_complete_manual_code_table(self):
         """Unsplit 7-bit UREG fields attach to all PRM UREG/SYSREG entries."""
