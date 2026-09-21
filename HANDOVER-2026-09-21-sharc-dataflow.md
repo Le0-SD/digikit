@@ -285,7 +285,7 @@ faulting. Results are in `docs/findings/05-sharc-isa-and-decoding.md`.
    each language change with `tools/sharcpcode.py measure` and `compare`, and
    re-run `tools/sharc_worklist.py`.
 3. `tools/sharcwriters.py 0x252658` censuses all 12,634 DM stores and finds
-   no writer among those it resolves, but 8,438 stay unresolved and 224
+   no writer among those it resolves, but 7,492 stay unresolved and 224
    depend on caller registers (`docs/findings/06-sharc-engine-and-startup.md`,
    "A zero-initialiser also writes `0x254d9c`"). Next, in order of yield:
    (a) the stack context switch: every writer of I6/I7/B6/B7 keeps them in
