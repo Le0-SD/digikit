@@ -2077,6 +2077,52 @@ memory instructions. The owner therefore remains an indexed SHARC store, a
 ColdFire/host write, a DMA path, or code outside Ghidra's function
 boundaries. **[O]**
 
+### A zero-initialiser also writes `0x254d9c`, and CBUFEN is set at startup **[V][D][O]**
+
+**[C]** `0x254d9c` has a second writer, an indexed store that the Ghidra
+sweep could not see. `blk93@0x1c15e3`, called only from the direct call at
+`sw 0x1c8092` in `blk93@0x1c7ff9`, loads `I0 = 0x255118`, `I1 = 0x254d98`
+and `I2 = 0x255498` by literal at `sw 0x1c1653..0x1c1659`, then runs nine
+Type16b stores `DM(Ix, M6) = 0` at `sw 0x1c16a7..0x1c16b7`, rotating over
+I1, I0 and I2. Type16b is post-modify only (PRM p.16-20). With M6 = 1 and
+normal words scaled by 4, it zeroes `0x254d98`, `0x254d9c`, `0x254da0`,
+`0x255118..0x255120` and `0x255498..0x2554a0`; the store at `sw 0x1c16ad`
+writes 0 to `0x254d9c`. It does not touch `0x252658`. A second agent decoded
+the range from the image bytes and confirmed every address. The x4 scaling
+of Type16b is inferred from its siblings 3a, 4a and 15b, which were checked
+live; Type16b itself has no language semantics yet. **[V][D]**
+
+M6 is a runtime constant. The startup routine `blk88@0x1c0f24` sets
+`M5 = 0`, `M6 = 1`, `M7 = -1`, `M13 = 0`, `M14 = 1` and `M15 = -1`
+(`M6 = 1` at `sw 0x1c0f40`, bytes `a6 0f 01 00`). Across all nine code
+blocks the only other writer of each is a PM load in blk69 paired with a
+PM store of the same register at the same offset, an interrupt save and
+restore. The same routine sets `B7 = 0x26f000`, `I7 = 0x26f7f0` and
+`L7 = 0x1fd` at `sw 0x1c0f64..0x1c0f6a`, mirrors them into B6, I6 and L6,
+and sets MODE1.CBUFEN (bit 24) at `sw 0x1c0f82`, bytes
+`14 02 01 01 18 00`, `MODE1 = set(MODE1, 0x1011800)`. No BIT CLR anywhere
+in the image touches bit 24, and MODE1 itself is never loaded from an
+immediate or from memory. So the stack is a circular buffer
+`[0x26f000, 0x26f7f4)`: post-modify accesses through I7 and I6 wrap inside
+it (PRM p.6-25), and MODIFY wraps whenever L != 0 regardless of CBUFEN
+(PRM p.6-7). This routine is the one the earlier startup trace reaches
+through `0x1c0f26`. 22 register-to-register moves into MODE1 or MODE1STK
+from runtime values are not statically resolved. `tools/sharc_trace.py`
+wraps only MODIFY; its ordinary post-modify accesses are always linear.
+**[V][O]**
+
+**[O]** `tools/sharcwriters.py` censuses every DM store in the image, 12,634
+across 15 forms, and resolves each from its function entry with
+`tools/sharc_trace.py`, seeding the six runtime-constant M registers and L6
+and L7. For `0x252658` none resolves to the target: 496 resolve elsewhere,
+3,441 are stack-relative, 224 depend on the caller's I or M registers, 35
+go through a loaded pointer, and 8,438 stay unresolved. The largest
+unresolved causes are the stack pointer's circular MODIFY while B7 is not
+concrete (1,045 with its cascade), undecoded or unconfirmed forms (627),
+Type11a and compute opcode `0xa5` (391), and budgets (595). For `0x254d9c`
+the same run finds both writers, at `sw 0x1c191d` and `sw 0x1c16ad`.
+**[D][O]**
+
 ## Four more functions read
 
 Full notes in `docs/findings/functions/`.

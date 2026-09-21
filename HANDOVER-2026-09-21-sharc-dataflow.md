@@ -284,13 +284,20 @@ faulting. Results are in `docs/findings/05-sharc-isa-and-decoding.md`.
    is now the emulator's main fault (139 of 301 in `FUN_001c18a6`). Measure
    each language change with `tools/sharcpcode.py measure` and `compare`, and
    re-run `tools/sharc_worklist.py`.
-3. The whole-image sweep now returns 3,692 computed store candidates for
-   `0x252658` (`out/sharc-mem/stores-252658.json`, 176 MB). Prune them by the
-   value range of their address root, not one by one. I6 is the frame pointer
-   (RFRAME restores it, to `0x26f7e0` in one traced run) and roots 2,021 of
-   them, so bound the stack range first. Recover I-register bases with
-   `tools/sharc_trace.py` or `tools/sharcemu.py` from function entries. Only
-   if nothing survives, take the ColdFire side: the machine type reaches the
+3. `tools/sharcwriters.py 0x252658` censuses all 12,634 DM stores and finds
+   no writer among those it resolves, but 8,438 stay unresolved and 224
+   depend on caller registers (`docs/findings/06-sharc-engine-and-startup.md`,
+   "A zero-initialiser also writes `0x254d9c`"). Next, in order of yield:
+   (a) the stack pointer: CBUFEN is set, so every I7/I6 value stays inside
+   the circular stack `[B7, B7+0x7f4)`; prove B7 only ever holds stack
+   addresses (startup `0x26f000`, and the runtime rebase from I7 at
+   `sw 0x1c1463/0x1c1472`), then classify I7/I6-derived addresses,
+   including the circular-MODIFY cascade (about 1,045), as stack-relative;
+   (b) Type16b semantics in the language, so the new `0x254d9c` writer is
+   checked live; (c) tracer support for Type11a and compute opcode `0xa5`,
+   and confirmation of the 627 uncertain forms; (d) chase the 224
+   caller-relative stores through their callers. Only if nothing survives,
+   take the ColdFire side: the machine type reaches the
    SHARC at TX frame offset `0x94 + 2i`
    (`docs/findings/04-coldfire-dsp-link.md`), and `FUN_001c2b24`, the
    documented caller of `0x1c18a6`, reads it at `0x1c33d2` and writes the
