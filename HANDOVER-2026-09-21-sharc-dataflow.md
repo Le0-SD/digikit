@@ -274,16 +274,27 @@ faulting. Results are in `docs/findings/05-sharc-isa-and-decoding.md`.
    memory-form semantics must build their address with
    `dm_byte_addr_to_ram_unit` in `gen_sleigh.py`. DN2 1.11 and DT2 1.15C have
    not been reimported.
-2. Implement the `condition` CALLOTHER behaviour, then semantics for the
-   indexed DM forms, `15b` first (20% of the image). These serve both routes:
-   they give the emulator its memory writes and give `ghidraq stores` the
-   indexed candidates it cannot see today. Measure each language change with
-   `tools/sharcpcode.py measure` and `compare`.
-3. Re-run the whole-image `stores sw:0x252658` sweep. Only if it still finds
-   no candidate, take the ColdFire side: the machine type reaches the SHARC at
-   TX frame offset `0x94 + 2i` (`docs/findings/04-coldfire-dsp-link.md`), and
-   `FUN_001c2b24`, the documented caller of `0x1c18a6`, reads it at
-   `0x1c33d2` and writes the neighbouring words `0x252650`/`0x252654`.
+2. Done for memory: the DM cases of 15b, 4a and 3a have semantics
+   (`docs/findings/05-sharc-isa-and-decoding.md`, last section), with
+   `compute`, `condition` and `circular` as explicit unimplemented ops.
+   Coverage is 51% of the image. `condition` cannot be implemented until the
+   language models the ASTAT flags, and the flags need compute semantics, so
+   the next language work is the compute field (ALU, multiplier, shifter),
+   mirroring `tools/sharc_trace.py`'s `_compute` and `_astatx_*` helpers. It
+   is now the emulator's main fault (139 of 301 in `FUN_001c18a6`). Measure
+   each language change with `tools/sharcpcode.py measure` and `compare`, and
+   re-run `tools/sharc_worklist.py`.
+3. The whole-image sweep now returns 3,692 computed store candidates for
+   `0x252658` (`out/sharc-mem/stores-252658.json`, 176 MB). Prune them by the
+   value range of their address root, not one by one. I6 is the frame pointer
+   (RFRAME restores it, to `0x26f7e0` in one traced run) and roots 2,021 of
+   them, so bound the stack range first. Recover I-register bases with
+   `tools/sharc_trace.py` or `tools/sharcemu.py` from function entries. Only
+   if nothing survives, take the ColdFire side: the machine type reaches the
+   SHARC at TX frame offset `0x94 + 2i`
+   (`docs/findings/04-coldfire-dsp-link.md`), and `FUN_001c2b24`, the
+   documented caller of `0x1c18a6`, reads it at `0x1c33d2` and writes the
+   neighbouring words `0x252650`/`0x252654`.
 4. Then return to `I6+124` and the `0x8055c840/58/74` table-reader control
    flow.
 

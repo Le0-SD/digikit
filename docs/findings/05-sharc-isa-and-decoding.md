@@ -740,3 +740,43 @@ addresses. Ghidra's GUI still names data by `ram` unit, so DM `0x252658` is
 labelled `DAT_0012932c`. Projects imported before this change use the old
 language and are stale. The 31 Type14a DM accesses with `l = 1` (long word)
 still have no semantics. **[O]**
+
+## Indexed DM forms 15b, 4a and 3a now have semantics **[V][D][O]**
+
+`gen_sleigh.py` gives the DM (`g = 0`) cases of Type15b, Type4a and Type3a
+real loads and stores, each address built through `dm_byte_addr_to_ram_unit`.
+Under the firmware's 32-bit normal words, 15b addresses
+`I + sext7(data) * 4` and never updates I. 4a scales `sext6(data)` by 4 and
+3a scales `M` by 4; pre-modify (`u = 0`) adds the offset without updating I,
+and post-modify (`u = 1`) accesses the old I and then adds the offset. What
+the language cannot model yet becomes a named unimplemented p-code op instead
+of being dropped: `compute(field)` for a nonzero 23-bit compute field, the
+existing `condition(code)` gating the whole instruction when cond is not
+TRUE, and `circular(i)` in place of the update when `L[i] != 0`, since the
+reference allows circular buffering only with post-modify addressing. PM
+(`g = 1`) and long-word (`l = 1`) cases stay empty. None of the 4528 15b or
+983 3a instances in DT2 1.16 targets PC, the PC stack or a loop register.
+**[V]**
+
+A second agent lifted all 6,535 DT2 1.16 instances of the three forms with
+the installed language, ran them through its own p-code interpreter under
+several register scenarios, and found no mismatch against a reference written
+from the public manual. pypcode and `tools/sharc_disasm.py` agree on the
+length of all 22,668 aligned instructions. 105 instances load into the I
+register they address through (`I4 = DM(M5, I4)`); all are pre-modify, so no
+update competes with the load. In the emulator a 15b load, a 15b store and a
+4a post-modify store behaved exactly as predicted. **[V]**
+
+Coverage measured with `tools/sharc_worklist.py` rose from 22.09% to 51.02%
+of the image and from 31.19% to 72.94% of `FUN_001c18a6`.
+`tools/sharcpcode.py compare` shows no decompile failure or timeout;
+decompile time rose from 1.6 s to 6.9 s, and the constant-folded guards
+produce 6,534 "Removing unreachable block" warnings. Stepping `FUN_001c18a6`
+now runs 210 instructions and stops mostly at `compute` (139 of 301 faults)
+rather than at missing forms. **[D]**
+
+Every indexed store is now visible to the dataflow queries. A whole-image
+`ghidraq stores 0x252658` returns 3,692 `computed-or-unresolved` candidates in
+396 functions, where it returned none before. By address root they are led by
+I6 (2,021), addresses that come through a load (1,338), I4 (135) and I5 (73).
+None is resolved to `0x252658` yet. **[D][O]**
