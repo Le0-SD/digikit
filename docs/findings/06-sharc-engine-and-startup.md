@@ -2058,12 +2058,24 @@ an `INDIRECT` call-effect node, with no raw instruction at its p-code address
 (`pcode 0x383640` returns `no-instruction`); it is a decompiler
 value-preservation placeholder, not a store. Ghidra's reference table likewise
 holds exactly one reference to the address, the read at `0x3831da`. The value
-is therefore zero at boot and no SHARC instruction Ghidra can see ever changes
-it. That bounds the owner to a ColdFire/host write over the link, a DMA path,
-or a SHARC store outside Ghidra's function boundaries, without deciding
-between them. `elektron-sharc`'s decompilation of this function is truncated
-by `halt_baddata()`, so `sharc-batch-dt2-116` is the better witness here
-despite its smaller function count. **[O]**
+is therefore zero at boot and no *direct* SHARC store changes it.
+`elektron-sharc`'s decompilation of this function is truncated by
+`halt_baddata()`, so `sharc-batch-dt2-116` is the better witness here despite
+its smaller function count. **[O]**
+
+**[C]** That sweep could not see indexed stores at all, so it does not bound
+the owner to non-SHARC writers. The generated language emits an empty
+semantic body for every form without hand-written semantics, and a pypcode
+lift of all 22,668 aligned DT2 1.16 main-program instructions finds 0 p-code
+ops for, among others, `15b` (4528), `3c` (1488), `4a` (1024), `3a` (983) and
+all but 5 of 1349 `3b` -- the indexed DM load/store forms. An instruction with
+no p-code contributes no `STORE` to HighFunction, so no query built on it can
+report such a store. The sweep agrees: across five whole-image queries it
+returned only `exact-constant-target` matches and not one
+`computed-or-unresolved` candidate, in an image with thousands of indexed
+memory instructions. The owner therefore remains an indexed SHARC store, a
+ColdFire/host write, a DMA path, or code outside Ghidra's function
+boundaries. **[O]**
 
 ## Four more functions read
 

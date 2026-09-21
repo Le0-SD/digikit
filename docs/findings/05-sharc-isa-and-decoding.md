@@ -642,3 +642,36 @@ our reading is the one consistent with the image bytes:
 Verdict: usable as a cross-check and as a base for eventual code emission,
 **provided the parcel byte-order fix is applied**. This does not address the
 Tier-2 injection-seam problem, which remains the hard part.
+
+## Only 22% of the image has semantics, and the emulator runs the rest as no-ops **[D][O]**
+
+The generated SLEIGH emits an empty `{}` body, never `unimpl;`, for every
+constructor without hand-written semantics
+(`tools/sharcspec/ghidra/gen_sleigh.py`, `Constructor.emit`). pypcode therefore
+decodes such an instruction and returns zero p-code ops rather than raising.
+Two forms are correctly empty and are not gaps: Type21a (NOP) and
+Type9a/9b_abs with `b==1` (register-indirect call, left empty on purpose).
+Lifting all 22,668 aligned instructions of the DT2 1.16 main program
+(`sharcflow.aligned`, `min_depth=8`; 47 forms; the language decoded every one)
+finds p-code for 5,007, or 22.09%. The largest forms with none are `15b`
+(4528, 19.98%), `3c` (1488), `5b_move` (1412), `2a_short` (1226), `4a`
+(1024) and `3a` (983); `3b` has semantics for 5 of 1349 and `14a` for 615 of
+648. In `FUN_001c18a6` 204 of 654 instructions (31.19%) have p-code. **[D]**
+
+Ghidra 12.1.3's `EmulatorHelper` executes this language. Stepping
+`FUN_001c18a6` from its entry ran 525 instructions, and a run started at
+`sw 0x1c18ed` ran 200 of 200 through both known stores, `sw 0x1c191d` and
+`sw 0x1c1928`. `EmulatorHelper.readMemory`/`writeMemory` observe live
+emulated memory: a write of `0xabcd1234` to `0x254d9c` read back unchanged.
+The PC register takes the short-word PC while memory calls take the displayed
+address; writing the displayed entry `0x38314c` into PC made
+`getExecutionAddress()` return `0x706298` and fail. **[D]**
+
+Most of that execution is not real. A form with no semantics runs as a silent
+no-op instead of faulting, so an emulator watchpoint would miss a write made
+through `15b`, `3a`, `4a` or `3c` rather than stop at it. The only fault seen
+was `Unimplemented CALLOTHER pcodeop (condition)` on conditional jumps. The
+same gap blinds the decompiler dataflow queries in
+`06-sharc-engine-and-startup.md` to indexed stores. `MemoryAccessFilter`
+cannot be subclassed from Python ("Java classes cannot be extended in
+Python"), so catching same-value writes needs a small Java shim. **[O]**

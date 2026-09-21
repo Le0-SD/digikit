@@ -235,7 +235,8 @@ sw:0x252658` still finds no genuine writer in either `sharc-batch-dt2-116` or
 block (DT2 block 18 at `0x282412c0`, 86216 bytes, fill value 0; DN2 block 16
 at `0x28241290`), second-agent byte-verified in all three images, with no
 later block re-covering them. All three words are zero at boot. So the loader
-supplies nothing and no SHARC instruction Ghidra can see writes the address.
+supplies nothing and no *direct* SHARC store writes the address. The Ghidra
+sweep cannot see indexed stores at all; see the next section.
 
 Two mapping traps cost time here and are now recorded in
 `docs/findings/06-sharc-engine-and-startup.md`: for data blocks the loader
@@ -246,28 +247,42 @@ coverage separately.
 
 ## Highest-value next batch
 
-The owner of `DM(0x252658)` is now bounded to three possibilities: a
-ColdFire/host write over the link, a DMA path, or a SHARC store outside
-Ghidra's function boundaries. Decide between them:
+**[C]** The Ghidra sweep did not bound the owner as far as the previous
+version of this section claimed. Every indexed DM form (`15b`, `3c`, `4a`,
+`3a`, most `3b`) has an empty SLEIGH semantic body, so it emits no p-code, and
+neither the decompiler queries nor an emulator can see a store made through
+one. The owner is still one of: an indexed SHARC store, a ColdFire/host write,
+a DMA path, or code outside Ghidra's function boundaries.
 
-1. Take the ColdFire side first. The machine type reaches the SHARC at TX
-   frame offset `0x94 + 2i` (`docs/findings/04-coldfire-dsp-link.md`), and
-   `FUN_001c2b24` -- the documented caller of `0x1c18a6` -- reads and
-   change-tests it at `0x1c33d2`. Test whether that word, or anything else the
-   host writes, lands at `0x252658`. Note that `FUN_001c2b24` was seen writing
-   the neighbouring words `0x252650`/`0x252654`, which makes a small shared
-   state array around `0x25265x` the most promising lead in this batch.
-2. Close the function-boundary gap before trusting the negative further. Run a
-   `tools/sharcflow.py --cover` equivalent on `sharc-batch-dt2-116`, or re-run
-   the sweep on a project with both full coverage and a clean decompilation of
-   `FUN_001c18a6` -- `elektron-sharc` has 1999 functions but truncates that
-   function with `halt_baddata()`.
-3. Only then rule on DMA, and return to `I6+124` and the
-   `0x8055c840/58/74` table-reader control flow.
+Semantics are now the shared bottleneck for both routes. Only 22% of the
+DT2 1.16 main program lifts to any p-code; the ranked worklist is
+`out/sharc-semantics/worklist.md`. Ghidra's `EmulatorHelper` does run this
+language, but a form with no semantics executes as a silent no-op instead of
+faulting. Results are in `docs/findings/05-sharc-isa-and-decoding.md`.
+
+1. Make missing semantics fail loudly in the emulator harness: treat an
+   instruction that lifts to zero p-code ops as a fault, except Type21a (NOP)
+   and Type9a/9b_abs with `b==1` (indirect call). Do this in the harness, not
+   by emitting `unimpl;` from the generator, which would put
+   `halt_unimplemented()` into the decompiler output that the dataflow
+   queries depend on.
+2. Implement the `condition` CALLOTHER behaviour, then semantics for the
+   indexed DM forms, `15b` first (20% of the image). These serve both routes:
+   they give the emulator its memory writes and give `ghidraq stores` the
+   indexed candidates it cannot see today. Measure each language change with
+   `tools/sharcpcode.py measure` and `compare`.
+3. Re-run the whole-image `stores sw:0x252658` sweep. Only if it still finds
+   no candidate, take the ColdFire side: the machine type reaches the SHARC at
+   TX frame offset `0x94 + 2i` (`docs/findings/04-coldfire-dsp-link.md`), and
+   `FUN_001c2b24`, the documented caller of `0x1c18a6`, reads it at
+   `0x1c33d2` and writes the neighbouring words `0x252650`/`0x252654`.
+4. Then return to `I6+124` and the `0x8055c840/58/74` table-reader control
+   flow.
 
 Verify any finding against image bytes with a second agent before marking it
-`[V]`. Do not add broad ISA semantics or a custom SSA engine; extend SLEIGH
-only for a specific blocking form.
+`[V]`. Extend SLEIGH form by form for forms that block this work -- the
+indexed DM forms now do -- and measure each change. Do not write a custom SSA
+engine.
 
 ## Useful commands
 
