@@ -265,12 +265,15 @@ faulting. Results are in `docs/findings/05-sharc-isa-and-decoding.md`.
    Type9a/9b_abs with `b==1`), and reports writes to watched addresses by
    address, so same-value writes count. Its positive control reports the
    store at `sw 0x1c191d`.
-1a. Before writing memory semantics, fix the data address model. The
-   language's `ram` space has word size 2, so every DM literal is accessed at
-   twice its byte address (`docs/findings/05-sharc-isa-and-decoding.md`,
-   last section). Memory-form semantics written on the current model would
-   inherit the error. Give data a byte-addressed space and re-measure with
-   `tools/sharcpcode.py measure`/`compare`.
+1a. Done: DM byte addresses are translated to `ram` units in the language,
+   and external blocks sit at their own address
+   (`docs/findings/05-sharc-isa-and-decoding.md`, last section). Use the
+   fresh project `~/ghidra-projects/sharc-dm-dt2-116` (project name
+   `sharc-dm-dt2-116`); `sharc-batch-*` and `elektron-sharc` were imported
+   with the old language. Pass data addresses as plain byte addresses. New
+   memory-form semantics must build their address with
+   `dm_byte_addr_to_ram_unit` in `gen_sleigh.py`. DN2 1.11 and DT2 1.15C have
+   not been reimported.
 2. Implement the `condition` CALLOTHER behaviour, then semantics for the
    indexed DM forms, `15b` first (20% of the image). These serve both routes:
    they give the emulator its memory writes and give `ghidraq stores` the

@@ -710,3 +710,33 @@ DM literal and reads zero there, and an external literal such as
 table and are wrong for DM literals. Fixing this means giving data its own
 byte-addressed space in the language, measured with `tools/sharcpcode.py`.
 **[O]**
+
+## DM literals now reach their own bytes **[V][C]**
+
+**[C]** The doubling in the previous section is fixed. `gen_sleigh.py`'s
+`dm_byte_addr_to_ram_unit` translates a DM byte address to a `ram` unit
+before each DM access: `unit = (addr >> 1) + isl2 * 0xF0B80000`, where `isl2`
+is 1 inside the L2 byte window `0x20000000..0x20020000`, so L2 lands on the
+importer's short-word alias (`0x20000010` -> unit `0xB80008`). Both current
+DM sites use it, the Type14a scalar forms and the exact Type3b reader; PM
+accesses are unchanged. `tools/sharc_import.py` now shifts only the L1 alias
+window `0x28000000..0x28400000` down by `0x28000000`, so external memory sits
+at its own address (`0x82a00008` stays `0x82a00008`, unit `0x41500004`).
+All 646 Type14a DM literals in the DT2 1.16 main program are even, so the
+shift loses nothing. `tools/sharcpcode.py compare` of the language before and
+after shows no regression; decompiler warnings about globals overlapping
+smaller symbols fell from about 90 to about 11 per image. **[V]**
+
+Checked live on a fresh import, `~/ghidra-projects/sharc-dm-dt2-116`. The
+Type14a load at `sw 0x1c21ee`, `R2 = DM(0x256820)`, emulated for one step
+leaves `R2 = 0x00254878`, the payload bytes `78 48 25 00` of loader block 19.
+With `--poke 0x256820=0x11223344` it leaves `0x11223344` instead.
+`xrefs 0x252658` finds the read at `sw 0x1c18ed`, and `xrefs 0x254d9c` the
+write at `sw 0x1c191d`. A second agent re-walked the loader headers, decoded
+the instruction and repeated the emulation independently. **[V]**
+
+Data addresses are now passed to `ghidraq` and `sharcemu` as plain byte
+addresses. Ghidra's GUI still names data by `ram` unit, so DM `0x252658` is
+labelled `DAT_0012932c`. Projects imported before this change use the old
+language and are stale. The 31 Type14a DM accesses with `l = 1` (long word)
+still have no semantics. **[O]**
