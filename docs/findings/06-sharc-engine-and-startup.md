@@ -1933,9 +1933,9 @@ concrete).
 **Machine-type dependence is not established, and two traced paths argue against
 it.** The four writes to `0x254d78`/`80`/`88`/`90` happen in `FUN_1c2b24` at
 `~0x1c2c5e`, **1800+ instructions before** the machine-type read at
-`0x1c33c1`, with no dataflow between them. The three writes to
-`0x254d98`/`9c`/`a0` are in `0x1c18a6`'s prologue on an unconditional
-single path (0 branches in 400 traced steps).
+`0x1c33c1`, with no dataflow between them. The earlier trace reported three accesses to `0x254d98`/`9c`/`a0` in
+`0x1c18a6`'s prologue on an unconditional single path (0 branches in 400
+traced steps); the bounded direction for `0x254d9c`/`98` is corrected below.
 
 The one untraced hop that could still connect it: `R4` at `0x1c1928` is an
 incoming argument, and `FUN_1c2b24` passes `R4 = caller frame[-17]`. Where that
@@ -1945,6 +1945,40 @@ The region resolves as **one 11-word object**, `0x254d78`-`0x254da0`, whose
 middle six words `0x1c18a6` loads into `I3,I12,M1-M4`. Writers found only in
 blk93. The scan saw only direct-literal address operands, so a store through a
 computed base would be invisible.
+
+### [C] Bounded cross-image forwarding at `0x1c18a6` **[V][D][O]**
+
+The earlier incoming-argument wording for `R4` at `0x1c1928` is superseded for
+the bounded straight-line interval. In both DT2 1.15C and DT2 1.16, raw
+`100400254d9c` at `0x1c18f3` is Type14a `R4 = DM(0x254d9c)`, and raw
+`110400254d98` at `0x1c1928` is Type14a `DM(0x254d98) = R4`. The deterministic
+listing has no intervening destination write to `R4`; the value is therefore
+forwarded unchanged along that interval, not globally immutable or shown to
+execute naturally. Automated Ghidra proves the same address-space-aware,
+raw-p-code path in `FUN_001c18a6`: `ram 0x4a9b38 -> value -> ram 0x4a9b30`.
+**[V]**
+
+Ignored batch evidence is
+`out/ghidraq-dataflow/batch/combined/`: `machine-map.json` SHA-256
+`8a02f7a4e8e822bbc395783c8649b20a7d6ef49c60c0660b2883fa58e2611964`,
+`machine-map.sqlite` SHA-256
+`f1002b2b9fb0012f37648ee65a7e97bdd5350b41fae9e6c88ade6ef68b600929`; it
+records 3 images, 24 queries, 72 results, 2 exact matches, and 0 errors. Source
+blob SHA-256: DN2 1.11
+`336e340aa0cdcd34e314cfa44849f709a3134f6bd4cd57dfc7e15702c83115e2`; DT2
+1.15C `6d4316cddd41edef7a136c10d270313882028a59b96cc8fe97a716b949a7d551`;
+DT2 1.16 `0f514a12a2255f5c081e292c47f1f29462003177658da4bbae0a22fd737fffa2`.
+**[V]**
+
+Runtime meaning, contents, ownership, machine-selection relation, and the
+`0x254d9c` writer remain **[D][O]**. DN2's `ok` query with zero exact match is
+not a raw whole-image negative or an architectural-absence/analogy claim.
+Likewise, the zero matches for `0x8055c840`, `0x8055c858`, and `0x8055c874`
+are a HighFunction/query limitation. I6+124 identity, callers/control
+predicates into this function, and natural branch execution remain **[D][O]**.
+Next seeds: exhaustive DN2 Type14a raw scan around `0x254dxx`; the
+`0x254d9c` writer chain; callers/control predicates into `0x1c18a6`; and raw
+p-code/caller slices for I6+124 and the table readers. **[O]**
 
 ## Four more functions read
 
