@@ -511,6 +511,52 @@ uv run python tools/sharc_candidates.py \
 A candidate is a hypothesis, not a finding. Confirm its base-pointer
 provenance and the consuming memory operation with the tracer and image bytes.
 
+### `tools/sharcwriters.py`
+
+Which SHARC+ instructions can write a given DM byte address -- image-wide,
+over every store form, not just the ones Ghidra's SLEIGH language can see.
+
+Census: decodes every aligned instruction in the code blocks
+(`tools/sharcinv.py` `CODE_BLOCKS`) and finds every DM store from decoded
+fields alone (no SLEIGH, no execution): forms 15a/15b/3a/3b/3c/3d/4a/4b/4d/
+6a_mem/14a/14d store when merged `d==1`/`g==0`; 16a/16b always store, DM
+when `g==0`; dual-memory 1a/1b store on the DM side when `dmd==1`.
+(`sharcinv.py`'s own `MEM_FORMS` omits Type3c even though it has a real `d`
+bit and stores exactly like its siblings -- this tool keeps its own table.)
+
+Resolve: groups the census by owning function (`tools/sharcfn.py`
+`load_context`/`build_inventory`) and runs `tools/sharc_trace.py`'s tracer
+once per function from its entry, with every I/M/B register seeded as its
+own named symbol (so an address survives as `Affine(I6e - 12)` instead of
+collapsing to `Unknown`) and `concrete_memory=True`. L registers are seeded
+concrete zero rather than symbolic -- the one deliberate exception, because
+the tracer's own Type19a_scaled MODIFY handler only takes its cheap linear
+path for a `Const` zero L register; a merely-symbolic L instead poisons
+every later use of that I register with `Unknown`, which was the single
+largest source of lost resolution on a full run.
+
+Classify: `HIT` / `EXCLUDED-CONST` / `EXCLUDED-STACK` / `STACK-RELATIVE` /
+`LOADED-POINTER` (address depends on an unresolved memory load; the load's
+own expression is recorded) / `ENTRY-RELATIVE` (depends on a
+caller-supplied register; every register in the expression is listed,
+including a mixed frame+modifier idiom like `DM(I7,M7)`) / `UNRESOLVED`.
+Every census DM store lands in exactly one class; the class totals always
+sum to the census total (checked at the end of every run).
+
+```sh
+uv run python tools/sharcwriters.py 0x252658 --jobs 16 \
+    --json out/sharcwriters/252658.json
+```
+
+`--stack LO:HI` overrides the default stack bounds (derived from the
+loader's own layout: the untouched gap between two code blocks, DM
+`0x26f000`-`0x2c0000` -- see the module docstring); `--stack none` reports
+every stack-relative store as `STACK-RELATIVE` instead of trying to exclude
+it. `--jobs N` runs one function's trace per worker process. The
+interpreter-independent logic (census rules, width tables, the address
+classifier) is pure and unit-tested in `tests/test_sharcwriters.py` with
+synthetic fields and trace events -- no firmware required.
+
 ## Reference manuals
 
 `tools/refstext.py` extracts supplied public manuals into searchable,
@@ -527,6 +573,7 @@ sources.
 | What does this loader offset become in DSP memory? | `sharcldr.py` |
 | Where is a known constant or peripheral address used? | `sharcimm.py`, then SQLite |
 | Which exact offset calculations are plausible readers? | `sharc_candidates.py` |
+| Which instructions can write a given DM address, image-wide? | `sharcwriters.py` |
 | Which non-main instructions disagree with the decoder? | `sharc_seeddecode.py --only-problems` |
 | Does a pointer remain `base + stride*index + offset`? | `sharc_trace.py` |
 | Did Ghidra miss a ColdFire reference? | `refscan.py` |
