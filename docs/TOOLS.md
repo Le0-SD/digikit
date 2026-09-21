@@ -418,6 +418,59 @@ uv run python tools/sharc_trace.py \
 This traces the primary PE through the DAI stores and then stops at the next
 unsupported `9b_abs` form; it is not a general SHARC emulator.
 
+### `tools/sharcemu.py`
+
+A Ghidra p-code emulator harness (`EmulatorHelper`) for the SHARC+ program,
+complementary to `sharc_trace.py`'s abstract interpreter: this one actually
+runs the generated language's p-code, one instruction at a time, against a
+live emulator register/memory state. It fails loudly instead of silently
+no-opping: the generated SLEIGH emits an empty body for any VISA form it has
+not been given semantics for (only ~22% of forms have any), so an
+instruction with zero p-code ops executes as a silent no-op unless caught
+first. Before every step the tool reads the instruction's raw bytes and
+classifies them independently with the repo's own decoder
+(`tools/sharc_disasm.py`, `tools/sharcinv.py`'s `merge_fields`), never
+Ghidra's mnemonic. Only `Type21a` (an architectural NOP with no fields) and
+`Type9a_abs`/`Type9b_abs` with merged field `b==1` (register-indirect call,
+no static target to encode) are legitimately empty; anything else with empty
+p-code is a `no-semantics` fault. A conditional jump's compute-condition is
+an unimplemented CALLOTHER pcodeop in this language, so `step()` returning
+false surfaces as an `emulator-error` fault carrying Ghidra's message.
+
+```sh
+uv run python tools/sharcemu.py dt2-1.16_SHARC --start sw:0x1c18ed --steps 200 \
+    --watch sw:0x254d9c --set R2=0x1234 \
+    --project ~/ghidra-projects/sharc-batch-dt2-116 \
+    --project-name sharc-batch-dt2-116 --json
+```
+
+`--start` takes `sw:` (short-word) or a displayed coordinate, same convention
+as `ghidraq.py`. For data, pass what the current language actually accesses:
+it doubles every DM literal as if it were a short-word address, so
+`DM(0x254d9c)` is emulated at `sw:0x254d9c` (displayed `0x4a9b38`). That is a
+modelling defect, not the hardware's map. On-chip DM literals such as
+`0x252658` are byte addresses whose loaded bytes sit at loader
+`0x28000000 + addr`, so the emulator does not see the image's initialised
+data at those locations and reads zero there. See
+`docs/findings/05-sharc-isa-and-decoding.md`.
+`--watch ADDR[:LEN]` (repeatable, LEN in bytes, default 4) reports every
+write touching that range: step, PC, address, and old/new bytes. `--set
+REG=VALUE` seeds a register before `--start` runs; `--poke ADDR=VALUE` seeds
+a 32-bit little-endian DM word first, for when the register you want to seed
+gets reloaded from memory before reaching the code you want to watch.
+`--skip-faults N` records up to N faults and advances past them instead of
+stopping at the first one, to harvest a fault table.
+
+Write detection prefers `EmulatorHelper.enableMemoryWriteTracking()` /
+`getTrackedMemoryWriteSet()` (present in Ghidra 12.1.3), which reports an
+address as written regardless of value, catching a write that happens to
+store the same value already there; a before/after `readMemory` diff is the
+fallback only if that API is absent, and cannot see a same-value write.
+`getTrackedMemoryWriteSet()` returns a reference to EmulatorHelper's own
+live, mutating set rather than a snapshot, so the tool copies it into an
+independent `AddressSet` each step before diffing -- aliasing it instead
+silently loses every write after the first step.
+
 ### `tools/sharc_candidates.py`
 
 Ranks exact Type19a address-adjust hypotheses in a `sharcpcode` SQLite file.
