@@ -2123,6 +2123,183 @@ Type11a and compute opcode `0xa5` (391), and budgets (595). For `0x254d9c`
 the same run finds both writers, at `sw 0x1c191d` and `sw 0x1c16ad`.
 **[D][O]**
 
+### A bounded set contains I6/I7/B6/B7, but only conditionally -- circular-MODIFY fixed with fresh symbols, not reuse **[D][C][O]**
+
+None of this section has been checked by a second agent against the image
+bytes yet, so it is marked **[D]** throughout, not **[V]**, except the one
+line explicitly reused from an earlier, already-**[V]** finding.
+
+**[D]** A whole-image, function-owned census (7764 instructions across
+`CODE_BLOCKS`, same recovery scope as `tools/sharcwriters.py`'s own) of
+every instruction that can write I6, I7, B6 or B7. Full writer table and
+proof: `out/sharcwriters/stack-invariant.md`/`.json` (not committed --
+built from the firmware, see CLAUDE.md). Two decode bugs in the
+(throwaway, uncommitted) census scanner were caught mid-pass by
+cross-checking against `tools/sharcfn.py`'s own renderer: `merge_fields`
+already combines a form's split sub-fields (`srcureglow[1:1]`+
+`srcureglow[0:0]`, `is[2:2]`+`is[1:0]`) into one key, so re-splitting them
+from the now-absent raw sub-keys always read 0 -- caught on the
+already-**[V]** boot mirror `B6=B7` decoding as `src=68` (B4) instead of
+71 (B7).
+
+**[C][D]** The task brief's working hypothesis that "blk93 recomputes B7
+from I7 at runtime" (sw `0x1c1463`, form 7d) is corrected by this census:
+every one of the 28 ACONV instructions in the image is `same_reg` (PRM
+Table 14-22: ACONV's source and destination are the same register, B2W
+then W2B or the reverse), confined to 3 functions (`blk88@0x1c0b1d`, four
+`blk69` functions, and `blk93@0x1c13e6`). None of them recomputes B7 from
+I7; they transiently reinterpret I6/I7/B6/B7 as word addresses (dividing
+by 4) and convert back. This does not threaten S: `tools/sharc_trace.py`'s
+Type7d handler already stops the trace outright when the source register
+is not concrete, and I6/I7/B6/B7 are never concretely seeded when tracing
+from a function's own entry, so every path through one of these 28
+instructions halts rather than continuing with a wrong value -- consistent
+with the Task 3 rerun below, where "Type7d B2W(B7) source is not concrete"
+is the 5th-largest `UNRESOLVED` reason (366 stores).
+
+**[D]** SHARC+ Core Programming Reference Table 16-1 (`out/refs/sharc-plus-
+prm/all.txt` ~line 21951): `CJUMP label (DB); JUMP label (DB), R2=I6,
+I6=I7;` -- every call via Type25a implicitly sets I6 to the caller's
+current I7 (1718 sites). Lines 22099/22161/22176: `RFRAME; I7=I6,
+I6=DM(0,I6);` -- already implemented by `tools/sharc_trace.py` (1109
+sites). Neither needed a code change; CJUMP's side effect is not even
+implemented by the tracer (a real gap, out of scope here). The remaining
+4008 post-modify pushes/pops through I6/I7 all use the already-proven-
+constant M7 (`-1`); the 821 circular MODIFYs are the one category this
+pass changed (below).
+
+**[O]** **Item 2, closing the invariant -- not fully closed.** Every
+`EXCLUDED-STACK` classification assumes I6/I7 are within S (or, after this
+pass, within S widened by one circular-MODIFY buffer length) at the entry
+of the function that owns the store -- since `tools/sharcwriters.py` seeds
+each function fresh from its own entry, this is a claim about *every*
+control-flow path that can reach a function, not just the "normal" one.
+Walked the three ureg moves and the interrupt-entry/exit reload chain the
+earlier pass in this section had left open, rather than just re-flagging
+them:
+
+- **`blk88@0x1c075e`, `I6 = I4` (sw `0x1c0784`, `0x1c07e1`) -- closed,
+  safe.** `I12 = DM(I6, M7) u=0` at sw `0x1c0774` reads this function's own
+  return address off I6 (still the real frame pointer at that point)
+  *before* either repurposing; I4 is untouched up to sw `0x1c0784`, so I6
+  becomes `I4e`, a symbol `tools/sharcwriters.py` does not recognise as
+  stack-bounded -- any later store through it lands `ENTRY-RELATIVE`
+  (dependent on I4), never wrongly `EXCLUDED-STACK`. The function returns
+  through a plain indirect `RETURN` (sw `0x1c0865`, I12/M14, not RFRAME)
+  and makes no further calls visible in its listing, so a clobbered I6/I7
+  cannot propagate to a callee or an RFRAME. This one writer does not
+  threaten S.
+- **`blk69@0xb8853a`, `I7 = I11` (sw `0xb885f5`) -- open, and this is the
+  real finding.** I11 is a copy of I3 (this function's own sw `0xb885bd`,
+  or the caller's save `I11 = I3` at `blk69@0xb88200` sw `0xb88228`), and
+  I3 = `DM(I0+0)` where I0 = `DM(0x2ca3e0)` (`blk69@0xb88200` sw
+  `0xb88200`/`0xb88203`) -- a global "current context" pointer,
+  dereferenced. So `I7 = I11` sets the *real* stack-pointer register to a
+  context-struct address, and the very next instruction (sw `0xb885f7`,
+  `I7 = modify(I7, 0x81)`, a plain +0x204 linear step, L7 not yet
+  reloaded at this point so not circular) computes a fixed offset off it.
+  This is the exact shape of a genuine multi-context stack switch: I7
+  repointed to a *different* per-context stack area computed from a
+  runtime-populated global, not the boot-constant `[0x26f000, 0x2c0000)`
+  region. The image gives no static value for `0x2ca3e0` (runtime-
+  populated), so this cannot be resolved statically to either "still
+  within S" or "a specific other region" -- **not closed**, and **not**
+  safe to assume away.
+- **The 24 fixed-offset reloads.** B6/B7's own `PM(0x59)`/`PM(0x5a)`
+  save/restore *is* a clean, verified round-trip (`blk69@0xb88200` sw
+  `0xb88353`/`0xb88356` stores the just-loaded B6/B7 there; `blk69@0xb8853a`
+  sw `0xb885cf`/`0xb885d2` restores the identical bytes) -- that specific
+  hop is closed. But the values it round-trips were themselves loaded from
+  `DM(I7+2)`/`DM(I7+4)` (`blk69@0xb88200` sw `0xb88239`/`0xb88253`, and
+  `I6 = DM(I7+3)` at sw `0xb8823b`) -- offsets of the *same* I7 the item
+  above shows may already be a per-context pointer, not the boot-constant
+  stack. So this reload's soundness is conditional on the same open
+  question, not independent of it. The other ~18 reloads across `blk1`/
+  `blk88`/other `blk69` functions were not individually walked in this
+  pass.
+
+**Verdict: conditional, not closed.** S = `[0x26f000, 0x2c0000)` was
+**not** widened -- there is no static evidence for a specific numeric
+range to widen it to (the context-struct address is a runtime value) --
+and it was **not** proven closed either. `tools/sharcwriters.py` now
+records this explicitly rather than hiding it: every `EXCLUDED-STACK`
+result carries an `'assumption'` string
+(`ENTRY_SEED_ASSUMPTION`) naming exactly this gap, and the JSON output
+adds `excluded_stack_depends_on_unproven_entry_assumption` (a count) at
+the top level. Because the assumption underlies `STACK_SYMBOLS` itself,
+that count is every `EXCLUDED-STACK` row -- 4312 of the 12634 census rows
+for `0x252658` in this rerun (below) -- not a small flagged subset. Both
+targets under test (`0x252658`, `0x254d9c`) sit well below S's current
+lower bound (`0x26f000 - 0x252658` = `0x1c9a8`, ~117 KB), so a second stack
+region would have to be implausibly large or specifically placed to reach
+either one; that is contextual reassurance for *this* run, not a proof,
+and does not apply to an arbitrary future target passed to this tool.
+
+**[D]** Fixed in `tools/sharc_trace.py`'s Type19a_scaled handler, but with
+a **fresh, uniquely-named symbol per modify site**, not by reusing the
+input symbol. PRM p.6-7 ("MODIFY wraps whenever L != 0") guarantees a
+circular MODIFY's result lands in `[B,B+L*scale)` regardless of B/L's
+concrete values -- a bound the tracer was discarding to
+`Unknown('scaled circular modify I%d')` whenever the pre-modify value/B/L
+were not *all* concrete, true almost always since I6/I7 are seeded as
+named symbols at each function's own entry and B7 is open per Item 2
+above. An earlier version of this fix re-used the bare input symbol
+unchanged, which asserted a false equality (two different circular
+MODIFYs of I7 -- or the same site visited twice with genuinely different
+runtime state -- would both collapse to the identical `Affine` term,
+letting the algebra cancel "site A's result minus site B's result" to a
+spurious 0 and alias two different stack frames); replaced before this was
+used anywhere else, per review. The fix now: `_stack_bounded_symbol()`
+recognises when the pre-modify value is a single named symbol (any
+existing constant offset, not just a bare one) whose name matches the
+entry-seed convention (`I6e`, `B7e`, ...) or an earlier
+`tools/sharc_trace.py`-minted `circ_`-prefixed symbol; when that symbol's
+offset is smaller than one buffer length (PRM p.6-23's own single
+`+-byte_length` wrap-correction bound, computed from L7's proven-constant
+value), the handler mints a brand-new `circ_<reg>_<pc>` symbol for the
+result (never the input's own name) instead of `Unknown`.
+`tools/sharcwriters.py`'s classifier was extended, not left to the
+tracer's Affine machinery alone: `is_circ_symbol()`/`combined_affine_range()`
+treat a `circ_` term as ranging over S widened by `CIRC_WRAP_SLACK`
+(`L7*4 = 0x7f4`) on both sides, not S itself, and every `EXCLUDED-STACK`
+result states this explicitly (`via_circular_modify` when a `circ_` term
+was involved, plus the `assumption` string always). Deliberately still
+conservative: an input offset at or beyond one buffer length is not
+provably within the same window, so it still falls back to `Unknown`.
+Tests: `tests/test_sharc_trace.py` (8: fresh-symbol minting, two different
+sites proven *not* equal, chaining through a prior `circ_` symbol, a small
+offset still accepted, a large offset and an unrecognised symbol name and
+a non-concrete L7 all still falling back to `Unknown`, and the
+`_stack_bounded_symbol` helper itself), `tools/sharcwriters.py`
+(`combined_affine_range`, `is_circ_symbol`, the classifier's `circ_`
+handling including a mixed plain+`circ_` expression, and the
+`ENTRY_SEED_ASSUMPTION` string being present on every `EXCLUDED-STACK`
+result), plus 2 end-to-end tests through `tools/sharc_trace.py`'s own
+single-instruction executor with no firmware (including one proving two
+different modify-site PCs yield different, non-equal addresses).
+
+**[D]** Re-run, `--jobs 16`, same image (`image_sha256`
+`0f514a12a2255f5c081e292c47f1f29462003177658da4bbae0a22fd737fffa2`; prior
+outputs kept as `out/sharcwriters/{252658,254d9c}.json` and `*-v2.json`,
+this run as `*-v3.json`). Control `0x254d9c`: still exactly two `HIT`s, at
+`sw 0x1c191d` (Type14a) and `sw 0x1c16ad` (Type16b) -- unchanged, and
+`EXCLUDED-CONST`/`ENTRY-RELATIVE`/`LOADED-POINTER` also unchanged from the
+prior pass's `*-v2.json` for both targets, the same soundness canary as
+before. Target `0x252658`: `HIT` 0 (unchanged), `EXCLUDED-STACK`
+4,312 -> 4,389 (+77 from relaxing the bare-symbol guard to a bounded-offset
+one), `UNRESOLVED` 7,569 -> 7,492 (-77).
+`excluded_stack_depends_on_unproven_entry_assumption` = 4389 (every
+`EXCLUDED-STACK` row -- see Item 2's verdict above), of which
+`excluded_stack_via_circular_modify` = 948 (this pass's entire cumulative
+gain over the pre-fix baseline: `3441 -> 4389`). Top `UNRESOLVED` reasons
+unchanged in shape from the prior pass: the M7-cascade-through-an-already-
+adjusted-register bucket `"I<n> + M<n> * 4"` drops 1,072 -> 1,005 (the 77
+newly-resolved stores' own former bucket), undecoded/unconfirmed forms
+(627), unsupported full computes (437), Type11a/unsupported multifunction
+(391+114), Type7d non-concrete source (366, the ACONV finding above), and
+RFRAME through a nonconcrete I6 (101, Item 2's open question, still
+untouched by any classifier change).
+
 ## Four more functions read
 
 Full notes in `docs/findings/functions/`.
