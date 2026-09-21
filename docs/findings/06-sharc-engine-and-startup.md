@@ -2673,3 +2673,50 @@ Reproducible ignored evidence is
 identical extraction records hash to
 `73c5ce0ad83f7bb0e92156841f27b06aa7a74fe808d2f29848756ba1bf98b218`.
 **[D]**
+
+## Where new DSP code could live, and what engine pieces cost **[D][O]**
+
+The public references give L2 SRAM as 1 MB at byte `0x20000000..0x20100000`
+(eight 128 KB banks), and allow code and data in external DDR, more slowly.
+The sizes of the four L1 blocks are in the datasheet, which is not under
+`out/refs/`, so L1 space past each loaded window is of unknown extent, not
+free. The L1 blocks are not contiguous, so the gaps between them, such as
+`0x26f000..0x2c0000`, are probably not memory at all. **[D]**
+
+L2 past the loader, `0x2001ab7c..0x20100000` (939,140 bytes), is the only
+large candidate. `0x200fa000..0x200fe000` (16 KB) is occupied: two called
+functions load those addresses as literals. The remaining ~922,756 bytes have
+no literal reference, but `tools/sharcwriters.py` leaves 59% of stores
+unresolved for any probe address and the SHARC has no runtime leg, so this is
+weaker evidence than the ColdFire cave map. The external-DDR FILL spans
+(about 4.35 MB, 1.05 MB and 33.5 MB) showed live references wherever
+sampled, one of them read by the render orchestrator `FUN_001c642a`; treat
+them as occupied. The L2 code block's short-word base is `0xb80000`,
+confirmed by byte comparison. **[D][O]**
+
+The context-switch pointer `DM(0x2ca3e0)` is zero in the loader image, so
+its structures are built at run time. Its two writers, `FUN_00b85af7` and
+`FUN_00b85f6c`, are located but not yet read; they decide whether a second
+stack sits inside the L2 candidate. **[O]**
+
+Engine pieces, as a yardstick. The large code blocks average 4.6 bytes per
+instruction (4.5-4.9); the main program is 104,848 bytes. **[D]**
+
+| function | sw range | instructions | bytes | role |
+|---|---|---:|---:|---|
+| wavetable stage 1 | `0x1ccbd8`-`0x1ccc58` | 59 | 256 | 2-pole IIR / quadrature-oscillator recurrence |
+| wavetable stage 2 | `0x1cdecb`-`0x1cdf38` | 51 | 218 | gated block copy / linear interpolation |
+| wavetable stage 3 | `0x1cb3d8`-`0x1cb4b2` | 98 | 436 | saturating envelope, shared, 4 call sites |
+| wavetable stage 4 | `0x1cd286`-`0x1cd3b5` | 148 | 606 | 9-field-pair MAC gather |
+| wavetable stage 5 | `0x1cc79e`-`0x1cc935` | 173 | 814 | table-interpolated 2-tap resampler, table `0x26bb68` |
+| wavetable stage 6 | `0x1cbf07`-`0x1cc040` | 133 | 626 | 2-tap wavetable lookup, 8192-entry table |
+| per-track gain smoothing/limiter | `0x1c207b`-`0x1c238a` | 303 | 1,566 | 16-track loop, writes `0x252d3c` |
+| large interpolated-table/RAM forwarder | `0x1c18a6`-`0x1c1f7d` | 654 | 3,502 | role open |
+| indirect scale/update, 32-slot table | `0x1c14e7`-`0x1c15e3` | 98 | 504 | writes 32-entry pointer table `0x252d78` |
+| envelope/coefficient-table refresh | `0x1cb4b2`-`0x1cb647` | 183 | 810 | |
+| shared scalar mapping (1/x + Horner) | `0x1c1199`-`0x1c127c` | 90 | 454 | |
+
+The whole six-stage wavetable pipeline is 662 instructions and 2,956 bytes,
+so the L2 candidate could hold a new DSP feature of that size several hundred
+times over. Space is not the constraint for new DSP code; the hook into the
+render path is. **[D]**
