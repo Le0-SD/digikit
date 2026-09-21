@@ -533,13 +533,20 @@ def memory_access_operands(op, direction, program=None):
     if mnemonic != 'COPY' or len(inputs) != 1 or output is None:
         return None
     source = inputs[0]
-    if direction == 'store' and _is_direct_memory(output) and not _is_direct_memory(source):
+    source_memory, output_memory = _is_direct_memory(source), _is_direct_memory(output)
+    # A memory-to-memory COPY is how the decompiler folds "load a literal address,
+    # then store that value to another literal address". It is a real store at the
+    # output and a real load at the source, so having direct memory on both ends
+    # must not drop the access.
+    if direction == 'store' and output_memory:
         return {'space': None, 'memory_space': output.getAddress().getAddressSpace(),
-                'address': output, 'value': source, 'representation': 'COPY_DIRECT_WRITE',
+                'address': output, 'value': source,
+                'representation': 'COPY_MEM_TO_MEM_WRITE' if source_memory else 'COPY_DIRECT_WRITE',
                 'direct_address': True}
-    if direction == 'load' and _is_direct_memory(source) and not _is_direct_memory(output):
+    if direction == 'load' and source_memory:
         return {'space': None, 'memory_space': source.getAddress().getAddressSpace(),
-                'address': source, 'value': output, 'representation': 'COPY_DIRECT_READ',
+                'address': source, 'value': output,
+                'representation': 'COPY_MEM_TO_MEM_READ' if output_memory else 'COPY_DIRECT_READ',
                 'direct_address': True}
     return None
 

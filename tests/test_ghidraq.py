@@ -501,6 +501,27 @@ def test_memory_copy_rejects_nonmemory_and_malformed_forms():
         assert ghidraq.memory_access_operands(copy, "load") is None
 
 
+def test_memory_to_memory_copy_is_both_a_store_and_a_load():
+    # Ghidra folds "R2 = DM(0x252658); DM(0x254d9c) = R2" into one COPY with a
+    # direct memory varnode on both ends. Classifying only one end silently hid
+    # a byte-proven store from `stores`.
+    source = Varnode(0x4A4CB0, "memory")
+    destination = Varnode(0x4A9B38, "memory")
+    copy = Op(0x20, "COPY", [source], destination)
+    store = ghidraq.memory_access_operands(copy, "store")
+    assert store["representation"] == "COPY_MEM_TO_MEM_WRITE"
+    assert (store["address"], store["value"]) == (destination, source)
+    assert store["direct_address"] is True
+    load = ghidraq.memory_access_operands(copy, "load")
+    assert load["representation"] == "COPY_MEM_TO_MEM_READ"
+    assert (load["address"], load["value"]) == (source, destination)
+    assert load["direct_address"] is True
+    # The destination stays an unfollowed root; the value keeps its definition,
+    # which is what walks back to whoever wrote the source location.
+    assert ghidraq.slice_seed_specs([copy], "store:address") == [(destination, False)]
+    assert ghidraq.slice_seed_specs([copy], "store:value") == [(source, True)]
+
+
 def test_memory_copy_selectors_keep_static_address_as_a_root():
     stored = Varnode(7)
     direct_address = Varnode(0x4A9B30, "memory")

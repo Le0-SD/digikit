@@ -85,7 +85,11 @@ selectors include `store:value`, `store:address`, `load:value`, `load:address`,
 entries in `[LO, HI)`, reporting exact direct addresses separately from computed
 or unresolved candidates. Raw `STORE`/`LOAD` and HighFunction direct-memory
 `COPY` forms are normalized with `STORE`, `LOAD`, `COPY_DIRECT_WRITE`, or
-`COPY_DIRECT_READ` representations. Both use the normal decompile timeout,
+`COPY_DIRECT_READ` representations. A `COPY` with direct memory on both ends is
+the decompiler's folded memory-to-memory move: it reports as
+`COPY_MEM_TO_MEM_WRITE` for `stores` and `COPY_MEM_TO_MEM_READ` for `loads`, so
+one instruction is visible from both its destination and its source. Both use
+the normal decompile timeout,
 report failures/partial results instead of stopping a `--then` chain, and do
 not save the project.
 
