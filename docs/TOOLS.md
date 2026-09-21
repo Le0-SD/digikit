@@ -475,6 +475,26 @@ live, mutating set rather than a snapshot, so the tool copies it into an
 independent `AddressSet` each step before diffing -- aliasing it instead
 silently loses every write after the first step.
 
+### `tools/sharc_worklist.py`
+
+Measures how much of a SHARC+ region the current language gives real p-code.
+It sweeps the aligned instruction stream (`tools/sharcflow.py` `aligned()`),
+lifts each instruction with the in-tree language (`tools/sharcpcode.py`
+`load_context`/`lift_one`), and tabulates, per form and overall, the share
+that lifts to at least one p-code op. Type21a, and Type9a/9b_abs with
+`b == 1`, count as covered because empty is their correct semantics.
+
+```sh
+uv run python tools/sharc_worklist.py --image dt2-1.16 \
+    --function 0x1c18a6:0x1c1f7d \
+    --out-json out/sharc-semantics/worklist.json \
+    --out-md out/sharc-semantics/worklist.md
+```
+
+`--function LO:HI` (short-word addresses, end exclusive) adds the same table
+for one span. The output is a ranked worklist of forms still without
+semantics.
+
 ### `tools/sharc_candidates.py`
 
 Ranks exact Type19a address-adjust hypotheses in a `sharcpcode` SQLite file.
