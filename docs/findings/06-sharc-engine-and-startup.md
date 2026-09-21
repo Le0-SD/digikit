@@ -1948,37 +1948,59 @@ computed base would be invisible.
 
 ### [C] Bounded cross-image forwarding at `0x1c18a6` **[V][D][O]**
 
-The earlier incoming-argument wording for `R4` at `0x1c1928` is superseded for
-the bounded straight-line interval. In both DT2 1.15C and DT2 1.16, raw
-`100400254d9c` at `0x1c18f3` is Type14a `R4 = DM(0x254d9c)`, and raw
-`110400254d98` at `0x1c1928` is Type14a `DM(0x254d98) = R4`. The deterministic
-listing has no intervening destination write to `R4`; the value is therefore
-forwarded unchanged along that interval, not globally immutable or shown to
-execute naturally. Automated Ghidra proves the same address-space-aware,
-raw-p-code path in `FUN_001c18a6`: `ram 0x4a9b38 -> value -> ram 0x4a9b30`.
-**[V]**
+The earlier incoming-argument wording for both stores is superseded within the
+bounded straight-line interval. In both DT2 1.15C and DT2 1.16, the identical
+raw instructions are:
 
-Ignored batch evidence is
-`out/ghidraq-dataflow/batch/combined/`: `machine-map.json` SHA-256
-`8a02f7a4e8e822bbc395783c8649b20a7d6ef49c60c0660b2883fa58e2611964`,
-`machine-map.sqlite` SHA-256
-`f1002b2b9fb0012f37648ee65a7e97bdd5350b41fae9e6c88ade6ef68b600929`; it
-records 3 images, 24 queries, 72 results, 2 exact matches, and 0 errors. Source
-blob SHA-256: DN2 1.11
-`336e340aa0cdcd34e314cfa44849f709a3134f6bd4cd57dfc7e15702c83115e2`; DT2
-1.15C `6d4316cddd41edef7a136c10d270313882028a59b96cc8fe97a716b949a7d551`;
-DT2 1.16 `0f514a12a2255f5c081e292c47f1f29462003177658da4bbae0a22fd737fffa2`.
-**[V]**
+- `0x1c18ed`, `100200252658`: Type14a `R2 = DM(0x252658)`.
+- `0x1c18f3`, `100400254d9c`: Type14a `R4 = DM(0x254d9c)`.
+- `0x1c191d`, `110200254d9c`: Type14a `DM(0x254d9c) = R2`.
+- `0x1c1928`, `110400254d98`: Type14a `DM(0x254d98) = R4`.
 
-Runtime meaning, contents, ownership, machine-selection relation, and the
-`0x254d9c` writer remain **[D][O]**. DN2's `ok` query with zero exact match is
-not a raw whole-image negative or an architectural-absence/analogy claim.
-Likewise, the zero matches for `0x8055c840`, `0x8055c858`, and `0x8055c874`
-are a HighFunction/query limitation. I6+124 identity, callers/control
-predicates into this function, and natural branch execution remain **[D][O]**.
-Next seeds: exhaustive DN2 Type14a raw scan around `0x254dxx`; the
-`0x254d9c` writer chain; callers/control predicates into `0x1c18a6`; and raw
-p-code/caller slices for I6+124 and the table readers. **[O]**
+Exhaustive canonical section-replay decoding and independent raw review find no
+intervening `R2`/`R4` destination or control transfer. The exact byte-proven
+assignments are `DM(0x254d9c) <- DM(0x252658)` and
+`DM(0x254d98) <- old DM(0x254d9c)`. **[V]** The Ghidra proof remains scoped to
+the R4 forwarding path, where address-space-aware exact matching and raw p-code
+agree on `ram 0x4a9b38 -> value -> ram 0x4a9b30`; the R2 store slice returned no
+seeds. **[V]** This is consistent with a two-word state/history shift, but
+semantic direction, ownership, natural execution, and relation to machine type
+are not proven. **[D][O]**
+
+The mapping audit SHA-256 is
+`24441e37f2933e1a8c561d5182b98f59812549e70df0b1251057f4b09e9f10d9`; the DT2
+1.15C `0x252658` census artifact SHA-256 is
+`1bbb5eaed7ec762d4a3692e851ae8b319e212b9f37ad8134c90c76f07b259b91`; and the
+DT2 1.16 summary SHA-256 is
+`ba1e830b04c8b79e283ff4305990d6bbf20d24b049297a2b52f97167400305ca`.
+Each exhaustive even-offset canonical Type14a-g=0 census has exactly one direct
+literal access to `0x252658`, the R2 reader at `0x1c18ed`, and no direct
+Type14a writer. Computed/indexed/dual-memory stores, loader data, and
+ColdFire/host writes remain possible. **[V]**
+
+DN2 1.11 canonical scan proves exact encodings `0x1c19d7: R4=DM(0x25d010)` and
+`0x1c1aaf: DM(0x25d00c)=R4`, the same -4 source/destination address delta as
+DT2; scan SHA-256 is
+`fe05c06f323b41595e155d7238b92444c784e22e56ce04ed7a36420584cb5cb7`. **[V]**
+The containing DN2 block is `blk83@0x1c1738`, bounds `0x1c1738..0x1c1e1f`, 659
+instructions; its vector is close to DT2 (3 calls, 204 loads/204 stores, 33
+MACs, one nested loop; DT2 654 instructions). This is structural analogy only:
+HighFunction at the correct PCs has a semantic-location mismatch and cannot
+prove that the same runtime value flows between them. The earlier zero
+`0x254dxx` DN result is an exhaustive direct-Type14a result under that
+form/range, not architectural absence; DN uses shifted RAM addresses in the
+candidate. **[D][O]**
+
+One documented static call is at `0x1c3090` from `blk93@0x1c2b24`, immediately
+after R4/R8 frame setup; it is unconditional only within an already reached
+caller. It neither establishes natural execution nor excludes indirect callers.
+**[D][O]**
+
+**[C]** The direct local writer of `0x254d9c` is now known; the unresolved
+source/owner is `0x252658`, especially computed/indexed or host writers and its
+relation to machine type. I6+124 and external-table readers remain open. The
+next automated seed is computed-writer/ownership analysis for `0x252658`, then
+table-reader control flow. **[O]**
 
 ## Four more functions read
 
