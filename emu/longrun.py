@@ -449,6 +449,15 @@ def build(snapshot, send=b'', syx=None, isa='scoped',
         # job worker doing +Drive initialization.
         if profile.display_sem is not None:
             skip.add(profile.display_sem)
+        # A background worker's completion semaphore (display_sem+8; see
+        # emu/symbols.py:worker_done_sem). It is given by plain guest code
+        # (a BgWorker's own teardown), not by any unmodeled hardware, so
+        # force-satisfying it has nothing to protect against -- and doing so
+        # releases the caller about 250M instructions before the worker's
+        # real completion. Excluding it restores that order; it does not by
+        # itself clear the 1.16 "FACTORY PROJECT >> +DRIVE..." freeze.
+        if profile.worker_done_sem is not None:
+            skip.add(profile.worker_done_sem)
         ev['unblock_skip'] = skip
         skip_callers = set(recheck)
         if real_sleep:

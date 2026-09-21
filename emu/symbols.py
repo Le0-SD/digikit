@@ -628,6 +628,20 @@ SYMBOLS = [
                                  'display_wait', -0x174, hi=DATA_HI), False),
     ('display_sem', Operand('display_frame_post', at=2), False),
 
+    # A second, plain software semaphore living at display_sem+8 -- confirmed
+    # by scanning both images for the "pea IMM32; jsr sem_pend; addq.l #4,sp;
+    # rts" wrapper shape: it appears exactly twice per image, once at
+    # frame_sem+8 (the intro's own analogous "done" park, see FUN_400d18ae /
+    # its 1.15C equivalent) and once here. A background worker's completion
+    # posts it (e.g. the "Factory reset" BgWorker that formats +Drive), and
+    # the caller that spawned the worker waits on it via this wrapper before
+    # continuing. `unblock` force-satisfying that wait (it is a plain
+    # sem_pend, not on any recheck/skip list) releases the caller ~250M
+    # instructions before the worker's real completion, instead of after it.
+    # When the worker finishes it disables PIT3 itself (FUN_40133626 on
+    # 1.16), so a frozen display after that point is expected.
+    ('worker_done_sem', Offset('display_sem', 8), False),
+
     ('pump_wait', Sig('42002f43002849f94018c0a41f40002c2f034e96'
                       '7001266a002c1f4000304200'), False),
     ('sleep_pend', Offset('pend_call', 6), False),

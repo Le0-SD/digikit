@@ -771,10 +771,13 @@ def main():
             rate = ((state['instrs'] - wall_prev[1])
                     / max(1e-6, now - wall_prev[0]))
             wall_prev = (now, state['instrs'])
-            print('[guirun] %dM tasks=%d dtim3=%d mainloop=%d jobs=%d pc=0x%08x'
+            print('[guirun] %dM tasks=%d pit0=%d pit2=%d pit3=%d dtim3=%d'
+                  ' mainloop=%d jobs=%d pc=0x%08x'
                   ' wall=%.1fs rate=%.2fM/s real=%.0f%%'
                   % (state['instrs'] // 1_000_000, len(ev['tasks']),
-                     pits.fired.get('DTIM3', 0), state['mainloop'],
+                     pits.fired.get('PIT0', 0), pits.fired.get('PIT2', 0),
+                     pits.fired.get('PIT3', 0), pits.fired.get('DTIM3', 0),
+                     state['mainloop'],
                      state['jobs'], pc, now - wall_t0, rate / 1e6,
                      100.0 * rate / pits.sources[0].ips))
             if trace is not None:
@@ -796,10 +799,12 @@ def main():
             state['instrs'] += executed
             break
 
-    print('[guirun] end: instrs=%dM terminal=%s tasks=%d dtim3=%d mainloop=%d '
-          'jobs=%d pc=0x%08x'
+    print('[guirun] end: instrs=%dM terminal=%s tasks=%d pit0=%d pit2=%d '
+          'pit3=%d dtim3=%d mainloop=%d jobs=%d pc=0x%08x'
           % (state['instrs'] // 1_000_000, state['terminal'], len(ev['tasks']),
-             pits.fired.get('DTIM3', 0), state['mainloop'], state['jobs'], pc))
+             pits.fired.get('PIT0', 0), pits.fired.get('PIT2', 0),
+             pits.fired.get('PIT3', 0), pits.fired.get('DTIM3', 0),
+             state['mainloop'], state['jobs'], pc))
     wall = time.monotonic() - wall_t0
     print('[guirun] wall: %.1fs, %.2fM instr/s average'
           % (wall, state['instrs'] / max(1e-6, wall) / 1e6))
