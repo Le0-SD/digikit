@@ -11,6 +11,13 @@ decoded it and understood what it computes.
 Marks follow the repo convention: **[V]** verified here (a second agent checked
 it against the image bytes), **[D]** read once, not re-checked, **[O]** open.
 
+## Phase B notes
+
+- [`blk93@0x1c4ecf`](blk93-1c4ecf.md) is the callable entry and
+  [`0x1c4f81`](blk93-1c4f81.md) its internal continuation. **[V]**
+- [`blk93@0x1cbdea`](blk93-1cbdea.md) is a wrapper **[D]** and
+  [`0x1cc6b8`](blk93-1cc6b8.md) a shared zero/store leaf **[D]**.
+
 ## Template
 
 ```markdown

@@ -654,9 +654,7 @@ class TraceTest(unittest.TestCase):
             "idis[2:0]": 0,
         }
         stopped = self.run_one(T.State(1), insn("7d", fields, 6))
-        self.assertEqual(
-            stopped.stopped, "Type7d B2W(I7) source is not concrete"
-        )
+        self.assertEqual(stopped.stopped, "Type7d B2W(I7) source is not concrete")
 
         concrete = self.run_one(
             T.State(1, {T.UREG_CODES["I7"]: T.Const(0x1000)}),
@@ -731,12 +729,8 @@ class TraceTest(unittest.TestCase):
             "addr[31:16]": 0,
             "addr[15:0]": 0,
         }
-        exclusive = self.run_one(
-            T.State(1), insn("14d", {**base, "ex": 1, "w": 1}, 6)
-        )
-        self.assertEqual(
-            exclusive.stopped, "unsupported Type14d exclusive access"
-        )
+        exclusive = self.run_one(T.State(1), insn("14d", {**base, "ex": 1, "w": 1}, 6))
+        self.assertEqual(exclusive.stopped, "unsupported Type14d exclusive access")
 
         undocumented_w = self.run_one(
             T.State(1), insn("14d", {**base, "ex": 0, "w": 1}, 6)
@@ -1368,7 +1362,9 @@ class TraceTest(unittest.TestCase):
     def test_short_compute_compare_sets_flags(self):
         fields = {"compute[11:0]": (3 << 8) | (1 << 4) | 2}
         state = self.run_one(
-            T.State(1, {1: T.Const(3), 2: T.Const(5), T.UREG_CODES["ASTATX"]: T.Const(0)}),
+            T.State(
+                1, {1: T.Const(3), 2: T.Const(5), T.UREG_CODES["ASTATX"]: T.Const(0)}
+            ),
             insn("2c", fields, 2),
         )
         self.assertEqual(state.uregs[T.UREG_CODES["ASTATX"]], T.Const(1 << 2))
@@ -1389,7 +1385,13 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(equal.uregs[T.UREG_CODES["ASTATX"]], T.Const(1))
         branch = insn(
             "8a_rel",
-            {"b": 0, "j": 0, "cond[4:0]": 0x00, "reladdr[23:16]": 0, "reladdr[15:0]": 30},
+            {
+                "b": 0,
+                "j": 0,
+                "cond[4:0]": 0x00,
+                "reladdr[23:16]": 0,
+                "reladdr[15:0]": 30,
+            },
             6,
         )
         results = T._execute(equal, branch)
@@ -1422,7 +1424,9 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(stopped.stopped, "unsupported Type9a control modifier")
 
     def test_type9a_abs_stops_on_unknown_indirect_target(self):
-        stopped = self.run_one(T.State(10), insn("9a_abs", self._type9a_abs_fields(), 6))
+        stopped = self.run_one(
+            T.State(10), insn("9a_abs", self._type9a_abs_fields(), 6)
+        )
         self.assertEqual(
             stopped.stopped, "unknown 9a_abs indirect target through I12/M13"
         )
@@ -1609,7 +1613,10 @@ class TraceTest(unittest.TestCase):
         self.assertEqual(T._dm_read(executed, 0x80, 4), T.Const(0xAABBCCDD))
         self.assertEqual(T._dm_read(skipped, 0x80, 4), T.Const(0))
         self.assertEqual(
-            (executed.trace[-1]["condition"], executed.trace[-1]["predicate_assumption"]),
+            (
+                executed.trace[-1]["condition"],
+                executed.trace[-1]["predicate_assumption"],
+            ),
             (0x03, True),
         )
         self.assertEqual(
@@ -1651,9 +1658,7 @@ class TraceTest(unittest.TestCase):
             0, 6, "14d", {"ex": 1}, kind="uncertain", note="source: prm"
         )
         stopped = self.run_one(T.State(1), word)
-        self.assertEqual(
-            stopped.stopped, "uncertain or undecodable form: source: prm"
-        )
+        self.assertEqual(stopped.stopped, "uncertain or undecodable form: source: prm")
         self.assertEqual(stopped.provisional_used, ())
         allowed = self.run_one(T.State(1, provisional_forms=("14d",)), word)
         self.assertEqual(allowed.provisional_used, ("14d",))
@@ -1674,9 +1679,7 @@ class TraceTest(unittest.TestCase):
                     "shiftimm[15:0]": (3 << 8) | (1 << 4) | 2,
                 }
                 state = self.run_one(
-                    T.State(
-                        1, {2: T.Const(source_value), astatx: T.Const(0)}
-                    ),
+                    T.State(1, {2: T.Const(source_value), astatx: T.Const(0)}),
                     insn("6b_shiftimm", fields, 6),
                 )
                 self.assertNotIn(1, state.uregs)
@@ -3407,7 +3410,10 @@ class AstatxFlagsTest(unittest.TestCase):
     def test_arith_flags_unknown_when_operand_not_const(self):
         old = T.Const(0xFFFFFFFF)
         _, value, _, astatx = self.astatx_after(
-            full_compute(0, 0x01, 0, 1, 2), False, {1: T.symbol("x"), 2: T.Const(1)}, old
+            full_compute(0, 0x01, 0, 1, 2),
+            False,
+            {1: T.symbol("x"), 2: T.Const(1)},
+            old,
         )
         self.assertIsInstance(value, T.Affine)
         # Only the ALU-flags bits are forgotten; everything else in OLD
@@ -3429,7 +3435,14 @@ class AstatxFlagsTest(unittest.TestCase):
                 T.Const(0x80000000),
                 1 << T.AN_BIT,
             ),  # or
-            (0x42, 1, 2, {1: T.Const(5), 2: T.Const(5)}, T.Const(0), 1 << T.AZ_BIT),  # xor
+            (
+                0x42,
+                1,
+                2,
+                {1: T.Const(5), 2: T.Const(5)},
+                T.Const(0),
+                1 << T.AZ_BIT,
+            ),  # xor
         )
         for opcode, rx, ry, values, expected_value, expected_bits in cases:
             with self.subTest(opcode=hex(opcode)):
@@ -3506,7 +3519,12 @@ class AstatxFlagsTest(unittest.TestCase):
                 old,
             )
             self.assertEqual(op, "multiply")
-            self.assertEqual(astatx, T.PartialConst(0xFFFFFFFF & ~T.MULT_FLAGS_MASK, 0xFFFFFFFF & ~T.MULT_FLAGS_MASK))
+            self.assertEqual(
+                astatx,
+                T.PartialConst(
+                    0xFFFFFFFF & ~T.MULT_FLAGS_MASK, 0xFFFFFFFF & ~T.MULT_FLAGS_MASK
+                ),
+            )
 
     def test_mr_data_move_clears_multiplier_flags(self):
         field = (0b100000 << 17) | (1 << 16) | (0 << 12) | (3 << 8)
@@ -4345,10 +4363,153 @@ class FloatComputeTest(unittest.TestCase):
         executed = T._execute(state, record)[0]
         self.assertEqual(executed.uregs[0], T.Const(13))
         self.assertEqual(executed.uregs[3], T.Const(7))
-        self.assertEqual(
-            executed.trace[-1]["result_register"], ["R0", "R3"]
-        )
+        self.assertEqual(executed.trace[-1]["result_register"], ["R0", "R3"])
         self.assertEqual(executed.trace[-1]["value"], [13, 7])
+
+
+class PhaseAOpcodeRegressionTest(unittest.TestCase):
+    """Literal Phase A vectors from the public PRM tables in SOURCES.md."""
+
+    def test_type10a_relative_decodes_its_split_fields(self):
+        # Type10a_rel's VISA prefix and split reladdr fields are from the PRM
+        # Figure 15-4-derived decode table, not an implementation round-trip.
+        compute = (0x01 << 12) | (2 << 8) | (3 << 4) | 4
+        extra = (
+            (1 << 44)
+            | (3 << 41)
+            | (5 << 38)
+            | (0x1F << 33)
+            | (1 << 32)
+            | (0x15 << 27)
+            | (9 << 23)
+            | compute
+        )
+        record = T.decode_at(encode("10a_rel", extra), 0, 0)
+        self.assertEqual(
+            (record.type_name, record.length_bytes, record.kind),
+            ("10a_rel", 6, "confident"),
+        )
+        self.assertEqual(
+            record.fields,
+            {
+                "d": 1,
+                "dmi[2:0]": 3,
+                "dmm[2:0]": 5,
+                "cond[4:0]": 0x1F,
+                "dreg[3:0]": 9,
+                "compute[22:16]": 0,
+                "compute[15:0]": compute,
+                "reladdr[5:5]": 1,
+                "reladdr[4:0]": 0x15,
+            },
+        )
+
+    def test_type2b_decodes_and_executes_an_unconditional_full_compute(self):
+        # Type2b is the PRM Figure 14-4 32-bit 110000000 prefix; its sole
+        # payload is a full compute field (decode_table.json).
+        compute = (0x01 << 12) | (2 << 8) | (3 << 4) | 4  # R2 = R3 + R4
+        record = T.decode_at(encode("2b", compute), 0, 0)
+        self.assertEqual(
+            (record.type_name, record.length_bytes, record.kind), ("2b", 4, "confident")
+        )
+        self.assertEqual(record.fields, {"compute[22:16]": 0, "compute[15:0]": compute})
+        state = self.run_one(T.State(0x10, {3: T.Const(7), 4: T.Const(9)}), record)
+        self.assertEqual((state.pc_sw, state.uregs[2]), (0x12, T.Const(16)))
+
+    def run_one(self, state, record):
+        return T._execute(state, record)[0]
+
+    def test_alu_copysign_uses_magnitude_and_sign_operands(self):
+        # ALUOP 0xe0: FN = FX copysign FY (PRM Table 18-5).
+        rn, value, operation, _ = T._compute(
+            full_compute(0, 0xE0, 0, 1, 2),
+            False,
+            {1: T.Const(f32(3.5)), 2: T.Const(f32(-2.0))},
+        )
+        self.assertEqual(
+            (rn, operation, value), (0, "float-copysign", T.Const(f32(-3.5)))
+        )
+
+    def test_multifunction_convert_max_and_min_literal_vectors(self):
+        # PRM Table 18-16 rows 011010, 011110, and 011111 respectively.
+        common = {
+            0: T.Const(f32(2.0)),
+            4: T.Const(f32(3.0)),
+            8: T.Const(3),
+            12: T.Const(2),
+        }
+        for category, expected, operation in (
+            (0x1A, T.Const(f32(12.0)), "float-mulalu-convert"),
+            (0x1E, T.Const(f32(3.0)), "float-mulmax"),
+            (0x1F, T.Const(f32(2.0)), "float-mulmin"),
+        ):
+            with self.subTest(category=hex(category)):
+                # The multiplier half is 2.0 * 3.0; the ALU half selects
+                # R8/R12, which are fixed inputs for 1a and float inputs for 1e/f.
+                values = (
+                    common
+                    if category == 0x1A
+                    else {**common, 8: T.Const(f32(3.0)), 12: T.Const(f32(2.0))}
+                )
+                rn, value, actual, _ = T._compute(
+                    mulalu_fields(category, 1, 2, 0, 0, 0, 0), False, values
+                )
+                self.assertEqual((rn, actual), ((1, 2), operation))
+                self.assertEqual(value, (T.Const(f32(6.0)), expected))
+
+    def test_scaled_fixed_float_convert_forms(self):
+        # The Table 18-5 forms ending "by RY" apply RY as a base-two scale.
+        mode1 = T.UREG_CODES["MODE1"]
+        cases = (
+            (
+                0xD9,
+                {1: T.Const(f32(3.5)), 2: T.Const(1), mode1: T.Const(0)},
+                "fix-scaled",
+                T.Const(7),
+            ),
+            (
+                0xDA,
+                {1: T.Const(3), 2: T.Const(2)},
+                "float-convert-scaled",
+                T.Const(f32(12.0)),
+            ),
+            (
+                0xDD,
+                {1: T.Const(f32(-3.75)), 2: T.Const(1), mode1: T.Const(0)},
+                "trunc-scaled",
+                T.Const(0xFFFFFFF9),
+            ),
+        )
+        for opcode, values, operation, expected in cases:
+            with self.subTest(opcode=hex(opcode)):
+                _, value, actual, _ = T._compute(
+                    full_compute(0, opcode, 0, 1, 2), False, values
+                )
+                self.assertEqual((actual, value), (operation, expected))
+
+    def test_alu_carry_and_borrow_consume_astatx_ac(self):
+        # Table 18-5 ALUOP 05: RX+RY+ci; 06: RX-RY+ci-1.  AC supplies ci.
+        astatx = T.UREG_CODES["ASTATX"]
+        cases = (
+            (0x05, 0xFFFFFFFF, 0, 1, "add-with-carry", 0, True),
+            (0x06, 0, 0, 0, "subtract-with-borrow", 0xFFFFFFFF, False),
+            (0x06, 0, 0, 1, "subtract-with-borrow", 0, True),
+        )
+        for opcode, rx, ry, carry, operation, expected, ac in cases:
+            with self.subTest(opcode=hex(opcode), carry=carry):
+                _, value, actual, update = T._compute(
+                    full_compute(0, opcode, 0, 1, 2),
+                    False,
+                    {
+                        1: T.Const(rx),
+                        2: T.Const(ry),
+                        astatx: T.Const(carry << T.AC_BIT),
+                    },
+                )
+                self.assertEqual((actual, value), (operation, T.Const(expected)))
+                self.assertEqual(
+                    T._astatx_known_bit(update(T.Unknown("start")), T.AC_BIT), ac
+                )
 
 
 class UregMovePartialConstTest(unittest.TestCase):

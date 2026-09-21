@@ -18,7 +18,7 @@ re-checked · **[O]** open / nobody has established this.
 ## Contents
 
 | file | covers |
-|---|---|
+| --- | --- |
 | [`01-container-and-patching.md`](findings/01-container-and-patching.md) | Scope and the 2.01 firmwares, the ELE3 container format, integrity, packing, the version gate, recovery, what is patchable |
 | [`02-machines-and-parameters.md`](findings/02-machines-and-parameters.md) | The ColdFire machine dispatch, the descriptor and parameter tables, display names, the type-7/PLACEHOLDER clone work, the permission check, the SRC slot model, CFADE |
 | [`03-ui-and-panel.md`](findings/03-ui-and-panel.md) | Panel chords, the UI queue, MACHINE SEL, timer-rate behaviour, the GUI/replay disagreements |
@@ -28,3 +28,4 @@ re-checked · **[O]** open / nobody has established this.
 | [`07-emulator.md`](findings/07-emulator.md) | Emulation, display, DSP bring-up, making it run, the performance work, correct-speed playback, the serial console, boot |
 | [`08-hardware-and-ghidra.md`](findings/08-hardware-and-ghidra.md) | The MCF5441x identification, eDMA, the MMIO hook, Ghidra tooling, RTTI/code seeds, Version Tracking, functions Ghidra misses |
 | [`09-runtime-state.md`](findings/09-runtime-state.md) | Live musical state in RAM: the pattern and kit working-set tables |
+| [`functions/README.md`](findings/functions/README.md) | Per-function SHARC notes, including Phase B wrapper and conditional-resampling-path entries |

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pyright: reportArgumentType=false, reportOptionalSubscript=false, reportReturnType=false
 """Function dossier for SHARC+ VISA code: everything a reader needs before
 looking at one instruction, built from tools/sharcldr.py, tools/sharcflow.py,
 tools/sharcinv.py and tools/sharc_disasm.py rather than reimplemented.
@@ -66,9 +67,11 @@ per the same "loud gap beats silent gap" rule.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
-import struct
+import re
+import sqlite3
 import sys
 from collections import Counter
 
@@ -176,7 +179,7 @@ def float_constant_name(value: float):
     return None
 
 
-def describe_literal(value: int, float_capable: bool, mem: "sharcldr.LoadedMemory"):
+def describe_literal(value: int, float_capable: bool, mem: sharcldr.LoadedMemory):
     """-> dict describing a 32-bit literal: hex, region (if any), RAM/ROM
     (only when it looks address-shaped), and, if float_capable, the
     IEEE-754 decode and any matched named constant."""
@@ -213,6 +216,7 @@ def _annotate_literal(value: int, float_capable: bool, mem) -> str:
 
 # --- register naming ---------------------------------------------------
 
+
 def reg_name(code: int, is_float: bool) -> str:
     return ("F%d" if is_float else "R%d") % code
 
@@ -237,9 +241,25 @@ SHORT_OPS = sharcinv.SHORT_OPS
 FLOAT_SHORT_OPS = sharcinv.FLOAT_SHORT_OPS
 
 UNARY_ALU_OPS = {
-    "pass", "neg", "inc", "dec", "abs", "fpass", "fneg", "frnd", "mant",
-    "fabs", "fix", "float", "trunc", "logb", "recips", "rsqrts", "not",
-    "inc_c", "dec_c",
+    "pass",
+    "neg",
+    "inc",
+    "dec",
+    "abs",
+    "fpass",
+    "fneg",
+    "frnd",
+    "mant",
+    "fabs",
+    "fix",
+    "float",
+    "trunc",
+    "logb",
+    "recips",
+    "rsqrts",
+    "not",
+    "inc_c",
+    "dec_c",
 }
 
 # Task-flagged decode gaps: opcodes to mark loudly even when a name table
@@ -296,8 +316,14 @@ def decode_alu(opcode: int, field23: int, is_dual: bool, is_float: bool):
     return text + _gap_mark(gap), gap
 
 
-def decode_mult(opcode: int, field23: int, is_float: bool, housekeeping: bool,
-                 is_mac: bool, is_plain_mul: bool):
+def decode_mult(
+    opcode: int,
+    field23: int,
+    is_float: bool,
+    housekeeping: bool,
+    is_mac: bool,
+    is_plain_mul: bool,
+):
     # Table 18-11 register positions apply here too (single-function compute).
     # cu/opcode classification (housekeeping/plain-mul/MAC, including the
     # opcode==0x30 "FN = FX*FY" special case) comes from
@@ -325,8 +351,20 @@ def decode_shift(opcode: int, field23: int):
     return text + _gap_mark(gap), gap
 
 
-_MULTIFN_SUBS_ORDER = ("R3-0", "F3-0", "R7-4", "F7-4", "RXA", "FXA", "RYA", "FYA",
-                        "RM", "FM", "RA", "FA")
+_MULTIFN_SUBS_ORDER = (
+    "R3-0",
+    "F3-0",
+    "R7-4",
+    "F7-4",
+    "RXA",
+    "FXA",
+    "RYA",
+    "FYA",
+    "RM",
+    "FM",
+    "RA",
+    "FA",
+)
 
 
 def _render_multifn_alu_from_table(field23: int):
@@ -345,9 +383,20 @@ def _render_multifn_alu_from_table(field23: int):
     rxm = ((field23 >> 6) & 3) + 0
     ra = (field23 >> 8) & 0xF
     rm = (field23 >> 12) & 0xF
-    values = {"R3-0": rxm, "F3-0": rxm, "R7-4": rym, "F7-4": rym,
-              "RXA": rxa, "FXA": rxa, "RYA": rya, "FYA": rya,
-              "RM": rm, "FM": rm, "RA": ra, "FA": ra}
+    values = {
+        "R3-0": rxm,
+        "F3-0": rxm,
+        "R7-4": rym,
+        "F7-4": rym,
+        "RXA": rxa,
+        "FXA": rxa,
+        "RYA": rya,
+        "FYA": rya,
+        "RM": rm,
+        "FM": rm,
+        "RA": ra,
+        "FA": ra,
+    }
     text = syntax
     for token in _MULTIFN_SUBS_ORDER:
         text = text.replace(token, "%s%d" % (token[0], values[token]))
@@ -371,15 +420,34 @@ def decode_multifn(top3: int, opcode: int, field23: int):
         ra = (field23 >> 8) & 0xF
         rm = (field23 >> 12) & 0xF
         rs = (field23 >> 16) & 0xF
-        parts = ["%s = %s * %s" % (reg_name(rm, is_float), reg_name(rxm, is_float), reg_name(rym, is_float)),
-                 "%s = %s + %s" % (reg_name(ra, is_float), reg_name(rxa, is_float), reg_name(rya, is_float)),
-                 "%s = %s - %s" % (reg_name(rs, is_float), reg_name(rxa, is_float), reg_name(rya, is_float))]
+        parts = [
+            "%s = %s * %s"
+            % (
+                reg_name(rm, is_float),
+                reg_name(rxm, is_float),
+                reg_name(rym, is_float),
+            ),
+            "%s = %s + %s"
+            % (
+                reg_name(ra, is_float),
+                reg_name(rxa, is_float),
+                reg_name(rya, is_float),
+            ),
+            "%s = %s - %s"
+            % (
+                reg_name(rs, is_float),
+                reg_name(rxa, is_float),
+                reg_name(rya, is_float),
+            ),
+        ]
         return "; ".join(parts), False
     text = _render_multifn_alu_from_table(field23)
     if text is not None:
-        gap = (((field23 >> 16) & 0x3F) in GAP_MULTIFN_OPCODES)
+        gap = ((field23 >> 16) & 0x3F) in GAP_MULTIFN_OPCODES
         return text + _gap_mark(gap), gap
-    return "multifn_alu?0x%02x(field23=0x%06x)" % (opcode, field23) + _gap_mark(True), True
+    return "multifn_alu?0x%02x(field23=0x%06x)" % (opcode, field23) + _gap_mark(
+        True
+    ), True
 
 
 def render_compute(field23: int):
@@ -391,10 +459,18 @@ def render_compute(field23: int):
     cu, d = sharcinv.classify_compute(field23)
     opcode = d.get("opcode", 0)
     if cu == "ALU":
-        return decode_alu(opcode, field23, d.get("is_dual_addsub", False), d.get("is_float", False))
+        return decode_alu(
+            opcode, field23, d.get("is_dual_addsub", False), d.get("is_float", False)
+        )
     if cu == "MULT":
-        return decode_mult(opcode, field23, d.get("is_float", False), d.get("housekeeping", False),
-                            d.get("is_mac", False), d.get("is_plain_mul", False))
+        return decode_mult(
+            opcode,
+            field23,
+            d.get("is_float", False),
+            d.get("housekeeping", False),
+            d.get("is_mac", False),
+            d.get("is_plain_mul", False),
+        )
     if cu == "SHIFT":
         return decode_shift(opcode, field23)
     if cu == "MULTIFN":
@@ -426,6 +502,7 @@ def render_shortcompute(field12: int):
 
 # --- per-form rendering --------------------------------------------------
 
+
 def sign_extend(value: int, bits: int) -> int:
     return sharcinv.sign_extend(value, bits)
 
@@ -441,7 +518,11 @@ def render_mem_direct(sw, f, kind):
     addr = f.get("addr", 0)
     ureg = f.get("ureg")
     dreg = f.get("dreg")
-    reg = ureg_name(ureg) if ureg is not None else ("R%d" % dreg if dreg is not None else "?")
+    reg = (
+        ureg_name(ureg)
+        if ureg is not None
+        else ("R%d" % dreg if dreg is not None else "?")
+    )
     space, direction = _space_dir(f)
     long_ = ", long" if f.get("l") else ""
     if direction == "store":
@@ -471,8 +552,11 @@ def render_mem_immoff(sw, f):
     off = f.get("data", 0)
     dreg = f.get("dreg")
     ureg = f.get("ureg")
-    reg = ("R%d" % dreg if dreg is not None else
-           (ureg_name(ureg) if ureg is not None else "?"))
+    reg = (
+        "R%d" % dreg
+        if dreg is not None
+        else (ureg_name(ureg) if ureg is not None else "?")
+    )
     space, direction = _space_dir(f)
     long_ = ", long" if f.get("l") else ""
     if direction == "store":
@@ -499,13 +583,29 @@ def render_modify(sw, insn_type, f):
         idx = f.get("is", 0)
         space = "PM" if f.get("g") else "DM"
         val = f.get("data", 0)
-        note = {"19a": "raw-byte offset", "19a_scaled": "scaled by normal-word",
-                "19a_bitrev": "bit-reversed addressing"}[insn_type]
-        return "I%d = modify(I%d, %s)  [%s space=%s]" % (idx, idx, hex(val), note, space)
+        note = {
+            "19a": "raw-byte offset",
+            "19a_scaled": "scaled by normal-word",
+            "19a_bitrev": "bit-reversed addressing",
+        }[insn_type]
+        return "I%d = modify(I%d, %s)  [%s space=%s]" % (
+            idx,
+            idx,
+            hex(val),
+            note,
+            space,
+        )
     i, m = f.get("i", 0), f.get("m", 0)
     space = "PM" if f.get("g") else "DM"
     val = f.get("data", 0)
-    return "%s(I%d, M%d) = 0x%x  [also I%d += M%d]" % (space, i, m, val & 0xFFFFFFFF, i, m)
+    return "%s(I%d, M%d) = 0x%x  [also I%d += M%d]" % (
+        space,
+        i,
+        m,
+        val & 0xFFFFFFFF,
+        i,
+        m,
+    )
 
 
 def render_literal_load(f, form):
@@ -521,7 +621,14 @@ def render_18a(f):
     code = UREG_CODES.get("USTAT1", 0) + sreg
     reg = ureg_name(code)
     mask = f.get("data", 0)
-    names = {0: "set", 1: "clear", 2: "toggle", 3: "?bop3", 4: "bit-test", 5: "xor-test"}
+    names = {
+        0: "set",
+        1: "clear",
+        2: "toggle",
+        3: "?bop3",
+        4: "bit-test",
+        5: "xor-test",
+    }
     op = names.get(bop, "bop?%d" % bop)
     if bop in (4, 5):
         return "%s(%s, mask=0x%x) -> BTF" % (op, reg, mask)
@@ -537,7 +644,10 @@ def render_loop(sw, f, insn_length_bytes, insn_type):
         head = "DO 0x%x UNTIL LCE  (trip count %d, literal)" % (end_sw or 0, count)
     else:
         ureg = f.get("ureg")
-        head = "DO 0x%x UNTIL LCE  (trip count %s, register)" % (end_sw or 0, ureg_name(ureg) if ureg is not None else "?")
+        head = "DO 0x%x UNTIL LCE  (trip count %s, register)" % (
+            end_sw or 0,
+            ureg_name(ureg) if ureg is not None else "?",
+        )
     body = " body [0x%x, 0x%x)" % (start_sw, end_sw) if end_sw is not None else ""
     return head + body, end_sw
 
@@ -567,12 +677,26 @@ DUAL_MEM_FORMS = {"1a", "1b"}
 MODIFY_FORMS = {"19a", "19a_scaled", "19a_bitrev", "16a", "16b"}
 LITERAL_LOAD_FORMS = {"17a", "17b"}
 LOOP_FORMS = {"12a_imm", "12a_ureg"}
-CALL_JUMP_FORMS = {"25a_direct", "25a_pcrel", "8a_abs", "8a_rel",
-                    "9a_abs", "9a_rel", "9b_abs", "9b_rel"}
+CALL_JUMP_FORMS = {
+    "25a_direct",
+    "25a_pcrel",
+    "8a_abs",
+    "8a_rel",
+    "9a_abs",
+    "9a_rel",
+    "9b_abs",
+    "9b_rel",
+}
 
 
-def render_instruction(sw: int, insn, mem, named_tables_touched: set,
-                        literal_regions: Counter, float_immediates: list):
+def render_instruction(
+    sw: int,
+    insn,
+    mem,
+    named_tables_touched: set,
+    literal_regions: Counter,
+    float_immediates: list,
+):
     """-> (mnemonic, notes: [str], gap: bool) for one decoded instruction.
     Never returns None: an unhandled form falls back to a field dump."""
     t = insn.type_name
@@ -581,7 +705,11 @@ def render_instruction(sw: int, insn, mem, named_tables_touched: set,
     gap = False
 
     if insn.kind == "unknown":
-        return "!!UNDECODED!! %s (word0=0x%04x)" % (insn.note, insn.raw or 0), notes, True
+        return (
+            "!!UNDECODED!! %s (word0=0x%04x)" % (insn.note, insn.raw or 0),
+            notes,
+            True,
+        )
     if insn.kind == "uncertain":
         notes.append("uncertain form (%s)" % insn.note)
 
@@ -611,9 +739,7 @@ def render_instruction(sw: int, insn, mem, named_tables_touched: set,
         head = render_call_or_jump(sw, t, f)
         if t in ("25a_direct", "9a_abs", "8a_abs"):
             target = f.get("addr")
-        elif t in ("25a_pcrel", "9a_rel", "8a_rel"):
-            target = sharcflow.pcrel_target(sw, f.get("reladdr", 0))
-        elif t == "9b_rel":
+        elif t in ("25a_pcrel", "9a_rel", "8a_rel") or t == "9b_rel":
             target = sharcflow.pcrel_target(sw, f.get("reladdr", 0))
         elif t == "9b_abs":
             target = None
@@ -696,14 +822,22 @@ def render_instruction(sw: int, insn, mem, named_tables_touched: set,
         return text, notes, gap
 
     if t == "3c":
-        text = "DM(I%d, M%d) = R%d" % (f.get("dmi", 7), f.get("dmm", 7), f.get("dreg", 2))
+        text = "DM(I%d, M%d) = R%d" % (
+            f.get("dmi", 7),
+            f.get("dmm", 7),
+            f.get("dreg", 2),
+        )
         return text, notes, gap
 
     if t == "18a":  # pragma: no cover -- handled above; kept for clarity
         return render_18a(f), notes, gap
 
     if t == "20a":
-        ops = [name for name in ("lpu", "lpo", "spu", "spo", "ppu", "ppo", "fc") if f.get(name)]
+        ops = [
+            name
+            for name in ("lpu", "lpo", "spu", "spo", "ppu", "ppo", "fc")
+            if f.get(name)
+        ]
         text = "status-stack " + (",".join(ops) if ops else "(no-op)")
         return text, notes, gap
 
@@ -721,7 +855,12 @@ def render_instruction(sw: int, insn, mem, named_tables_touched: set,
 
     if t == "7d":
         # docs/findings/06-sharc-engine-and-startup.md: "Type7d is ACONV".
-        return "ACONV  breg=%s toby=%s idis=%s" % (f.get("breg"), f.get("toby"), f.get("idis")), notes, gap
+        return (
+            "ACONV  breg=%s toby=%s idis=%s"
+            % (f.get("breg"), f.get("toby"), f.get("idis")),
+            notes,
+            gap,
+        )
 
     if t in ("6b_shiftimm",):
         dataex = f.get("dataex", 0)
@@ -739,8 +878,10 @@ def render_instruction(sw: int, insn, mem, named_tables_touched: set,
 
 # --- dossier construction --------------------------------------------------
 
+
 def sha256_of(path: str) -> str:
     import hashlib
+
     with open(path, "rb") as fh:
         return hashlib.sha256(fh.read()).hexdigest()
 
@@ -763,20 +904,30 @@ def load_context(blob_path: str, block_idxs, min_depth: int):
         r["_insn_sw"] = [r["base_sw"] + off // 2 for off, _ in r["insns"]]
         analyzed[idx] = r
     return {
-        "data": data, "blocks": blocks, "blocks_by_idx": blocks_by_idx, "mem": mem,
-        "functions": functions, "by_id": by_id, "analyzed": analyzed,
-        "blob_path": blob_path, "sha256": sha256_of(blob_path),
+        "data": data,
+        "blocks": blocks,
+        "blocks_by_idx": blocks_by_idx,
+        "mem": mem,
+        "functions": functions,
+        "by_id": by_id,
+        "analyzed": analyzed,
+        "blob_path": blob_path,
+        "sha256": sha256_of(blob_path),
     }
 
 
 def base_sw_note(target_address: int) -> str:
     if target_address >= sharcldr.SW_ALIAS_BASE:
-        return ("target %#x >= 0x28000000: base_sw = (target_address - 0x28000000) / 2 "
-                "(ordinary short-word alias)" % target_address)
+        return (
+            "target %#x >= 0x28000000: base_sw = (target_address - 0x28000000) / 2 "
+            "(ordinary short-word alias)" % target_address
+        )
     if sharcldr.L2_BYTE_BASE <= target_address < sharcldr.L2_BYTE_LIMIT:
-        return ("target %#x is in the L2 byte window 0x20000000-0x20020000: "
-                "base_sw = 0xb80000 + (target_address - 0x20000000) / 2 "
-                "(blk69 does NOT use the 0x28000000 alias)" % target_address)
+        return (
+            "target %#x is in the L2 byte window 0x20000000-0x20020000: "
+            "base_sw = 0xb80000 + (target_address - 0x20000000) / 2 "
+            "(blk69 does NOT use the 0x28000000 alias)" % target_address
+        )
     return "target %#x: no known base_sw convention covers this block" % target_address
 
 
@@ -812,8 +963,11 @@ def scan_conditional_returns(block):
         if insn.type_name != "9b_abs":
             continue
         f = sharcinv.merge_fields(insn.fields)
-        if (f.get("b"), f.get("pmm"), f.get("j")) == (0, 5, 1) and f.get("cond") not in (31, None) \
-                and insn.raw != sharcflow.RETURN_JUMP:
+        if (
+            (f.get("b"), f.get("pmm"), f.get("j")) == (0, 5, 1)
+            and f.get("cond") not in (31, None)
+            and insn.raw != sharcflow.RETURN_JUMP
+        ):
             out.append({"sw": block["base_sw"] + off // 2, "cond": f.get("cond")})
     return out
 
@@ -858,9 +1012,11 @@ def backward_exit_note(fn_insns, entry):
         else:
             target = sharcflow.pcrel_target(sw, f.get("reladdr", 0))
         if target is not None and target < entry:
-            notes.append("unconditional JUMP at 0x%x targets 0x%x, before this function's "
-                         "own entry -- likely a shared epilogue inside a preceding span, "
-                         "not a return through this function's own frame" % (sw, target))
+            notes.append(
+                "unconditional JUMP at 0x%x targets 0x%x, before this function's "
+                "own entry -- likely a shared epilogue inside a preceding span, "
+                "not a return through this function's own frame" % (sw, target)
+            )
     return notes
 
 
@@ -881,7 +1037,9 @@ def build_dossier(ctx, addr: int, want_listing: bool = True):
         "base_sw": "0x%x" % block["base_sw"],
         "file_offset_of_entry": "0x%x" % file_offset,
         "image_sha256": ctx["sha256"],
-        "image_sha256_known_as": EXPECTED_SHA256.get(ctx["sha256"], "(not a recognised image)"),
+        "image_sha256_known_as": EXPECTED_SHA256.get(
+            ctx["sha256"], "(not a recognised image)"
+        ),
     }
 
     result = {"addr": "0x%x" % addr, "identification": ident}
@@ -891,8 +1049,10 @@ def build_dossier(ctx, addr: int, want_listing: bool = True):
         return result
 
     if not exact:
-        result["address_note"] = ("0x%x is not this function's own entry; using the "
-                                   "containing function %s (entry 0x%x)" % (addr, fn["id"], fn["entry"]))
+        result["address_note"] = (
+            "0x%x is not this function's own entry; using the "
+            "containing function %s (entry 0x%x)" % (addr, fn["id"], fn["entry"])
+        )
 
     entry, exit_ = fn["entry"], fn["exit"]
     fn_insns = sharcinv.instructions_in(block, entry, exit_)
@@ -906,21 +1066,26 @@ def build_dossier(ctx, addr: int, want_listing: bool = True):
         "boundary_note": fn.get("boundary_note"),
         "split_from": fn.get("split_from"),
         "tail_split_into": fn.get("tail_split_into"),
-        "method": ("return-delimited span (tools/sharcflow.py returns), further split at "
-                   "any direct-call target landing strictly inside it (tools/sharcinv.py "
-                   "function_bounds())"),
+        "method": (
+            "return-delimited span (tools/sharcflow.py returns), further split at "
+            "any direct-call target landing strictly inside it (tools/sharcinv.py "
+            "function_bounds())"
+        ),
     }
     internal_targets = internal_branch_targets(fn_insns, entry, exit_)
     if internal_targets:
         bounds["internal_branch_targets"] = [
-            "0x%x -> 0x%x (branch target inside this span, NOT a separate function)" % (sw, t)
+            "0x%x -> 0x%x (branch target inside this span, NOT a separate function)"
+            % (sw, t)
             for sw, t in internal_targets
         ]
     backward = backward_exit_note(fn_insns, entry)
     if backward:
         bounds["backward_exit_hazard"] = backward
 
-    cond_returns = [r for r in scan_conditional_returns(block) if entry <= r["sw"] < exit_]
+    cond_returns = [
+        r for r in scan_conditional_returns(block) if entry <= r["sw"] < exit_
+    ]
 
     callgraph = {
         "callers": fn["callers"],
@@ -935,7 +1100,8 @@ def build_dossier(ctx, addr: int, want_listing: bool = True):
         callgraph["conditional_return_note"] = (
             "tools/sharcflow.py only matches the unconditional return word "
             "(raw==0x083F343F); these are 9b_abs jumps through I4/M6 with cond != 31 "
-            "found by scanning this block's own aligned instructions")
+            "found by scanning this block's own aligned instructions"
+        )
 
     summary = {
         "label": fn["label"],
@@ -943,8 +1109,9 @@ def build_dossier(ctx, addr: int, want_listing: bool = True):
         "label_reasons": fn["label_reasons"],
         "vector": fn["vector"],
         "named_tables_touched": fn["vector"].get("named_tables_touched", []),
-        "param_frame_referenced": any(r.startswith("param_frame") for r in
-                                       fn["vector"].get("literal_regions", {})),
+        "param_frame_referenced": any(
+            r.startswith("param_frame") for r in fn["vector"].get("literal_regions", {})
+        ),
         "literal_regions": fn["vector"].get("literal_regions", {}),
     }
 
@@ -957,16 +1124,28 @@ def build_dossier(ctx, addr: int, want_listing: bool = True):
         listing = []
         for sw, insn in fn_insns:
             mnemonic, notes, gap = render_instruction(
-                sw, insn, ctx["mem"], named_tables_touched, literal_regions, float_immediates)
-            raw_bytes = insn.raw.to_bytes(insn.length_bytes, "big") if insn.raw is not None and insn.length_bytes else b""
-            listing.append({
-                "sw": "0x%x" % sw,
-                "bytes": raw_bytes.hex(),
-                "form": insn.type_name,
-                "mnemonic": mnemonic,
-                "notes": notes,
-                "gap": gap,
-            })
+                sw,
+                insn,
+                ctx["mem"],
+                named_tables_touched,
+                literal_regions,
+                float_immediates,
+            )
+            raw_bytes = (
+                insn.raw.to_bytes(insn.length_bytes, "big")
+                if insn.raw is not None and insn.length_bytes
+                else b""
+            )
+            listing.append(
+                {
+                    "sw": "0x%x" % sw,
+                    "bytes": raw_bytes.hex(),
+                    "form": insn.type_name,
+                    "mnemonic": mnemonic,
+                    "notes": notes,
+                    "gap": gap,
+                }
+            )
         result["listing"] = listing
         result["listing_extra"] = {
             "named_tables_touched_in_listing": sorted(named_tables_touched),
@@ -981,6 +1160,7 @@ def build_dossier(ctx, addr: int, want_listing: bool = True):
 
 # --- printing ---------------------------------------------------------
 
+
 def print_dossier(d: dict, show_listing: bool):
     addr = d.get("addr")
     print("=== dossier for %s ===" % addr)
@@ -989,8 +1169,15 @@ def print_dossier(d: dict, show_listing: bool):
         return
     ident = d["identification"]
     print("\n-- identification --")
-    for k in ("block", "target_address", "payload_offset", "base_sw",
-              "file_offset_of_entry", "image_sha256", "image_sha256_known_as"):
+    for k in (
+        "block",
+        "target_address",
+        "payload_offset",
+        "base_sw",
+        "file_offset_of_entry",
+        "image_sha256",
+        "image_sha256_known_as",
+    ):
         print("  %-24s %s" % (k, ident[k]))
     print("  base_sw convention:    %s" % ident["base_sw_convention"])
 
@@ -1002,8 +1189,10 @@ def print_dossier(d: dict, show_listing: bool):
 
     b = d["bounds"]
     print("\n-- bounds --")
-    print("  id=%s entry=%s exit=%s n_insns=%s entry_kind=%s" %
-          (b["id"], b["entry"], b["exit"], b["n_insns"], b["entry_kind"]))
+    print(
+        "  id=%s entry=%s exit=%s n_insns=%s entry_kind=%s"
+        % (b["id"], b["entry"], b["exit"], b["n_insns"], b["entry_kind"])
+    )
     print("  method: %s" % b["method"])
     if b.get("boundary_note"):
         print("  boundary_note: %s" % b["boundary_note"])
@@ -1017,13 +1206,22 @@ def print_dossier(d: dict, show_listing: bool):
     print("  callers: %s" % (cg["callers"] or "(none found)"))
     print("  callees: %s" % (cg["callees"] or "(none)"))
     if cg["unresolved_callees"]:
-        print("  unresolved callees (target outside scanned blocks): %s" %
-              ["0x%x" % t for t in cg["unresolved_callees"]])
-    print("  is_leaf=%s has_no_static_caller=%s indirect_calls=%d" %
-          (cg["is_leaf"], cg["has_no_static_caller"], cg["indirect_calls"]))
+        print(
+            "  unresolved callees (target outside scanned blocks): %s"
+            % ["0x%x" % t for t in cg["unresolved_callees"]]
+        )
+    print(
+        "  is_leaf=%s has_no_static_caller=%s indirect_calls=%d"
+        % (cg["is_leaf"], cg["has_no_static_caller"], cg["indirect_calls"])
+    )
     if cg["conditional_returns"]:
-        print("  conditional returns: %s" %
-              [("0x%x cond=%s" % (r["sw"], r["cond"])) for r in cg["conditional_returns"]])
+        print(
+            "  conditional returns: %s"
+            % [
+                ("0x%x cond=%s" % (r["sw"], r["cond"]))
+                for r in cg["conditional_returns"]
+            ]
+        )
         print("  %s" % cg["conditional_return_note"])
 
     s = d["summary"]
@@ -1035,25 +1233,368 @@ def print_dossier(d: dict, show_listing: bool):
     print("  param_frame_referenced: %s" % s["param_frame_referenced"])
     print("  literal_regions: %s" % s["literal_regions"])
     v = s["vector"]
-    print("  compute_total=%d mem_load=%d mem_store=%d loop_literal=%d loop_register=%d" %
-          (v["compute_total"], v["mem_load"], v["mem_store"], v["loop_literal"], v["loop_register"]))
+    print(
+        "  compute_total=%d mem_load=%d mem_store=%d loop_literal=%d loop_register=%d"
+        % (
+            v["compute_total"],
+            v["mem_load"],
+            v["mem_store"],
+            v["loop_literal"],
+            v["loop_register"],
+        )
+    )
 
     if show_listing and "listing" in d:
         print("\n-- listing (%d instructions) --" % len(d["listing"]))
         for row in d["listing"]:
             gap = "  <<< GAP" if row["gap"] else ""
-            line = "  %-10s %-16s %-10s %s%s" % (row["sw"], row["bytes"], row["form"], row["mnemonic"], gap)
+            line = "  %-10s %-16s %-10s %s%s" % (
+                row["sw"],
+                row["bytes"],
+                row["form"],
+                row["mnemonic"],
+                gap,
+            )
             print(line)
             for note in row["notes"]:
                 print("             ; %s" % note)
         extra = d["listing_extra"]
-        print("\n  named tables touched in listing: %s" % extra["named_tables_touched_in_listing"])
+        print(
+            "\n  named tables touched in listing: %s"
+            % extra["named_tables_touched_in_listing"]
+        )
         print("  literal regions in listing: %s" % extra["literal_regions_in_listing"])
-        print("  undecoded instructions: %d   flagged gap opcodes: %d" %
-              (extra["undecoded_count"], extra["gap_count"]))
+        print(
+            "  undecoded instructions: %d   flagged gap opcodes: %d"
+            % (extra["undecoded_count"], extra["gap_count"])
+        )
+
+
+# --- deterministic Phase A engine queue ---------------------------------
+
+ENGINE_QUEUE_SCHEMA = "sharc-engine-queue/v1"
+ENGINE_MIN_INSNS = 60
+ENGINE_MIN_FLOAT_MUL_MAC = 10
+_NOTE_NAME_RE = re.compile(r"^blk(?P<block>\d+)-(?P<entry>[0-9a-fA-F]+)\.md$")
+_NOTE_ENTRY_RE = re.compile(r"\*\*Bounds\*\*:[^\n]*?entry `0x([0-9a-fA-F]+)`")
+
+
+def canonical_json_bytes(value) -> bytes:
+    """Canonical queue serialization: sorted keys, UTF-8, final newline."""
+    return (
+        json.dumps(value, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+    ).encode("utf-8")
+
+
+def canonical_digest(value) -> str:
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def engine_candidates(functions):
+    """Phase A predicate over sharcinv's finalized vector keys only."""
+    selected = []
+    for fn in functions:
+        vector = fn["vector"]
+        float_mul_mac = vector["float_mul"] + vector["mac"]
+        if (
+            fn["n_insns"] >= ENGINE_MIN_INSNS
+            and float_mul_mac >= ENGINE_MIN_FLOAT_MUL_MAC
+        ):
+            selected.append(fn)
+    return sorted(selected, key=lambda fn: (fn["block"], fn["entry"]))
+
+
+def documented_function_entries(notes_dir):
+    """Return independently bounded note entries and rejected note reasons.
+
+    A filename alone is not enough: the note must state the same entry in its
+    Bounds line.  Thus a continuation note cannot create a completed entry.
+    """
+    entries, rejected = set(), []
+    if not os.path.isdir(notes_dir):
+        return entries, [{"reason": "notes directory absent", "path": notes_dir}]
+    for name in sorted(os.listdir(notes_dir)):
+        match = _NOTE_NAME_RE.match(name)
+        if not match:
+            continue
+        path = os.path.join(notes_dir, name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError as exc:
+            rejected.append({"path": name, "reason": str(exc)})
+            continue
+        bounds = _NOTE_ENTRY_RE.search(text)
+        expected = int(match.group("entry"), 16)
+        if bounds is None:
+            rejected.append({"path": name, "reason": "no bounded entry declaration"})
+        elif int(bounds.group(1), 16) != expected:
+            rejected.append({"path": name, "reason": "filename/bounds entry mismatch"})
+        else:
+            entries.add((int(match.group("block")), expected))
+    return entries, rejected
+
+
+def source_hashes():
+    return {
+        name: sha256_of(os.path.join(_here, name))
+        for name in ("sharcfn.py", "sharcinv.py", "sharcflow.py", "sharcldr.py")
+    }
+
+
+def sqlite_evidence(sqlite_path, candidates, source_image_sha256=None):
+    """Read optional SQLite evidence without modifying it.
+
+    Facts remain advisory unless the database records the exact SHA-256 of
+    the source image and it matches ``source_image_sha256``.  The join uses
+    SHARC short-word addresses throughout.
+    """
+    result = {
+        "path": sqlite_path,
+        "sha256": sha256_of(sqlite_path),
+        "mode": "read-only",
+        "meta": [],
+        "status": "usable",
+        "freshness": "not_verified: no source image SHA-256 supplied",
+        "evidence_status": "advisory",
+        "schema_issues": [],
+        "facts": {},
+    }
+    try:
+        con = sqlite3.connect(
+            "file:%s?mode=ro" % os.path.abspath(sqlite_path), uri=True
+        )
+        tables = {
+            row[0]
+            for row in con.execute("select name from sqlite_master where type='table'")
+        }
+        if "meta" not in tables:
+            result["schema_issues"].append("missing meta table")
+        else:
+            result["meta"] = [
+                {"key": row[0], "value": row[1]}
+                for row in con.execute("select key, value from meta order by key")
+            ]
+            meta_values = {row["key"]: row["value"] for row in result["meta"]}
+            image_sha256 = meta_values.get("image_sha256")
+            if image_sha256 is None:
+                result["freshness"] = (
+                    "not_verified: meta lacks full source image SHA-256"
+                )
+            elif source_image_sha256 is None:
+                result["freshness"] = "not_verified: source image SHA-256 not supplied"
+            elif image_sha256 == source_image_sha256:
+                result["freshness"] = "verified"
+            else:
+                result["freshness"] = (
+                    "stale: SQLite image_sha256 does not match source image SHA-256"
+                )
+        needed = {"functions", "insn", "refs", "warnings", "decompiled"}
+        missing = sorted(needed - tables)
+        if missing:
+            result["schema_issues"].append("missing tables: " + ", ".join(missing))
+        if not result["schema_issues"]:
+            for fn in candidates:
+                entry = fn["entry"]
+                function = con.execute(
+                    "select name, instructions, in_main from functions where sw=?",
+                    (entry,),
+                ).fetchone()
+                insn_count = con.execute(
+                    "select count(*) from insn where function_sw=?", (entry,)
+                ).fetchone()[0]
+                refs = con.execute(
+                    "select count(*) from refs where from_sw=? or to_sw=?",
+                    (entry, entry),
+                ).fetchone()[0]
+                warnings = con.execute(
+                    "select count(*) from warnings where function_sw=?", (entry,)
+                ).fetchone()[0]
+                decomp = con.execute(
+                    "select completed, error from decompiled where function_sw=?",
+                    (entry,),
+                ).fetchone()
+                result["facts"]["0x%x" % entry] = {
+                    "function_present": function is not None,
+                    "instruction_count": function[1] if function else insn_count,
+                    "reference_count": refs,
+                    "warning_count": warnings,
+                    "decompiler": None
+                    if decomp is None
+                    else {
+                        "available": True,
+                        "completed": bool(decomp[0]),
+                        "error": decomp[1],
+                    },
+                }
+        else:
+            result["status"] = "incompatible"
+        con.close()
+    except (OSError, sqlite3.Error) as exc:
+        result["status"] = "unavailable"
+        result["schema_issues"].append(str(exc))
+
+    if result["status"] == "usable" and result["freshness"] == "verified":
+        result["evidence_status"] = "verified"
+    for fact in result["facts"].values():
+        fact["evidence_status"] = result["evidence_status"]
+    return result
+
+
+# Stable output schema for Phase A coverage.  These are only existing
+# decoder/classifier observations; a zero means the form/opcode was absent.
+TARGET_OPCODE_COVERAGE_KEYS = (
+    "Type10a_rel",
+    "Type10a_abs",
+    "Type2b",
+    "ALU_0xe0",
+    "ALU_0x05",
+    "ALU_0x06",
+    "multifunction_0x1a",
+    "multifunction_0x1e",
+    "multifunction_0x1f",
+    "convert_by_RY_0xd9",
+    "convert_by_RY_0xda",
+    "convert_by_RY_0xdd",
+)
+
+
+def target_opcode_coverage(ctx, candidates):
+    """Count only forms/opcodes identified by existing decoder/classifier fields."""
+    counts = {key: 0 for key in TARGET_OPCODE_COVERAGE_KEYS}
+    unsupported = []
+    candidate_ranges = {(fn["block"], fn["entry"], fn["exit"]) for fn in candidates}
+    for block_id, entry, exit_ in candidate_ranges:
+        block = ctx["analyzed"].get(block_id)
+        if block is None:
+            unsupported.append("candidate block %d was not analyzed" % block_id)
+            continue
+        for _sw, insn in sharcinv.instructions_in(block, entry, exit_):
+            form = insn.type_name
+            if form == "10a_rel":
+                counts["Type10a_rel"] += 1
+            elif form == "10a_abs":
+                counts["Type10a_abs"] += 1
+            if form == "2b":
+                counts["Type2b"] += 1
+            field = (
+                sharcinv.merge_fields(insn.fields).get("compute")
+                if form in sharcinv.COMPUTE_FORMS
+                else None
+            )
+            if not field:
+                continue
+            cu, detail = sharcinv.classify_compute(field)
+            opcode = detail.get("opcode")
+            if cu == "ALU" and opcode in (0xE0, 0x05, 0x06):
+                counts["ALU_0x%02x" % opcode] += 1
+            if cu == "MULTIFN":
+                selector = (field >> 16) & 0x3F
+                if selector in (0x1A, 0x1E, 0x1F):
+                    counts["multifunction_0x%02x" % selector] += 1
+            if cu == "ALU" and opcode in (0xD9, 0xDA, 0xDD):
+                counts["convert_by_RY_0x%02x" % opcode] += 1
+    return {
+        "derived_counts": dict(sorted(counts.items())),
+        "unsupported_or_ambiguous": unsupported
+        + [
+            "Type10a_rel/abs are counted only if the existing decoder emits those form names",
+            "convert-by-RY is limited to existing ALU classifier opcodes 0xd9, 0xda, 0xdd",
+        ],
+        "word_address_units": "all joins and counts use SHARC short-word addresses",
+    }
+
+
+def build_engine_queue(ctx, notes_dir, sqlite_path=None):
+    inventory = sorted(ctx["functions"], key=lambda fn: (fn["block"], fn["entry"]))
+    candidates = engine_candidates(inventory)
+    documented, rejected_notes = documented_function_entries(notes_dir)
+    rows = []
+    for fn in candidates:
+        row = {
+            "block": fn["block"],
+            "entry": "0x%x" % fn["entry"],
+            "id": fn["id"],
+            "n_insns": fn["n_insns"],
+            "float_mul": fn["vector"]["float_mul"],
+            "mac": fn["vector"]["mac"],
+            "documented": (fn["block"], fn["entry"]) in documented,
+        }
+        rows.append(row)
+    evidence = None
+    if sqlite_path:
+        if not os.path.isfile(sqlite_path):
+            evidence = {
+                "path": sqlite_path,
+                "status": "unavailable",
+                "schema_issues": ["SQLite file absent"],
+            }
+        else:
+            evidence = sqlite_evidence(sqlite_path, candidates, ctx["sha256"])
+            for row in rows:
+                fact = evidence.get("facts", {}).get(row["entry"])
+                if fact is not None:
+                    row["sqlite"] = fact
+    return {
+        "schema_version": ENGINE_QUEUE_SCHEMA,
+        "provenance": {
+            "source_image_sha256": ctx["sha256"],
+            "tool_source_sha256": source_hashes(),
+            "predicate": {
+                "n_insns_gte": ENGINE_MIN_INSNS,
+                "float_multiply_or_mac_gte": ENGINE_MIN_FLOAT_MUL_MAC,
+                "vector_keys": ["float_mul", "mac"],
+            },
+            "canonical_inventory_sha256": canonical_digest(inventory),
+            "sqlite": evidence,
+        },
+        "historical_claim": {
+            "read": 21,
+            "remaining": 30,
+            "membership": "unknown/unverified; no exact remaining set is emitted",
+        },
+        "documented_notes": {
+            "bounded_entries": len(documented),
+            "rejected": rejected_notes,
+        },
+        "counts": {
+            "candidates": len(rows),
+            "documented": sum(r["documented"] for r in rows),
+            "undocumented": sum(not r["documented"] for r in rows),
+        },
+        "target_opcode_coverage": target_opcode_coverage(ctx, candidates),
+        "candidates": rows,
+    }
+
+
+def write_batch_dossiers(ctx, addresses, out_dir, want_listing):
+    os.makedirs(out_dir, exist_ok=True)
+    for addr in addresses:
+        d = build_dossier(ctx, addr, want_listing=want_listing)
+        fn_id = d.get("bounds", {}).get("id") if "bounds" in d else None
+        name = (fn_id or ("blk?@0x%x" % addr)).replace("@", "-").replace("0x", "")
+        out_path = os.path.join(out_dir, "%s.json" % name)
+        with open(out_path, "wb") as fh:
+            fh.write(canonical_json_bytes(d))
+        txt_path = os.path.join(out_dir, "%s.txt" % name)
+        import io
+
+        buf = io.StringIO()
+        old = sys.stdout
+        sys.stdout = buf
+        try:
+            print_dossier(d, show_listing=want_listing)
+        finally:
+            sys.stdout = old
+        with open(txt_path, "w") as fh:
+            fh.write(buf.getvalue())
+        print(
+            "0x%x -> %s (%s)" % (addr, out_path, d.get("bounds", {}).get("id", "ERROR"))
+        )
 
 
 # --- CLI ----------------------------------------------------------------
+
 
 def _int(text: str) -> int:
     return int(text, 0)
@@ -1064,27 +1605,90 @@ def _int_list(text: str):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     ap.add_argument("blob")
     ap.add_argument("addr", nargs="?", type=_int, help="short-word (VISA PC) address")
-    ap.add_argument("--batch", type=_int_list, help="comma-separated addresses; writes one dossier per address")
-    ap.add_argument("--out-dir", help="directory for --batch output (required with --batch)")
+    ap.add_argument(
+        "--batch",
+        type=_int_list,
+        help="comma-separated addresses; writes one dossier per address",
+    )
+    ap.add_argument(
+        "--out-dir", help="directory for --batch output (required with --batch)"
+    )
+    ap.add_argument(
+        "--engine-queue",
+        action="store_true",
+        help="build deterministic Phase A engine candidate queue",
+    )
+    ap.add_argument(
+        "--sqlite", help="optional read-only SQLite/Ghidra evidence for --engine-queue"
+    )
+    ap.add_argument(
+        "--dossier-dir", help="write dossiers for undocumented queue candidates"
+    )
+    ap.add_argument(
+        "--notes-dir",
+        default=os.path.join(os.path.dirname(_here), "docs", "findings", "functions"),
+        help="per-function notes directory for --engine-queue",
+    )
     ap.add_argument("--blocks", type=_int_list, default=sharcinv.CODE_BLOCKS)
     ap.add_argument("--min-depth", type=int, default=8)
     ap.add_argument("--json", help="write the single-address dossier as JSON")
-    ap.add_argument("--listing", action="store_true", help="print the annotated instruction listing")
-    ap.add_argument("--no-listing", action="store_true", help="suppress the listing in --batch JSON output")
+    ap.add_argument(
+        "--listing", action="store_true", help="print the annotated instruction listing"
+    )
+    ap.add_argument(
+        "--no-listing",
+        action="store_true",
+        help="suppress the listing in --batch JSON output",
+    )
     args = ap.parse_args(argv)
 
-    if (args.batch is None) == (args.addr is None):
-        ap.error("give exactly one of ADDR or --batch")
+    modes = sum((args.batch is not None, args.addr is not None, args.engine_queue))
+    if modes != 1:
+        ap.error("give exactly one of ADDR, --batch, or --engine-queue")
     if args.batch and not args.out_dir:
         ap.error("--batch requires --out-dir")
+    if args.dossier_dir and not args.engine_queue:
+        ap.error("--dossier-dir requires --engine-queue")
+    if not os.path.isfile(args.blob):
+        ap.error("firmware blob is absent or not a file: %s" % args.blob)
 
     ctx = load_context(args.blob, args.blocks, args.min_depth)
-    print("loaded %s: sha256=%s (%s), %d functions across blocks %s" %
-          (args.blob, ctx["sha256"], EXPECTED_SHA256.get(ctx["sha256"], "unrecognised image"),
-           len(ctx["functions"]), list(args.blocks)))
+    print(
+        "loaded %s: sha256=%s (%s), %d functions across blocks %s"
+        % (
+            args.blob,
+            ctx["sha256"],
+            EXPECTED_SHA256.get(ctx["sha256"], "unrecognised image"),
+            len(ctx["functions"]),
+            list(args.blocks),
+        )
+    )
+
+    if args.engine_queue:
+        queue = build_engine_queue(ctx, args.notes_dir, args.sqlite)
+        output = canonical_json_bytes(queue)
+        if args.json:
+            parent = os.path.dirname(args.json)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            with open(args.json, "wb") as fh:
+                fh.write(output)
+            print("wrote %s" % args.json)
+        else:
+            sys.stdout.buffer.write(output)
+        if args.dossier_dir:
+            undocumented = [
+                int(row["entry"], 16)
+                for row in queue["candidates"]
+                if not row["documented"]
+            ]
+            write_batch_dossiers(
+                ctx, undocumented, args.dossier_dir, want_listing=not args.no_listing
+            )
+        return 0
 
     if args.addr is not None:
         want_listing = not args.no_listing
@@ -1096,27 +1700,9 @@ def main(argv=None):
             print("\nwrote %s" % args.json)
         return 0
 
-    os.makedirs(args.out_dir, exist_ok=True)
-    want_listing = not args.no_listing
-    for addr in args.batch:
-        d = build_dossier(ctx, addr, want_listing=want_listing)
-        fn_id = d.get("bounds", {}).get("id") if "bounds" in d else None
-        name = (fn_id or ("blk?@0x%x" % addr)).replace("@", "-").replace("0x", "")
-        out_path = os.path.join(args.out_dir, "%s.json" % name)
-        with open(out_path, "w") as fh:
-            json.dump(d, fh, indent=1)
-        txt_path = os.path.join(args.out_dir, "%s.txt" % name)
-        import io
-        buf = io.StringIO()
-        old = sys.stdout
-        sys.stdout = buf
-        try:
-            print_dossier(d, show_listing=want_listing)
-        finally:
-            sys.stdout = old
-        with open(txt_path, "w") as fh:
-            fh.write(buf.getvalue())
-        print("0x%x -> %s (%s)" % (addr, out_path, d.get("bounds", {}).get("id", "ERROR")))
+    write_batch_dossiers(
+        ctx, args.batch, args.out_dir, want_listing=not args.no_listing
+    )
     return 0
 
 

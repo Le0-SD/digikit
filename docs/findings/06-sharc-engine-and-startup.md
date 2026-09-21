@@ -82,7 +82,7 @@ reconstruct cyclic two-descriptor templates and pass their heads in `R8` to
 `0x1ca7e4`: **[V]**
 
 | list head | descriptors | start buffers | `CFG, XCNT, XMOD, YCNT, YMOD` | bytes/buffer |
-|---:|---|---|---|---:|
+| ---: | --- | --- | --- | ---: |
 | `0x2620c8` | `0x2620c8` ↔ `0x2620e4` | `0x261cc8`, `0x261dc8` | `0x100000, 64, 4, 0, 0` | `0x100` |
 | `0x262100` | `0x262100` ↔ `0x26211c` | `0x261ec8`, `0x261fc8` | `0x100000, 64, 4, 0, 0` | `0x100` |
 | `0x264138` | `0x264138` ↔ `0x264154` | `0x262138`, `0x262938` | `0x100000, 512, 4, 0, 0` | `0x800` |
@@ -393,7 +393,7 @@ the documented 32-bit normal-word scaling makes the callee loads at
 (`I5=DM(I6+0x10)`) concrete:
 
 | call | `I3`, copied to `R9` | `I5` | `0x1ca6f9` effect when reached |
-|---:|---:|---:|---:|
+| ---: | ---: | ---: | ---: |
 | `0x1c78f6` | `0x2618d0` | `0x261960` | `DM(0x261960)=0x2618d0` |
 | `0x1c798b` | `0x261918` | `0x261964` | `DM(0x261964)=0x261918` |
 | `0x1c7a5f` | `0x261970` | `0x261a00` | `DM(0x261a00)=0x261970` |
@@ -579,7 +579,7 @@ Classic ISA decoding keeps Type2a. In the aligned 1.16 sweep,
 images. The earlier boundaries read as follows: **[C][V]**
 
 | PC | earlier reading | 32-bit reading |
-|---:|---|---|
+| ---: | --- | --- |
 | `0xb893fb` | Type2a, undefined ALUOP `0x00` | `R2 = LEFTZ R8`, then a relative jump to `0xb8941e` |
 | `0xb8783f` (lock routine `0xb87838`) | Type2a, then undoc16 `0x0000`, `0x001d` | `R2 = LEFTZ R2`, then a relative jump to `0xb8785e` |
 | `0xb8c615` | Type2a, then undoc16 `0x0000`, `0x001a` | `R1 = BTGL R2 BY R1`, then a relative jump to `0xb8c631` |
@@ -837,6 +837,7 @@ edges are runtime-established, so static analysis stalls here and the emulator
 the same `0x1ca58a` setup + `0x1ca7e4` submit, all with config `0x00100000`
 (decoded against ADSP-2156x HWR DMA_CFG: EN=0, WNR=0 = **transmit**, INT=1 =
 interrupt on X-count) -- so all four are output/transmit, none receive:
+
 - Ring A: head `0x2620c8`, buffers `0x261cc8`/`0x261dc8`, 256 B (setup/submit
   `0x1c792f`/`0x1c7971`); Ring B: head `0x262100`, `0x261ec8`/`0x261fc8`, 256 B
   (`0x1c79c4`/`0x1c79f8`).
@@ -850,6 +851,7 @@ interrupt on X-count) -- so all four are output/transmit, none receive:
 
 **Synthesis tables + reader code (OBSERVATION).** Only two real external float
 payloads load (rest of `0x80xxxxxx` is FILL/zero scratch), LE float32:
+
 - Block A `0x8045a6c8`, 829 floats: exponential curve, denormal -> exactly 1.0
   (INFERENCE: pitch/note-to-freq or dB/exponential envelope map). Loaded at boot
   by `0x1c1686` (`R8 = 0x8045a6c8`) then passed to a `25a_direct` call at
@@ -908,6 +910,7 @@ hide per-machine behavior. **[D][O]**
 
 **Firming pass (2026-09-20): the per-track routine and field readers are uniform
 (OBSERVATION).** Two decode passes closed the leads the paragraph above left open:
+
 - `0x1c24e9` (called once per track from the 16-track loop) fully decoded, entry
   to return: 396 instructions, a leaf (zero CALLs), no loop, no computed/indirect
   jump but its own return. No `comp`/`compu` ALU op anywhere and no
@@ -941,7 +944,6 @@ Tool gap noted: `tools/sharc_trace.py` `_execute()` has no case for Type
 `8a_rel`/`8a_abs`, so symbolic runs stop at the first Type8a branch -- worth
 adding for future SHARC symbolic tracing (and the A2 work). **[O]**
 
-
 ## The frame displacements are raw ColdFire bytes, unscaled **[V]**
 
 Settled, and it matters because every offset claim about the DSP's view of the
@@ -950,7 +952,7 @@ frame depends on it. `FUN_001c2b24` forms its frame pointers with SHARC+ form
 `data` fields directly:
 
 | addr | form | I-reg | data | hex |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `0x1c2cc1` | 19a | I4 | 1884 | `0x75c` |
 | `0x1c2ccb` | 19a | I1 | 148 | `0x94` |
 | `0x1c2cd7` | 19a | I4 | 1852 | `0x73c` |
@@ -1051,7 +1053,7 @@ Subtract a common base of `0x2558dc` from every literal this function and its
 caller use, and all eleven known per-track scalar frame offsets land exactly:
 
 | SHARC literal | - `0x2558dc` | ColdFire frame field |
-|---|---|---|
+| --- | --- | --- |
 | `0x2558de` | `0x02` | per-track scalar |
 | `0x255910` | `0x34` | per-track scalar |
 | `0x255930` | `0x54` | read by `FUN_001c2b24` |
@@ -1073,7 +1075,7 @@ Eleven independent hits with no exceptions is not coincidence. And
 stating precisely): the unit is per *instruction form*, not global.
 
 | form | scaling |
-|---|---|
+| --- | --- |
 | `19a` (`modify`, classic) | raw bytes, always x1 |
 | `19a_scaled` (`modify (nw)`) | x2/x4 by width |
 | `15b`/`4a`/`4b` (`dm(K,I)`) | x4 under 32-bit normal words |
@@ -1092,7 +1094,7 @@ contradiction.
 Mapping every `I2`-relative read through the scaling rules above:
 
 | site | form | block byte | mirror | page |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `0x1c26a5` `r11=dm(0x5,i2)` | 15b, x4 | `0x14` | -- | slice sub-block |
 | `0x1c2699` `r14=dm(0x6,i2)` | 15b, x4 | `0x18` | -- | slice sub-block |
 | `0x1c268b` `r4=dm(0x7,i2)` | 15b, x4 | `0x1c` | -- | slice sub-block |
@@ -1298,7 +1300,7 @@ random data (blk40 is data yet scores 98.5%). The reliable signal is **desync
 frequency** -- real code resyncs once or twice per 8 KB, data every 25-45 bytes.
 
 | blk | target | bytes | segs/KB | verdict |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | **69** | `0x20000000` | **109,436** | 0.12 | **CODE -- larger than blk93** |
 | 93 | `0x283827cc` | 104,500 | 0.12 | CODE (the one everyone searched) |
 | 1 | `0x282403f0` | 10,312 | 0.25 | CODE |
@@ -1502,11 +1504,11 @@ Every stage's trip count is a **runtime register value**, never a literal. The
 body, not the orchestrator.
 
 | stage | addr | instrs | what it does |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | orchestrator | `0x1c71ec` | 251 | interpolated cosine lookup, inline butterfly, then the call chain |
 | 1 | `0x1ccbd8` | 59 (leaf) | streaming **two-state linear recurrence**: `f1 = f11 + f0*f4` with `f11`,`f8` updated per sample, two state words persisted to the caller struct at `+6`/`+7`. Either a two-pole IIR or a coupled-form quadrature oscillator |
 | 2 | `0x1cdecb` | 51 | **gated block copy**: tests a float against 0.0, then either a SIMD (PEYEN) stride-2 copy or, on the other path, `out = a*(1-frac) + b*frac` linear interpolation |
-| 3 | `0x1cb3d8` | 98 | **on-the-fly polynomial envelope**: iterates `x <- x*(2-|x|)` three times to synthesise a saturating S-curve, then applies it multiplicatively along a ramp over the sample stream |
+| 3 | `0x1cb3d8` | 98 | **on-the-fly polynomial envelope**: iterates `x <- x*(2- | x | )` three times to synthesise a saturating S-curve, then applies it multiplicatively along a ramp over the sample stream |
 | 4 | `0x1cd286` | 148 | gathers **9 field-pairs** from the argument struct into two parallel arrays, then a MAC loop with a data-dependent count. Guarded by "if struct word 12 == 0, return". Float compute opcodes undecoded **[O]** |
 | 5 | `0x1cc79e` | 173 | **table-interpolated resampler**: unsigned 32-bit phase to float (with the `+2^32` correction), a reciprocal helper for step size, then per sample `trunc` -> index, `index+1`, two `DM(I2,M)` taps, linear blend, `clip`. Table base `0x26bb68` |
 | 6 | `0x1cbf07` | 133 | **two-tap interpolated lookup** with `2^32` and `8192.0` constants and an `0x1fff` mask -- a 13-bit wavetable index from a fixed-point phase accumulator. Persists index and position back to the caller struct |
@@ -1581,6 +1583,7 @@ fragments too short to contain a return.
 Labels: unclassified 674, block copy 229, glue/trampoline 128, envelope or gain
 42, orchestrator 40, driver 37, DMA construction 34, IIR/recurrence 21,
 wavetable lookup 9, FFT-like 8, interpolating oscillator 5, parameter converter
+
 1. The 55% abstention rate is deliberate -- the heuristic only fires on shapes
 confirmed by a hand-read, and the vector is emitted for every function
 regardless, so a wrong label is visible rather than load-bearing.
@@ -1604,7 +1607,7 @@ opens a function there.
 that would have settled it. The densest:
 
 | function | instrs | dual add/sub | label |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | blk69 `0xb8063e` | 602 | 4 | FFT-like |
 | blk69 `0xb80c6c` | 52 | 4 | FFT-like |
 | blk93 `0x1c5615` | 385 | 3 | FFT-like |
@@ -1695,7 +1698,7 @@ test methods.
 Effect, measured:
 
 | function | before | after |
-|---|---|---|
+| --- | --- | --- |
 | stage 4 loop `0x1cd33c` | 1 step, `unsupported cu=0x0 opcode=0x81` | **49 steps, clean return** -- the full 32-instruction body |
 | stage 5 `0x1cc79e` | 22 steps | 85-101 steps |
 | stage 3 `0x1cb3d8` | 14 steps | 43-51 steps |
@@ -1842,7 +1845,7 @@ target is `0x20000000` = the L2 byte base, so `base_sw = 0xb80000` and the
 The checklist, item by item:
 
 | test | result |
-|---|---|
+| --- | --- |
 | nested log2(N) x N/2 loops | **absent** -- 17 loops, all flat, **zero literal-count**; 15 contain no butterfly at all, and the 2 that do are both counted by the same external register M7 |
 | twiddle table or on-the-fly twiddles | **absent** -- zero `0x80xxxxxx` literals anywhere in the function |
 | bit-reversed addressing | **absent** -- and none in the image |
@@ -2185,8 +2188,9 @@ epilogue. **The two inventory "functions" are architecturally one routine**,
 split only because a return belonging to `0x1c4ecf`'s non-resampling path
 happens to sit just before `0x1c4f81` begins.
 
-And `0x1c4ecf` has exactly one reference in the program: a `25a_direct` call at
-`sw 0x1c6b00`, inside `0x1c642a`. So the chain is:
+Within the stated aligned/depth>=8 decoded-block coverage, `0x1c4ecf` has one
+known direct `25a_direct` call at `sw 0x1c6b00`, inside `0x1c642a`. This
+bounded coverage does not claim global exclusivity. So the chain is:
 
 ```
 FUN_1c2b24 -> 0x1c642a -> call 0x1c4ecf  (sw 0x1c6b00)
@@ -2194,8 +2198,9 @@ FUN_1c2b24 -> 0x1c642a -> call 0x1c4ecf  (sw 0x1c6b00)
                        -> jump back into 0x1c4ecf's epilogue
 ```
 
-**The resampler is in the per-frame render chain**, two calls deep behind a
-conditional gate. That closes the "reached some other way" open item.
+**The static call structure places the conditional continuation in this render
+call chain**, two calls deep behind a conditional gate. It does not establish
+natural per-frame or universal execution. **[D][O]**
 
 **`I4` is not the parameter frame.** Tested numerically against the confirmed
 SRC-page layout: word offsets 98-101 would land on **track 1's amp/FX fields**,
@@ -2250,7 +2255,7 @@ reproduced `0x1c4f81`'s backward-epilogue hazard exactly. Dossiers for the top
 **Decode gaps closed** in `sharc_trace.py` and `sharcspec/`:
 
 | gap | resolution |
-|---|---|
+| --- | --- |
 | `Type10a_rel` | was already split out by `build_table.py` but flagged `visa=False` because the PRM heading says "ISA". Firmware evidence overrides it: `sw 0x1c5030` decodes cleanly as this form inside VISA code and desyncs without it. Narrow `VISA_OVERRIDE`, same precedent as `Type2a_short`/`Type6b_shiftimm` |
 | ALU `0xe0` | `FN = FX copysign FY` (PRM p.19-19, PGR Table 12-4 p.574) |
 | multifunction `0x1a`/`0x1e`/`0x1f` | MUL+float-by-scale, MUL+MAX, MUL+MIN (PGR Table 12-12 pp.587-588), reusing the dual-result path |
@@ -2268,3 +2273,49 @@ tests** -- the agent ran out of time. That should be filled in the style of
 
 Newly surfaced and still open: `cu=2` opcode `0x10`, `cu=1` opcode `0x48`,
 form `1a`, and Type 9b indirect targets.
+
+## [C] Machine-path boundary for the conditional resampler **[V][D][O]**
+
+The practical goal is to identify which SHARC code each machine uses, so
+existing machines can be modified or augmented and new ones may eventually be
+added. The bounded result below advances selection/dispatch mapping, not merely
+resampler classification.
+
+Within the stated aligned/depth>=8 decoded-block coverage, one known direct
+call is the unconditional `0x1c6b00 -> 0x1c4ecf` call owned by
+`blk93@0x1c642a`; this bounded coverage does not claim global exclusivity.
+The exact local chain is `0x1c6ad3: I4=DM(I6+124)`, `0x1c6ad7: R2=4`,
+`0x1c6ad9: R1=DM(I6+124)`, `0x1c6adb: R13=R1+R2`, and
+`0x1c6afd: R4=R13`. The exact conditional gate targets are
+`0x1c6acc -> 0x1c6530`, `0x1c6aeb -> 0x1c6afd`, and the back-edge
+`0x1c6b09 -> 0x1c6ae8`; the `R14=0x20` setup and its decrements are also
+byte facts. The incoming `I6` root/object identity, natural branch outcomes,
+and effective loop trip count remain unresolved. Thus the earlier render-chain
+wording does **not** show `0x1c4ecf` is a machine selector or that it runs
+universally/per track. **[C][V][D][O]**
+
+Within the conditional continuation, `0x25d940` is materialized exactly twice:
+into `I5` at `0x1c50aa` in the first literal-64 loop and `I1` at `0x1c52bf`
+in the second; `DM(I1,M5)=R2` at `0x1c52de` is an indexed store in that second
+loop. The concrete same-base read/access shapes are also verified. No initializer
+was found in the covered decoded blocks, but this bounded coverage is not a
+whole-firmware absence result: aliases, register-built addresses, omitted or
+uncertain code, and runtime initialization remain unexamined. Table,
+coefficient, working-bank, per-machine-storage, and ownership interpretations
+remain open. **[V][D][O]**
+
+**Next static experiment.** Prioritize the runtime function-pointer dispatch
+RAM at `0x254d98` and its writers, especially any chain from the transported
+machine type at frame offset `0x94`; separately resolve incoming `I6` and
+`DM(I6+124)`. For augmentation, observe or patch writer `0x1c52de` first as an
+evidenced bank seam; changing either loop body or the shared table may affect
+all users, while a machine-specific dispatch remains unproven before the
+`0x254d98` mapping is known. This is a provisional ranking, not a demonstrated
+machine mapping or patch prescription. **[D][O]**
+
+Reproducible ignored evidence is
+`out/sharc-engine/machine-path/summary.txt` (SHA-256
+`fb7a6a080015e4ce173f745dde17160aa5970931b85ad2a2919a3a22cb5301e4`); its two
+identical extraction records hash to
+`73c5ce0ad83f7bb0e92156841f27b06aa7a74fe808d2f29848756ba1bf98b218`.
+**[D]**
