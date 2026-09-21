@@ -663,9 +663,9 @@ Ghidra 12.1.3's `EmulatorHelper` executes this language. Stepping
 `sw 0x1c18ed` ran 200 of 200 through both known stores, `sw 0x1c191d` and
 `sw 0x1c1928`. `EmulatorHelper.readMemory`/`writeMemory` observe live
 emulated memory: a write of `0xabcd1234` to `0x254d9c` read back unchanged.
-The PC register takes the short-word PC while memory calls take the displayed
-address; writing the displayed entry `0x38314c` into PC made
-`getExecutionAddress()` return `0x706298` and fail. **[D]**
+The PC register takes the short-word PC; writing the displayed entry
+`0x38314c` into PC made `getExecutionAddress()` return `0x706298` and fail.
+Data addresses are covered in the next section. **[D]**
 
 Most of that execution is not real. A form with no semantics runs as a silent
 no-op instead of faulting, so an emulator watchpoint would miss a write made
@@ -675,3 +675,38 @@ same gap blinds the decompiler dataflow queries in
 `06-sharc-engine-and-startup.md` to indexed stores. `MemoryAccessFilter`
 cannot be subclassed from Python ("Java classes cannot be extended in
 Python"), so catching same-value writes needs a small Java shim. **[O]**
+
+## The language puts every data literal at twice its address **[V][C][O]**
+
+The generated language gives the `ram` space a word size of 2, so short-word
+code addresses land on the right bytes. Ghidra scales every LOAD and STORE
+offset by the space's word size, so a data literal is accessed at twice its
+value: `R2 = DM(0x252658)` at `sw 0x1c18ed` builds `0x252658` and loads from
+byte offset `0x4a4cb0`. No memory block of the Ghidra program covers
+`0x4a4cb0`: `read 0x4a4cb0` fails as unmapped, while `read 0x252658` lands in
+block `mem01_282403f0`. Ghidra's reference table already carries the
+doubling: its only reference to `0x4a4cb0` comes from this instruction, at
+`0x3831da`. **[V]**
+
+The literal is a byte address. Ghidra places loader byte `0x28000000 + X` at
+offset `X` for every block, and code at `sw S` at `2*S`. Of the 646 Type14a DM
+accesses in the DT2 1.16 main program, all 583 on-chip literals (`0x25xxxx`,
+`0x26xxxx`, `0x2dxxxx`) are covered by the loader at `0x28000000 + addr` and
+none at `0x28000000 + 2*addr`, which falls outside every loader range. 558 of
+those hits are in the zero-FILL block 18, so the stronger evidence is the 25
+in payload blocks: `0x256800..0x256830`, read from `sw 0x1c1d8d` to
+`0x1c2203`, hold a table of little-endian pointers into the same range
+(`0x00253e78`, `0x00254178`, `0x00254278`, ...). The 17 external literals
+(`0x82a0xxxx`) are covered at the literal itself. The SHARC+ core reference
+states that the byte address space is universal for the core and SoC, and
+Type14a's syntax has no access-size suffix, unlike Type14d's. A second agent
+recomputed all of this independently. **[V]**
+
+**[C]** The emulator therefore never sees the image's initialised data at a
+DM literal and reads zero there, and an external literal such as
+`0x82a00008` doubles past the 32-bit space. `ghidraq` `loads`, `stores` and
+`read` compare against the caller's value and stay self-consistent, but
+`xrefs`, `callers` and `range`'s referenced addresses read Ghidra's reference
+table and are wrong for DM literals. Fixing this means giving data its own
+byte-addressed space in the language, measured with `tools/sharcpcode.py`.
+**[O]**

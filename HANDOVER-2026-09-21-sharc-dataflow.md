@@ -260,12 +260,17 @@ DT2 1.16 main program lifts to any p-code; the ranked worklist is
 language, but a form with no semantics executes as a silent no-op instead of
 faulting. Results are in `docs/findings/05-sharc-isa-and-decoding.md`.
 
-1. Make missing semantics fail loudly in the emulator harness: treat an
-   instruction that lifts to zero p-code ops as a fault, except Type21a (NOP)
-   and Type9a/9b_abs with `b==1` (indirect call). Do this in the harness, not
-   by emitting `unimpl;` from the generator, which would put
-   `halt_unimplemented()` into the decompiler output that the dataflow
-   queries depend on.
+1. Done: `tools/sharcemu.py` runs Ghidra's `EmulatorHelper`, faults on any
+   instruction that lifts to zero p-code ops (except Type21a and
+   Type9a/9b_abs with `b==1`), and reports writes to watched addresses by
+   address, so same-value writes count. Its positive control reports the
+   store at `sw 0x1c191d`.
+1a. Before writing memory semantics, fix the data address model. The
+   language's `ram` space has word size 2, so every DM literal is accessed at
+   twice its byte address (`docs/findings/05-sharc-isa-and-decoding.md`,
+   last section). Memory-form semantics written on the current model would
+   inherit the error. Give data a byte-addressed space and re-measure with
+   `tools/sharcpcode.py measure`/`compare`.
 2. Implement the `condition` CALLOTHER behaviour, then semantics for the
    indexed DM forms, `15b` first (20% of the image). These serve both routes:
    they give the emulator its memory writes and give `ghidraq stores` the
