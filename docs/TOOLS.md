@@ -104,13 +104,17 @@ uv run python tools/ghidraq.py /section_3_MAIN_OS.bin slice 0x40008000 store:val
 
 For SHARC, replace `SHARC_PROGRAM` and `SHARC_PROJECT` with the program path
 and project containing that program. The program must be imported with
-`SHARC_VISA:LE:32:default`; use `sw:` for short-word PC and word-addressed DM
-targets, but leave byte-addressed external targets unprefixed:
+`SHARC_VISA:LE:32:default`; use `sw:` for a short-word PC target. DM data
+targets (on-chip and external alike) are byte addresses and go unprefixed --
+the generated language translates a DM byte address into the `ram` space's
+unit offset internally (`tools/sharcspec/ghidra/gen_sleigh.py`
+`dm_byte_addr_to_ram_unit`), so the plain literal from the instruction
+stream is also the address to query here:
 
 ```sh
 uv run python tools/ghidraq.py SHARC_PROGRAM pcode sw:0x1c1928 \
   --json --project SHARC_PROJECT --project-name SHARC_PROJECT
-uv run python tools/ghidraq.py SHARC_PROGRAM loads sw:0x254d98 \
+uv run python tools/ghidraq.py SHARC_PROGRAM loads 0x254d98 \
   --json --project SHARC_PROJECT --project-name SHARC_PROJECT
 uv run python tools/ghidraq.py SHARC_PROGRAM stores 0x8055c874 \
   --json --project SHARC_PROJECT --project-name SHARC_PROJECT
@@ -439,19 +443,19 @@ false surfaces as an `emulator-error` fault carrying Ghidra's message.
 
 ```sh
 uv run python tools/sharcemu.py dt2-1.16_SHARC --start sw:0x1c18ed --steps 200 \
-    --watch sw:0x254d9c --set R2=0x1234 \
+    --watch 0x254d9c --set R2=0x1234 \
     --project ~/ghidra-projects/sharc-batch-dt2-116 \
     --project-name sharc-batch-dt2-116 --json
 ```
 
-`--start` takes `sw:` (short-word) or a displayed coordinate, same convention
-as `ghidraq.py`. For data, pass what the current language actually accesses:
-it doubles every DM literal as if it were a short-word address, so
-`DM(0x254d9c)` is emulated at `sw:0x254d9c` (displayed `0x4a9b38`). That is a
-modelling defect, not the hardware's map. On-chip DM literals such as
-`0x252658` are byte addresses whose loaded bytes sit at loader
-`0x28000000 + addr`, so the emulator does not see the image's initialised
-data at those locations and reads zero there. See
+`--start` takes `sw:` (short-word) or a displayed coordinate for the program
+counter, same convention as `ghidraq.py`. `--watch` and `--poke` addresses
+are always plain DM byte addresses, unprefixed: `DM(0x254d9c)` is emulated
+at `0x254d9c` directly, matching the loader's placement of on-chip and
+external DM literals at their own byte address. The generated language
+translates a DM byte address into the `ram` space's unit offset internally
+(`tools/sharcspec/ghidra/gen_sleigh.py` `dm_byte_addr_to_ram_unit`), so the
+emulator now sees the image's initialised data at these locations. See
 `docs/findings/05-sharc-isa-and-decoding.md`.
 `--watch ADDR[:LEN]` (repeatable, LEN in bytes, default 4) reports every
 write touching that range: step, PC, address, and old/new bytes. `--set

@@ -465,6 +465,49 @@ def constrained_terms(word_terms, field_info, constraints, tag):
     return result
 
 
+def dm_byte_addr_to_ram_unit(addr_name="addr", isl2_name="isl2", unit_name="unit"):
+    """SLEIGH lines translating a SHARC DM BYTE address (already in local
+    `addr_name`) into a unit offset in the `ram` space (local `unit_name`),
+    for use as `*[ram]:4 {unit_name}`.
+
+    The generated `ram` space has wordsize=2 (so short-word CODE addresses
+    land on their own bytes: unit n -> Ghidra byte offset 2n), but DM
+    literals in the instruction stream are byte addresses, not short-word
+    ones. Ghidra always scales a LOAD/STORE offset by the space's wordsize,
+    so using the byte address directly as the offset would access byte
+    2*addr instead of addr. Dividing by 2 here (`addr >> 1`) undoes that
+    scaling for the ordinary case, so Ghidra byte offset = addr, matching
+    the importer's placement of on-chip and external DM literals at their
+    own byte address (tools/sharc_import.py `ghidra_addr`).
+
+    The one exception is the loader's bounded L2 byte window
+    (0x20000000..0x20020000 exclusive), which is NOT identity-mapped: it
+    aliases short-word range 0x00B80000.. (tools/sharcldr.py L2_BYTE_BASE/
+    L2_BYTE_LIMIT/L2_SW_BASE). For an address in that window the unit is
+    L2_SW_BASE + (addr - L2_BYTE_BASE)/2, which equals (addr >> 1) +
+    (L2_SW_BASE - L2_BYTE_BASE/2) = (addr >> 1) + 0xF0B80000 (32-bit
+    two's-complement: 0x00B80000 - 0x10000000 mod 2**32). `isl2` is that
+    window's indicator (1 inside, 0 outside), so the same expression covers
+    both cases without a conditional branch in the semantics.
+
+    DM only (g==0): PM data addresses are 48-bit-word block addresses, not
+    byte addresses, and are not translated by this helper. Both call sites
+    below (type14a_scalar_constructors, type3b_exact_constructors) already
+    pin g=0.
+
+    Odd DM literals lose their low bit here (`>> 1` truncates); every
+    Type14a DM literal actually present in the DT2 1.16 main program is
+    even (verified by tools/sharcinv.py; see docs/findings/
+    05-sharc-isa-and-decoding.md), so this is a noted limitation rather
+    than an observed bug.
+    """
+    return [
+        f"local {isl2_name}:4 = zext(({addr_name} >= 0x20000000) "
+        f"&& ({addr_name} < 0x20020000));",
+        f"local {unit_name}:4 = ({addr_name} >> 1) + {isl2_name} * 0xF0B80000;",
+    ]
+
+
 def type14a_scalar_constructors(
     mnem, disp_ops, word_terms, nwords, active_words, field_info
 ):
@@ -480,11 +523,11 @@ def type14a_scalar_constructors(
         f"local high16:2 = {high};",
         f"local low16:2 = {low};",
         "local addr:4 = (zext(high16) << 16) | zext(low16);",
-    ]
+    ] + dm_byte_addr_to_ram_unit()
     constructors = []
     for direction, transfer in (
-        (0, [f"{ureg} = *[ram]:4 addr;"]),
-        (1, [f"*[ram]:4 addr = {ureg};"]),
+        (0, [f"{ureg} = *[ram]:4 unit;"]),
+        (1, [f"*[ram]:4 unit = {ureg};"]),
     ):
         constructors.append(
             Constructor(
@@ -531,7 +574,9 @@ def type3b_exact_constructors(
             disp_ops,
             terms,
             nwords,
-            semantic_lines=["local addr:4 = I4 + M4;", "I12 = *[ram]:4 addr;"],
+            semantic_lines=["local addr:4 = I4 + M4;"]
+            + dm_byte_addr_to_ram_unit()
+            + ["I12 = *[ram]:4 unit;"],
             active_words=active_words,
         )
     ]

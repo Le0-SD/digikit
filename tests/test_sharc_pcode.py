@@ -101,6 +101,87 @@ def immediate_move(name, ureg, data):
     return encode(name, extra)
 
 
+def eval_pcode(ops, registers=None):
+    """Evaluate a straight-line p-code op sequence with no control flow,
+    stopping at the first LOAD or STORE. Returns (op, address_value) where
+    address_value is that op's memory-offset input (inputs[1]).
+
+    This models exactly the opcodes the DM byte-address -> ram-unit
+    translation uses (tools/sharcspec/ghidra/gen_sleigh.py
+    dm_byte_addr_to_ram_unit): INT_ZEXT/INT_SEXT, INT_LEFT/INT_RIGHT,
+    INT_OR/INT_AND, INT_ADD/INT_SUB/INT_MULT, INT_LESS/INT_LESSEQUAL,
+    BOOL_AND/BOOL_NEGATE, COPY. `registers` seeds any register-space input
+    (e.g. I4, M4) the sequence reads before writing.
+    """
+    registers = dict(registers or {})
+    unique = {}
+
+    def value(vn):
+        space = vn.space.name
+        if space == "const":
+            return vn.offset
+        if space == "register":
+            name = vn.getRegisterName()
+            if name not in registers:
+                raise AssertionError("eval_pcode: no seed value for register %s" % name)
+            return registers[name]
+        if space == "unique":
+            return unique[vn.offset]
+        raise AssertionError("eval_pcode: unexpected input space %r" % space)
+
+    def store(op, result):
+        mask = (1 << (op.output.size * 8)) - 1
+        result &= mask
+        space = op.output.space.name
+        if space == "unique":
+            unique[op.output.offset] = result
+        elif space == "register":
+            registers[op.output.getRegisterName()] = result
+        else:
+            raise AssertionError("eval_pcode: unexpected output space %r" % space)
+
+    for op in ops:
+        name = op.opcode.name
+        if name in ("LOAD", "STORE"):
+            return op, value(op.inputs[1])
+        ins = [value(i) for i in op.inputs]
+        if name == "INT_ZEXT":
+            result = ins[0]
+        elif name == "INT_SEXT":
+            src = op.inputs[0]
+            result = ins[0]
+            if result & (1 << (src.size * 8 - 1)):
+                result -= 1 << (src.size * 8)
+        elif name == "COPY":
+            result = ins[0]
+        elif name == "INT_LEFT":
+            result = ins[0] << ins[1]
+        elif name == "INT_RIGHT":
+            result = ins[0] >> ins[1]
+        elif name == "INT_OR":
+            result = ins[0] | ins[1]
+        elif name == "INT_AND":
+            result = ins[0] & ins[1]
+        elif name == "INT_ADD":
+            result = ins[0] + ins[1]
+        elif name == "INT_SUB":
+            result = ins[0] - ins[1]
+        elif name == "INT_MULT":
+            result = ins[0] * ins[1]
+        elif name == "INT_LESS":
+            result = 1 if ins[0] < ins[1] else 0
+        elif name == "INT_LESSEQUAL":
+            result = 1 if ins[0] <= ins[1] else 0
+        elif name == "BOOL_AND":
+            result = 1 if (ins[0] and ins[1]) else 0
+        elif name == "BOOL_NEGATE":
+            result = 0 if ins[0] else 1
+        else:
+            raise AssertionError("eval_pcode does not model opcode %s" % name)
+        store(op, result)
+    raise AssertionError("eval_pcode: no LOAD/STORE op in sequence")
+
+
 class GeneratorSource(unittest.TestCase):
     def test_type14a_and_type3b_specializations_coexist(self):
         """Pure generator-output regression: neither form may erase the other."""
@@ -126,10 +207,10 @@ class GeneratorSource(unittest.TestCase):
         self.assertIn("type14a_scalar_w0_9_9=0x0", generated)
         self.assertIn("type14a_scalar_w0_8_8=0x0", generated)
         self.assertIn("type14a_scalar_w0_8_8=0x1", generated)
-        self.assertIn("ureg_w0_6_0 = *[ram]:4 addr;", generated)
-        self.assertIn("*[ram]:4 addr = ureg_w0_6_0;", generated)
+        self.assertIn("ureg_w0_6_0 = *[ram]:4 unit;", generated)
+        self.assertIn("*[ram]:4 unit = ureg_w0_6_0;", generated)
         self.assertIn("type3b_exact_w0_12_12=0x0", generated)
-        self.assertIn("I12 = *[ram]:4 addr;", generated)
+        self.assertIn("I12 = *[ram]:4 unit;", generated)
         self.assertGreaterEqual(generated.count(":Type14a "), 3)
         self.assertGreaterEqual(generated.count(":Type3b "), 2)
 
@@ -287,23 +368,28 @@ class GeneratedLanguage(unittest.TestCase):
             raw_load[i : i + 2][::-1] for i in range(0, len(raw_load), 2)
         )
         self.assertEqual(observed_load, type14a(d=0))
+        # high16/low16 assemble the raw DM BYTE address; the isl2/unit chain
+        # then translates it into a ram-space unit (addr >> 1, with an
+        # L2-window correction) so Ghidra's own wordsize-2 LOAD/STORE scaling
+        # (byte offset = 2*unit) recovers the original byte address.
+        expected_ops = [
+            "INT_ZEXT", "INT_LEFT", "INT_ZEXT", "INT_OR",
+            "INT_LESSEQUAL", "INT_LESS", "BOOL_AND", "INT_ZEXT",
+            "INT_RIGHT", "INT_MULT", "INT_ADD",
+        ]
         for direction, buf, expected_name in (
             ("load", observed_load, "LOAD"),
             ("store", observed_store, "STORE"),
         ):
             with self.subTest(direction=direction):
                 names, ops = self.lift(buf)
-                self.assertEqual(
-                    names,
-                    ["INT_ZEXT", "INT_LEFT", "INT_ZEXT", "INT_OR", expected_name],
-                )
+                self.assertEqual(names, expected_ops + [expected_name])
                 access = ops[-1]
                 self.assertEqual(access.inputs[0].getSpaceFromConst().name, "ram")
-                # The direct address is assembled without a byte-scale: the
-                # memory-space wordsize applies it when Ghidra uses the p-code.
                 self.assertEqual(ops[0].inputs[0].offset, 0x25)
                 self.assertEqual(ops[2].inputs[0].offset, 0x4D98)
-                self.assertEqual(access.inputs[1].offset, ops[3].output.offset)
+                _op, unit = eval_pcode(ops)
+                self.assertEqual(unit, 0x254D98 >> 1)
                 self.assertEqual(access.inputs[1].size, 4)
                 if direction == "load":
                     self.assertEqual(access.output.getRegisterName(), "R4")
@@ -311,6 +397,24 @@ class GeneratedLanguage(unittest.TestCase):
                 else:
                     self.assertEqual(access.inputs[2].getRegisterName(), "R4")
                     self.assertEqual(access.inputs[2].size, 4)
+
+    def test_type14a_scalar_dm_byte_address_translates_to_ram_unit(self):
+        """The DM byte-address -> ram-unit translation for an on-chip literal,
+        the L2 byte-window alias, and an external (non-aliased) literal."""
+        cases = (
+            ("on-chip", 0x254D98, 0x254D98 >> 1),
+            ("L2 alias", 0x20000010, 0xB80008),
+            ("external", 0x82A00008, 0x82A00008 >> 1),
+        )
+        for label, addr, expected_unit in cases:
+            with self.subTest(label=label):
+                buf = type14a(
+                    d=0,
+                    **{"addr[31:16]": (addr >> 16) & 0xFFFF, "addr[15:0]": addr & 0xFFFF},
+                )
+                _names, ops = self.lift(buf)
+                _op, unit = eval_pcode(ops)
+                self.assertEqual(unit, expected_unit)
 
     def test_type14a_pm_or_lw_selector_does_not_inherit_scalar_dm_pcode(self):
         for selector, buf in (("PM", type14a(g=1)), ("LW", type14a(l=1))):
@@ -333,15 +437,29 @@ class GeneratedLanguage(unittest.TestCase):
         self.assertEqual(load.inputs[1].size, 4)
         self.assertEqual(load.output.getRegisterName(), "I12")
         self.assertEqual(load.output.size, 4)
+        # I4 + M4 is the raw DM BYTE address; the isl2/unit chain then
+        # translates it into a ram-space unit, same as Type14a's literal.
         self.assertEqual(
-            [(op.opcode.name, op.output.getRegisterName()) for op in ops if op.output],
-            [("INT_ADD", ""), ("LOAD", "I12")],
+            names,
+            [
+                "INT_ADD",
+                "INT_LESSEQUAL", "INT_LESS", "BOOL_AND", "INT_ZEXT",
+                "INT_RIGHT", "INT_MULT", "INT_ADD",
+                "LOAD",
+            ],
         )
         self.assertEqual(ops[0].inputs[0].getRegisterName(), "I4")
         self.assertEqual(ops[0].inputs[1].getRegisterName(), "M4")
         self.assertFalse(
             any(op.output and op.output.getRegisterName() == "I4" for op in ops)
         )
+        for i4, m4, expected_unit in (
+            (0x254D98, 0, 0x254D98 >> 1),
+            (0x20000010, 0, 0xB80008),
+        ):
+            with self.subTest(i4=hex(i4), m4=hex(m4)):
+                _op, unit = eval_pcode(ops, registers={"I4": i4, "M4": m4})
+                self.assertEqual(unit, expected_unit)
 
     def test_type3b_nearby_selector_does_not_inherit_exact_reader_pcode(self):
         names, _ops = self.lift(type3b(g=1))
