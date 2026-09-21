@@ -557,6 +557,48 @@ interpreter-independent logic (census rules, width tables, the address
 classifier) is pure and unit-tested in `tests/test_sharcwriters.py` with
 synthetic fields and trace events -- no firmware required.
 
+`out/sharcwriters/stack-invariant.md`/`.json` census every instruction in
+the image that can write I6, I7, B6 or B7 (7764 instances, whole-image,
+function-owned) and argue S = `[0x26f000, 0x2c0000)` (the same
+`DEFAULT_STACK_LO`/`HI`) usually contains them -- **conditionally, not
+proven closed**: the census traces I7 through a genuine multi-context
+stack-switch shape (`blk69@0xb8853a` sw `0xb885f5`, `I7` repointed to a
+runtime-populated context-struct address) that cannot be resolved
+statically to either "still in S" or a specific other region. See the
+proof's "Item 2" for the full writer-by-writer table and verdict. Every
+`EXCLUDED-STACK` result now states this explicitly rather than hiding it:
+an `'assumption'` string (`ENTRY_SEED_ASSUMPTION`) on every row, plus
+`excluded_stack_depends_on_unproven_entry_assumption` (a count -- every
+`EXCLUDED-STACK` row, since the assumption underlies `STACK_SYMBOLS`
+itself) in the JSON's top level.
+
+The proof's one classifier-relevant fix lives mostly in
+`tools/sharc_trace.py`: the Type19a_scaled circular-MODIFY handler
+previously collapsed to `Unknown('scaled circular modify I%d')` whenever
+the pre-modify value, B or L were not all concrete -- true on nearly every
+occurrence, since I6/I7 are seeded as named symbols at each function's own
+entry. PRM p.6-7 guarantees the wrapped result still lands in
+`[B,B+L*scale)` regardless, the *same* window a value already bounded by
+S (an entry-time symbol, or an earlier circular-MODIFY result) already
+denotes -- so `_stack_bounded_symbol()` recognises that shape and the
+handler mints a **fresh**, uniquely-named `circ_<reg>_<pc>` symbol for the
+result. Fresh, not reused: an earlier version of this fix re-used the
+input symbol unchanged, which asserted two different circular MODIFYs of
+I7 (different sites, or the same site with different runtime state) were
+*equal*, letting the Affine algebra cancel their difference to a spurious
+0 and alias two different stack frames -- replaced before it reached any
+other tool (grep the image for `scaled circular modify` if adding a new
+consumer of this reason string). `tools/sharcwriters.py`'s classifier was
+extended to match: `is_circ_symbol()`/`combined_affine_range()` treat a
+`circ_` term as ranging over S widened by `CIRC_WRAP_SLACK` (`L7*4 =
+0x7f4`) on both sides -- not S itself -- and `via_circular_modify` marks
+an `EXCLUDED-STACK` result that used this. Recovers 948 of the ~1045
+stores the stack pointer's circular MODIFY was blocking for target
+`0x252658` (`3441 -> 4389 EXCLUDED-STACK`, `8438 -> 7492 UNRESOLVED`,
+`HIT`/`EXCLUDED-CONST`/`ENTRY-RELATIVE` counts unchanged); the remainder
+needs an offset at or beyond one buffer length, or an unrecognised symbol
+name, which the fix deliberately does not claim bounded (see the proof).
+
 ## Reference manuals
 
 `tools/refstext.py` extracts supplied public manuals into searchable,

@@ -245,6 +245,56 @@ ENTRY_SEED_NAMES = {
 }
 STACK_SYMBOLS = ('I6e', 'I7e')
 
+# Every EXCLUDED-STACK classification rests on one unproven, global
+# assumption: that I6/I7 are within S (or, for a circ_ term, within S
+# widened by CIRC_WRAP_SLACK) at the ENTRY of every function this tool
+# traces -- since each function is seeded fresh from its own entry
+# (resolve_function), not by propagating an actual runtime value from its
+# caller. out/sharcwriters/stack-invariant.md's writer census closes most
+# of this (CJUMP's implicit I6=I7, RFRAME, the M7-constant push/pop
+# family, boot immediates) but leaves it open for I6/I7/B6/B7 flowing
+# through the interrupt/context-switch machinery in blk69@0xb88200 and
+# blk69@0xb8853a: B6/B7 have a verified PM(0x59)/PM(0x5a) save/restore
+# round-trip (sw 0xb88353/0xb88356 -> sw 0xb885cf/0xb885d2, unchanged
+# value), but I6/I7 chain through `I6 = DM(I7+2)` (sw 0xb8823b),
+# `I7 = PM(I4+5)` (sw 0xb88255) and further I4-relative context-block
+# slots whose own origin (I4 is a parameter from this function's caller,
+# blk69@0xb88cb6) was not independently walked. Recorded explicitly, not
+# hidden, per this module's own classify_store_address(): every
+# EXCLUDED-STACK detail dict carries this string so a reader (or a
+# stricter future run) can find and count every store that depends on it
+# without re-deriving which classifications are affected.
+ENTRY_SEED_ASSUMPTION = (
+    'assumes I6/I7 (and, for a circ_ term, the register a circular MODIFY '
+    'read from) are within S at this store\'s owning function\'s own '
+    'entry; verified for CJUMP/RFRAME/the M7 push-pop family/boot, NOT '
+    'independently verified for I6/I7 propagation through the '
+    'interrupt/context-switch machinery in blk69@0xb88200/0xb8853a -- see '
+    'out/sharcwriters/stack-invariant.md, "Item 2"'
+)
+
+# tools/sharc_trace.py's Type19a_scaled handler mints a FRESH symbol (never
+# reusing I6e/I7e themselves, so two different modify sites, or a modify
+# chained onto an earlier modify's own result, are never asserted equal --
+# see that module's CIRC_SYMBOL_PREFIX/_stack_bounded_symbol) for the
+# result of a circular MODIFY whose input was already a stack-bounded
+# symbol (I6e/I7e themselves, or an earlier such fresh symbol) offset by
+# less than one buffer length. This module does not track the specific
+# value such a symbol denotes -- only that PRM p.6-23's single
+# +-byte_length wrap correction confines it to within one buffer length of
+# wherever its input's own bound placed it. CIRC_WRAP_SLACK is that one
+# buffer length in bytes: L7's proven-constant value (0x1fd, from the
+# blk88 startup evidence and this module's own GLOBAL_CONSTANT_SEEDS)
+# times the normal-word scale (4) -- the same L7/scale the tracer itself
+# uses when it decides whether an input offset still qualifies. A
+# circ_-tagged term therefore ranges over S widened by CIRC_WRAP_SLACK on
+# both sides, not S itself -- see combined_affine_range().
+CIRC_WRAP_SLACK = 0x1FD * 4  # 0x7f4 = 2036 bytes
+
+
+def is_circ_symbol(name: str) -> bool:
+    return name.startswith(trace_mod.CIRC_SYMBOL_PREFIX)
+
 # Task 1 evidence (2026-09-21, DT2 1.16, image_sha256
 # 0f514a12a2255f5c081e292c47f1f29462003177658da4bbae0a22fd737fffa2):
 # a decode-only census (no execution) of every instruction in every
@@ -379,14 +429,16 @@ def _affine_term_range(coefficient: int, lo: int, hi: int) -> tuple[int, int]:
     return (a, b) if a <= b else (b, a)
 
 
-def affine_range(constant: int, terms, lo: int, hi: int) -> tuple[int, int]:
+def _affine_range_with(constant: int, terms, bound_for) -> tuple[int, int]:
     """-> (min, max) address the affine expression `constant + sum(coef *
-    term)` can take when every named term in `terms` ranges over [lo, hi).
-    Plain (unmasked) Python ints: the stack region this is used for sits
-    far below 2**32, so wraparound cannot occur for the small coefficients
-    real address arithmetic produces."""
+    term)` can take when each named term in `terms` ranges over whatever
+    closed-open interval `bound_for(name)` returns. Plain (unmasked) Python
+    ints: the stack region this is used for sits far below 2**32, so
+    wraparound cannot occur for the small coefficients real address
+    arithmetic produces."""
     total_lo = total_hi = constant
-    for _name, coefficient in terms:
+    for name, coefficient in terms:
+        lo, hi = bound_for(name)
         term_lo, term_hi = _affine_term_range(coefficient, lo, hi)
         total_lo += term_lo
         total_hi += term_hi
@@ -403,6 +455,25 @@ def affine_range(constant: int, terms, lo: int, hi: int) -> tuple[int, int]:
         # produces. Widen rather than silently misorder it.
         return 0, 0xFFFFFFFF
     return total_lo, total_hi
+
+
+def affine_range(constant: int, terms, lo: int, hi: int) -> tuple[int, int]:
+    """-> (min, max) address the affine expression `constant + sum(coef *
+    term)` can take when every named term in `terms` ranges over [lo, hi)."""
+    return _affine_range_with(constant, terms, lambda _name: (lo, hi))
+
+
+def combined_affine_range(constant: int, terms, stack_lo: int, stack_hi: int,
+                           circ_lo: int, circ_hi: int) -> tuple[int, int]:
+    """Like affine_range, but a term whose name is a
+    tools/sharc_trace.py CIRC_SYMBOL_PREFIX-tagged symbol (a fresh
+    circular-MODIFY result -- see that module's _stack_bounded_symbol and
+    its Type19a_scaled handler) ranges over [circ_lo, circ_hi) instead of
+    [stack_lo, stack_hi). Every entry in `terms` must be one or the other
+    -- the caller partitions by is_circ_symbol() before calling this."""
+    def bound_for(name):
+        return (circ_lo, circ_hi) if is_circ_symbol(name) else (stack_lo, stack_hi)
+    return _affine_range_with(constant, terms, bound_for)
 
 
 def ranges_overlap(range_lo: int, range_hi: int, width: int, target: int) -> bool:
@@ -465,8 +536,11 @@ def classify_store_address(addr, width, target: int, stack_lo, stack_hi):
             hit = constant <= target < constant + width
             return ('HIT' if hit else 'EXCLUDED-CONST'), {'address': constant}
 
-        stack_terms = [(name, coeff) for name, coeff in terms if name in STACK_SYMBOLS]
-        other_terms = [(name, coeff) for name, coeff in terms if name not in STACK_SYMBOLS]
+        def is_stack_term(name):
+            return name in STACK_SYMBOLS or is_circ_symbol(name)
+
+        stack_terms = [(name, coeff) for name, coeff in terms if is_stack_term(name)]
+        other_terms = [(name, coeff) for name, coeff in terms if not is_stack_term(name)]
         expression = _format_affine(constant, terms)
 
         if other_terms:
@@ -481,15 +555,25 @@ def classify_store_address(addr, width, target: int, stack_lo, stack_hi):
         if stack_lo is None or stack_hi is None:
             return 'STACK-RELATIVE', {'expression': expression}
 
-        range_lo, range_hi = affine_range(constant, stack_terms, stack_lo, stack_hi)
+        circ_lo, circ_hi = stack_lo - CIRC_WRAP_SLACK, stack_hi + CIRC_WRAP_SLACK
+        range_lo, range_hi = combined_affine_range(
+            constant, stack_terms, stack_lo, stack_hi, circ_lo, circ_hi)
+        detail = {'range': [range_lo, range_hi], 'expression': expression}
+        if any(is_circ_symbol(name) for name, _ in stack_terms):
+            # Record that this classification leans on the circular-MODIFY
+            # bound (PRM p.6-23's single +-byte_length wrap correction,
+            # CIRC_WRAP_SLACK = L7*scale), not just the plain entry-seed
+            # bound, so a reader (or a future stricter run) can find every
+            # store that depends on it without re-parsing `expression`.
+            detail['via_circular_modify'] = True
         if ranges_overlap(range_lo, range_hi, width, target):
             return 'UNRESOLVED', {
                 'reason': ('stack-relative address range overlaps the target; '
                            'Phase 1 bounds do not exclude it'),
-                'range': [range_lo, range_hi],
-                'expression': expression,
+                **detail,
             }
-        return 'EXCLUDED-STACK', {'range': [range_lo, range_hi], 'expression': expression}
+        detail['assumption'] = ENTRY_SEED_ASSUMPTION
+        return 'EXCLUDED-STACK', detail
 
     return 'UNRESOLVED', {'reason': 'unrecognized address representation: %r' % (addr,)}
 
@@ -640,6 +724,10 @@ def run(blob_path, block_idxs, min_depth, target, max_steps, max_states,
             'class totals (%d) do not sum to the census total (%d)'
             % (sum(class_totals.values()), census_total))
 
+    excluded_stack_rows = [row for row in all_rows if row['class'] == 'EXCLUDED-STACK']
+    via_circular_modify = sum(
+        1 for row in excluded_stack_rows if row.get('via_circular_modify'))
+
     return {
         'target': target,
         'image_sha256': ctx['sha256'],
@@ -648,6 +736,14 @@ def run(blob_path, block_idxs, min_depth, target, max_steps, max_states,
         'census': dict(sorted(census.items())),
         'census_total': census_total,
         'class_totals': dict(sorted(class_totals.items())),
+        # Every EXCLUDED-STACK row carries its own 'assumption' string
+        # (ENTRY_SEED_ASSUMPTION); these two counts are the same fact
+        # rolled up so a reader does not have to scan `stores` to see how
+        # many classifications depend on the unproven entry-seed
+        # assumption (out/sharcwriters/stack-invariant.md, "Item 2") --
+        # entirely, or specifically via this run's circular-MODIFY fix.
+        'excluded_stack_depends_on_unproven_entry_assumption': len(excluded_stack_rows),
+        'excluded_stack_via_circular_modify': via_circular_modify,
         'stores': all_rows,
     }
 

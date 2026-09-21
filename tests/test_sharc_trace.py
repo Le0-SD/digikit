@@ -2719,6 +2719,162 @@ class TraceTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             T.trace(b"", 0, 0, {"R1": "@"}, max_steps=1)
 
+    def test_scaled_type19_circular_modify_of_bare_symbol_yields_fresh_symbol(self):
+        # B7 not concrete (the ordinary case when a function is traced from
+        # its own entry with every register seeded as its own named
+        # symbol), L7 concrete (tools/sharcwriters.py's own
+        # GLOBAL_CONSTANT_SEEDS): the old behaviour collapsed straight to
+        # Unknown("scaled circular modify I7"). It should now recognise
+        # I7's bare entry symbol and mint a FRESH symbol for the result --
+        # never reuse "I7e" itself, which would falsely assert the result
+        # equals I7's own entry value (see the "different sites" test
+        # below for why that would be unsound).
+        fields = {
+            "w": 1, "g": 0, "idis[2:0]": 0, "is[2:0]": 7,
+            "data[31:16]": 0xFFFF, "data[15:0]": 0xFFFE,
+        }
+        i7 = T.UREG_CODES["I7"]
+        l7 = T.UREG_CODES["L7"]
+        state = self.run_one(
+            T.State(0x10, {i7: T.symbol("I7e"), l7: T.Const(0x1FD)}),
+            insn("19a_scaled", fields, length=6),
+        )
+        result = state.uregs[i7]
+        self.assertIsInstance(result, T.Affine)
+        self.assertEqual(result.constant, 0)
+        self.assertEqual(len(result.terms), 1)
+        name, coefficient = result.terms[0]
+        self.assertEqual(coefficient, 1)
+        self.assertTrue(name.startswith(T.CIRC_SYMBOL_PREFIX))
+        self.assertNotEqual(name, "I7e")  # never the input symbol itself
+        self.assertTrue(state.trace[-1]["circular"])
+
+    def test_scaled_type19_different_modify_sites_yield_different_symbols(self):
+        # Two circular MODIFYs of I7's bare entry symbol at two different
+        # program counters must NOT be asserted equal: reusing one name for
+        # both (the bug this replaces) would let the Affine algebra cancel
+        # "site A's result - site B's result" to a spurious 0, aliasing two
+        # provably-different stack frames. Distinct PCs must mint distinct
+        # symbol names.
+        fields = {
+            "w": 1, "g": 0, "idis[2:0]": 0, "is[2:0]": 7,
+            "data[31:16]": 0xFFFF, "data[15:0]": 0xFFFE,
+        }
+        i7 = T.UREG_CODES["I7"]
+        l7 = T.UREG_CODES["L7"]
+        seed = {i7: T.symbol("I7e"), l7: T.Const(0x1FD)}
+        at_a = self.run_one(T.State(0x10, dict(seed)), insn("19a_scaled", fields, length=6))
+        at_b = self.run_one(T.State(0x20, dict(seed)), insn("19a_scaled", fields, length=6))
+        self.assertNotEqual(at_a.uregs[i7], at_b.uregs[i7])
+        # Re-running the SAME site is deterministic (same name each time),
+        # which is what lets a store reached along two predicate-fork paths
+        # from the same PC still compare equal -- only different sites
+        # differ.
+        again_a = self.run_one(T.State(0x10, dict(seed)), insn("19a_scaled", fields, length=6))
+        self.assertEqual(at_a.uregs[i7], again_a.uregs[i7])
+
+    def test_scaled_type19_circular_modify_chains_through_a_prior_circ_symbol(self):
+        # A value already bounded by an EARLIER circular MODIFY (a
+        # CIRC_SYMBOL_PREFIX symbol, not a raw entry seed) also qualifies:
+        # the second MODIFY still yields a fresh symbol, not Unknown.
+        fields = {
+            "w": 1, "g": 0, "idis[2:0]": 0, "is[2:0]": 7,
+            "data[31:16]": 0xFFFF, "data[15:0]": 0xFFFE,
+        }
+        i7 = T.UREG_CODES["I7"]
+        l7 = T.UREG_CODES["L7"]
+        prior = T.Affine(0, ((T.CIRC_SYMBOL_PREFIX + "7_10", 1),))
+        state = self.run_one(
+            T.State(0x20, {i7: prior, l7: T.Const(0x1FD)}),
+            insn("19a_scaled", fields, length=6),
+        )
+        self.assertIsInstance(state.uregs[i7], T.Affine)
+        self.assertTrue(state.trace[-1]["circular"])
+
+    def test_scaled_type19_circular_modify_of_symbol_with_small_offset_still_bounded(self):
+        # PRM p.6-23's single +-byte_length correction still recovers a
+        # value within one buffer length of a symbol's own bound when the
+        # input carries a small existing offset (e.g. after a push/pop),
+        # not just when it is perfectly bare.
+        fields = {
+            "w": 1, "g": 0, "idis[2:0]": 0, "is[2:0]": 7,
+            "data[31:16]": 0xFFFF, "data[15:0]": 0xFFFE,
+        }
+        i7 = T.UREG_CODES["I7"]
+        l7 = T.UREG_CODES["L7"]
+        adjusted = T._add(T.symbol("I7e"), T.Const(-8), "I7e - 8")
+        state = self.run_one(
+            T.State(0x10, {i7: adjusted, l7: T.Const(0x1FD)}),
+            insn("19a_scaled", fields, length=6),
+        )
+        self.assertIsInstance(state.uregs[i7], T.Affine)
+        self.assertTrue(state.trace[-1]["circular"])
+
+    def test_scaled_type19_circular_modify_of_symbol_with_large_offset_is_unknown(self):
+        # An offset at or beyond one buffer length (0x1fd * 4 = 0x7f4) is
+        # no longer provably "within one buffer length" of the symbol's
+        # own bound, so the conservative Unknown fallback still applies.
+        fields = {
+            "w": 1, "g": 0, "idis[2:0]": 0, "is[2:0]": 7,
+            "data[31:16]": 0xFFFF, "data[15:0]": 0xFFFE,
+        }
+        i7 = T.UREG_CODES["I7"]
+        l7 = T.UREG_CODES["L7"]
+        adjusted = T._add(T.symbol("I7e"), T.Const(0x800), "I7e + 0x800")
+        state = self.run_one(
+            T.State(0x10, {i7: adjusted, l7: T.Const(0x1FD)}),
+            insn("19a_scaled", fields, length=6),
+        )
+        self.assertEqual(state.uregs[i7], T.Unknown("scaled circular modify I7"))
+
+    def test_scaled_type19_circular_modify_of_unrecognized_symbol_is_unknown(self):
+        # A bare symbol that does not match the recognised entry-seed or
+        # circ_ naming convention (e.g. a loop-count or unrelated symbol
+        # that happens to reach this register) is not assumed bounded.
+        fields = {
+            "w": 1, "g": 0, "idis[2:0]": 0, "is[2:0]": 7,
+            "data[31:16]": 0xFFFF, "data[15:0]": 0xFFFE,
+        }
+        i7 = T.UREG_CODES["I7"]
+        l7 = T.UREG_CODES["L7"]
+        state = self.run_one(
+            T.State(0x10, {i7: T.symbol("loop_count"), l7: T.Const(0x1FD)}),
+            insn("19a_scaled", fields, length=6),
+        )
+        self.assertEqual(state.uregs[i7], T.Unknown("scaled circular modify I7"))
+
+    def test_scaled_type19_circular_modify_without_concrete_length_is_unknown(self):
+        # L7 itself not concrete: no numeric byte_length is available to
+        # bound the accepted input offset against, so this falls back to
+        # Unknown even for a bare, recognised symbol.
+        fields = {
+            "w": 1, "g": 0, "idis[2:0]": 0, "is[2:0]": 7,
+            "data[31:16]": 0xFFFF, "data[15:0]": 0xFFFE,
+        }
+        i7 = T.UREG_CODES["I7"]
+        state = self.run_one(
+            T.State(0x10, {i7: T.symbol("I7e")}),
+            insn("19a_scaled", fields, length=6),
+        )
+        self.assertEqual(state.uregs[i7], T.Unknown("scaled circular modify I7"))
+
+    def test_stack_bounded_symbol_helper(self):
+        self.assertEqual(T._stack_bounded_symbol(T.symbol("I7e")), ("I7e", 0))
+        self.assertEqual(
+            T._stack_bounded_symbol(T._add(T.symbol("I7e"), T.Const(4), "x")),
+            ("I7e", 4),
+        )
+        self.assertEqual(
+            T._stack_bounded_symbol(T.symbol(T.CIRC_SYMBOL_PREFIX + "7_10")),
+            (T.CIRC_SYMBOL_PREFIX + "7_10", 0),
+        )
+        self.assertIsNone(T._stack_bounded_symbol(T.Const(5)))
+        self.assertIsNone(T._stack_bounded_symbol(T.symbol("loop_count")))
+        two_terms = T.Affine(0, (("I7e", 1), ("M7e", 1)))
+        self.assertIsNone(T._stack_bounded_symbol(two_terms))
+        scaled = T.Affine(0, (("I7e", 2),))
+        self.assertIsNone(T._stack_bounded_symbol(scaled))
+
     def test_scaled_type19_normal_word_modify_and_circular_wrap(self):
         fields = {
             "w": 1,

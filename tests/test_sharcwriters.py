@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "too
 
 W = import_module("sharcwriters")
 Instruction = import_module("sharc_disasm").Instruction
+trace_mod = import_module("sharc_trace")
 
 BLOB = pathlib.Path("out/sections/dt2-1.16/section_7_BLOB.bin")
 
@@ -384,6 +385,176 @@ class IntegrationTest(unittest.TestCase):
     def test_census_form_set_matches_the_documented_forms(self):
         forms = {row["form"] for row in self.rows if row["is_dm"]}
         self.assertTrue(forms <= set(W.ALL_STORE_FORMS))
+
+
+class CircularModifyEndToEndTest(unittest.TestCase):
+    """No firmware required: runs the two real instructions -- a circular
+    Type19a_scaled MODIFY of I7 seeded exactly as seed_sets() seeds it (a
+    bare entry symbol, B7/L7 not concrete), then a Type16a store through
+    the modified I7 -- via tools/sharc_trace.py's own single-instruction
+    executor, and checks the resulting store event classifies as
+    EXCLUDED-STACK, over the CIRC_WRAP_SLACK-widened range. This is the
+    out/sharcwriters/stack-invariant.md fix end to end: before it, the
+    MODIFY produced Unknown('scaled circular modify I7') and the store
+    below would classify UNRESOLVED."""
+
+    MODIFY_FIELDS = {
+        "w": 1, "g": 0, "idis[2:0]": 0, "is[2:0]": 7,
+        "data[31:16]": 0xFFFF, "data[15:0]": 0xFFFE,
+    }
+    STORE_FIELDS = {"i[2:0]": 7, "m[2:0]": 0, "g": 0, "sl": 0, "by": 0,
+                    "data[31:16]": 0, "data[15:0]": 0}
+
+    def _modify_then_store(self, pc):
+        i7 = trace_mod.UREG_CODES["I7"]
+        seeds = W.seed_sets()
+        self.assertEqual(seeds["I7"], "@I7e")  # sanity: still a bare @-seed
+        state = trace_mod.State(pc, {i7: trace_mod.symbol("I7e"),
+                                      trace_mod.UREG_CODES["L7"]: trace_mod.Const(seeds["L7"])})
+        modified = trace_mod._execute(
+            state, Instruction(0, 6, "19a_scaled", self.MODIFY_FIELDS, kind="confident")
+        )[0]
+        # Never the old bug's behaviour (reusing "I7e" itself -- a false
+        # claim that the wrapped value equals the pre-modify entry value).
+        self.assertNotEqual(modified.uregs[i7], trace_mod.symbol("I7e"))
+        stored = trace_mod._execute(
+            modified, Instruction(0, 6, "16a", self.STORE_FIELDS, kind="confident")
+        )[0]
+        event = stored.trace[-1]
+        self.assertEqual(event["action"], "store")
+        return event
+
+    def test_store_through_circularly_modified_i7_is_excluded_stack_over_widened_range(self):
+        event = self._modify_then_store(pc=0)
+        cls, detail, _width = W.classify_row(
+            {"pc": 0, "form": "16a", "width": 4}, event, set(),
+            target=0x252658, fallback_width=4,
+            stack_lo=W.DEFAULT_STACK_LO, stack_hi=W.DEFAULT_STACK_HI)
+        self.assertEqual(cls, "EXCLUDED-STACK")
+        self.assertEqual(detail["range"], [
+            W.DEFAULT_STACK_LO - W.CIRC_WRAP_SLACK,
+            W.DEFAULT_STACK_HI + W.CIRC_WRAP_SLACK - 1,
+        ])
+        self.assertTrue(detail["via_circular_modify"])
+
+    def test_two_different_modify_sites_both_excluded_but_not_asserted_equal(self):
+        # Two different program points, each doing its own circular MODIFY
+        # of I7's bare entry symbol, then a store through the result: both
+        # must classify EXCLUDED-STACK (same evidenced bound), but the
+        # underlying addresses must not be asserted equal to each other --
+        # that would alias two provably-different stack frames.
+        event_a = self._modify_then_store(pc=0x10)
+        event_b = self._modify_then_store(pc=0x20)
+        self.assertNotEqual(event_a["address"], event_b["address"])
+        for event in (event_a, event_b):
+            cls, detail, _width = W.classify_row(
+                {"pc": 0, "form": "16a", "width": 4}, event, set(),
+                target=0x252658, fallback_width=4,
+                stack_lo=W.DEFAULT_STACK_LO, stack_hi=W.DEFAULT_STACK_HI)
+            self.assertEqual(cls, "EXCLUDED-STACK")
+
+
+class CircSymbolClassifierTest(unittest.TestCase):
+    """Pure classifier tests for the circ_-tagged symbol family -- no
+    firmware, no tracer execution, synthetic addresses only."""
+
+    TARGET = 0x252658
+
+    def test_is_circ_symbol(self):
+        self.assertTrue(W.is_circ_symbol(trace_mod.CIRC_SYMBOL_PREFIX + "7_10"))
+        self.assertFalse(W.is_circ_symbol("I7e"))
+        self.assertFalse(W.is_circ_symbol("M7e"))
+
+    def test_bare_circ_symbol_is_excluded_stack_over_widened_range(self):
+        name = trace_mod.CIRC_SYMBOL_PREFIX + "7_1c1676"
+        addr = {"affine": {"constant": 0, "terms": [[name, 1]]}}
+        cls, detail = W.classify_store_address(
+            addr, 4, self.TARGET, W.DEFAULT_STACK_LO, W.DEFAULT_STACK_HI)
+        self.assertEqual(cls, "EXCLUDED-STACK")
+        self.assertEqual(detail["range"], [
+            W.DEFAULT_STACK_LO - W.CIRC_WRAP_SLACK,
+            W.DEFAULT_STACK_HI + W.CIRC_WRAP_SLACK - 1,
+        ])
+        self.assertTrue(detail["via_circular_modify"])
+
+    def test_plain_stack_symbol_does_not_set_via_circular_modify(self):
+        addr = {"affine": {"constant": 0, "terms": [["I7e", 1]]}}
+        cls, detail = W.classify_store_address(
+            addr, 4, self.TARGET, W.DEFAULT_STACK_LO, W.DEFAULT_STACK_HI)
+        self.assertEqual(cls, "EXCLUDED-STACK")
+        self.assertNotIn("via_circular_modify", detail)
+
+    def test_every_excluded_stack_result_carries_the_entry_seed_assumption(self):
+        # Item 2: the entry-seed assumption is not proven closed (see
+        # ENTRY_SEED_ASSUMPTION / out/sharcwriters/stack-invariant.md), so
+        # every EXCLUDED-STACK classification -- plain or circ_ -- must say
+        # so explicitly rather than assert an unqualified bound.
+        plain = {"affine": {"constant": 0, "terms": [["I7e", 1]]}}
+        circ = {"affine": {"constant": 0,
+                            "terms": [[trace_mod.CIRC_SYMBOL_PREFIX + "7_1", 1]]}}
+        for addr in (plain, circ):
+            cls, detail = W.classify_store_address(
+                addr, 4, self.TARGET, W.DEFAULT_STACK_LO, W.DEFAULT_STACK_HI)
+            self.assertEqual(cls, "EXCLUDED-STACK")
+            self.assertEqual(detail["assumption"], W.ENTRY_SEED_ASSUMPTION)
+
+    def test_mixed_stack_and_circ_terms_sum_their_own_bounds(self):
+        # I6 = I7 after I7's own circular MODIFY (the CJUMP-adjacent shape):
+        # one plain stack term and one circ_ term in the same expression.
+        name = trace_mod.CIRC_SYMBOL_PREFIX + "7_1c1676"
+        addr = {"affine": {"constant": 0, "terms": [["I6e", 1], [name, 1]]}}
+        cls, detail = W.classify_store_address(
+            addr, 4, self.TARGET, W.DEFAULT_STACK_LO, W.DEFAULT_STACK_HI)
+        self.assertEqual(cls, "EXCLUDED-STACK")
+        expected_lo = W.DEFAULT_STACK_LO + (W.DEFAULT_STACK_LO - W.CIRC_WRAP_SLACK)
+        expected_hi = (W.DEFAULT_STACK_HI - 1) + (W.DEFAULT_STACK_HI + W.CIRC_WRAP_SLACK - 1)
+        self.assertEqual(detail["range"], [expected_lo, expected_hi])
+
+    def test_circ_symbol_out_of_the_plain_range_but_in_the_widened_range_is_excluded(self):
+        # A target just past DEFAULT_STACK_HI, inside the widened range,
+        # must NOT be excluded for a plain stack symbol -- it would be
+        # UNRESOLVED -- but must be excluded for a circ_ symbol only if the
+        # target is truly outside the widened range. This checks the
+        # reverse: a target safely outside the widened range is excluded.
+        name = trace_mod.CIRC_SYMBOL_PREFIX + "7_1c1676"
+        addr = {"affine": {"constant": 0, "terms": [[name, 1]]}}
+        far_target = W.DEFAULT_STACK_HI + W.CIRC_WRAP_SLACK + 0x10000
+        cls, _detail = W.classify_store_address(
+            addr, 4, far_target, W.DEFAULT_STACK_LO, W.DEFAULT_STACK_HI)
+        self.assertEqual(cls, "EXCLUDED-STACK")
+
+    def test_circ_symbol_target_inside_widened_slack_only_is_unresolved_not_excluded(self):
+        # A target that falls in the widened slack margin (beyond plain S,
+        # but still inside S +- CIRC_WRAP_SLACK) must not be silently
+        # excluded -- it must come back UNRESOLVED, the same "overlap"
+        # handling as a plain stack term.
+        name = trace_mod.CIRC_SYMBOL_PREFIX + "7_1c1676"
+        addr = {"affine": {"constant": 0, "terms": [[name, 1]]}}
+        target_in_slack = W.DEFAULT_STACK_HI + W.CIRC_WRAP_SLACK - 4
+        cls, detail = W.classify_store_address(
+            addr, 4, target_in_slack, W.DEFAULT_STACK_LO, W.DEFAULT_STACK_HI)
+        self.assertEqual(cls, "UNRESOLVED")
+        self.assertIn("overlaps", detail["reason"])
+
+
+class CombinedAffineRangeTest(unittest.TestCase):
+    def test_plain_stack_terms_only_matches_affine_range(self):
+        terms = [("I7e", 1)]
+        self.assertEqual(
+            W.combined_affine_range(0, terms, 0x100, 0x200, 0x0, 0x300),
+            W.affine_range(0, terms, 0x100, 0x200),
+        )
+
+    def test_circ_term_uses_circ_bounds(self):
+        name = trace_mod.CIRC_SYMBOL_PREFIX + "7_1"
+        lo, hi = W.combined_affine_range(0, [(name, 1)], 0x100, 0x200, 0x50, 0x250)
+        self.assertEqual((lo, hi), (0x50, 0x24F))
+
+    def test_mixed_terms_sum_independently(self):
+        name = trace_mod.CIRC_SYMBOL_PREFIX + "7_1"
+        lo, hi = W.combined_affine_range(
+            0, [("I7e", 1), (name, 1)], 0x100, 0x200, 0x50, 0x250)
+        self.assertEqual((lo, hi), (0x100 + 0x50, 0x1FF + 0x24F))
 
 
 if __name__ == "__main__":

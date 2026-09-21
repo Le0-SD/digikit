@@ -654,6 +654,39 @@ def _terms(value: Const | Affine) -> tuple[int, tuple[tuple[str, int], ...]]:
     )
 
 
+# A symbol name this module recognises as denoting a value some caller has
+# already bounded to a known numeric range: either an entry-time seed in
+# the convention tools/sharcwriters.py's seed_sets()/ENTRY_SEED_NAMES uses
+# ("I6e", "B7e", ...: one or more uppercase letters, one or more digits,
+# then "e"), or one of this module's own CIRC_SYMBOL_PREFIX-tagged symbols
+# (below). This module does not itself know the numeric bound -- that is
+# the caller's fact to state (tools/sharcwriters.py's STACK_SYMBOLS /
+# CIRC_WRAP_SLACK) -- it only recognises the *shape* of a name a caller is
+# likely to have bounded, so it knows when re-deriving a fresh symbol
+# through a circular MODIFY is meaningful rather than fabricating a bound
+# for an arbitrary, unrelated value that merely happens to be a bare named
+# term (e.g. a loop-count symbol).
+_BOUNDED_SYMBOL_RE = re.compile(r"^[A-Z]+\d+e$")
+CIRC_SYMBOL_PREFIX = "circ_"
+
+
+def _stack_bounded_symbol(value: Value) -> Optional[tuple[str, int]]:
+    """-> (name, signed constant offset), if `value` is exactly one named
+    symbol with coefficient 1 (any constant offset) whose name matches
+    _BOUNDED_SYMBOL_RE or starts with CIRC_SYMBOL_PREFIX -- otherwise None.
+    A second term, or a coefficient other than 1, means the value's range
+    is no longer provably tied to the symbol's own bound (e.g. a scaled or
+    summed expression), so the caller falls back to Unknown rather than
+    guess."""
+    if isinstance(value, Affine) and len(value.terms) == 1:
+        name, coefficient = value.terms[0]
+        if coefficient == 1 and (
+            _BOUNDED_SYMBOL_RE.match(name) or name.startswith(CIRC_SYMBOL_PREFIX)
+        ):
+            return name, _signed(value.constant, 32)
+    return None
+
+
 def _add(left: Value, right: Value, expression: str) -> Value:
     if isinstance(left, Unknown) or isinstance(right, Unknown):
         return Unknown(expression)
@@ -4111,7 +4144,39 @@ def _execute(state: State, insn: Instruction) -> List[State]:
                         wrapped = True
                     result = Const(candidate)
             else:
-                result = Unknown("scaled circular modify I%d" % src)
+                bounded = _stack_bounded_symbol(v)
+                byte_length = length.value * scale if isinstance(length, Const) else None
+                if (
+                    bounded is not None
+                    and byte_length is not None
+                    and abs(bounded[1]) < byte_length
+                ):
+                    # v has no proof yet of its own concrete value, but it
+                    # is a symbol some caller has already bounded (an
+                    # entry-time seed, or an earlier circular-MODIFY-
+                    # derived symbol -- recursively, ultimately grounded in
+                    # an entry-time seed), offset by less than one buffer
+                    # length. PRM p.6-23: "If the index pointer falls
+                    # outside the buffer, the DAG subtracts or adds the
+                    # buffer length to the index value, wrapping the index
+                    # pointer back within the start and end boundaries of
+                    # the buffer" -- one +-byte_length correction. So the
+                    # true (concrete) result is v + delta, corrected by at
+                    # most one +-byte_length: within one buffer length of
+                    # wherever v's own bound places it -- never a claim
+                    # that the result equals v, another modify site's
+                    # result, or the same site's own value on a different
+                    # visit. A FRESH symbol (never v's own name) is minted
+                    # so two circular-MODIFY results are never treated as
+                    # equal or made to cancel by the Affine algebra; this
+                    # module does not itself know or state the numeric
+                    # bound -- that is the caller's fact (tools/
+                    # sharcwriters.py's STACK_SYMBOLS / CIRC_WRAP_SLACK).
+                    fresh = "%s%d_%x" % (CIRC_SYMBOL_PREFIX, src, state.pc_sw)
+                    result = Affine(constant=0, terms=((fresh, 1),))
+                    circular = True
+                else:
+                    result = Unknown("scaled circular modify I%d" % src)
         state.uregs[16 + dst] = result
         _event(
             state,
