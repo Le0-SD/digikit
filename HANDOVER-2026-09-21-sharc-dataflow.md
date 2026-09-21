@@ -288,11 +288,17 @@ faulting. Results are in `docs/findings/05-sharc-isa-and-decoding.md`.
    no writer among those it resolves, but 8,438 stay unresolved and 224
    depend on caller registers (`docs/findings/06-sharc-engine-and-startup.md`,
    "A zero-initialiser also writes `0x254d9c`"). Next, in order of yield:
-   (a) the stack pointer: CBUFEN is set, so every I7/I6 value stays inside
-   the circular stack `[B7, B7+0x7f4)`; prove B7 only ever holds stack
-   addresses (startup `0x26f000`, and the runtime rebase from I7 at
-   `sw 0x1c1463/0x1c1472`), then classify I7/I6-derived addresses,
-   including the circular-MODIFY cascade (about 1,045), as stack-relative;
+   (a) the stack context switch: every writer of I6/I7/B6/B7 keeps them in
+   the stack range except `blk69@0xb8853a`, which sets `I7 = I11 + 0x204`
+   (sw `0xb885f5`/`0xb885f7`) from a context structure reached through the
+   global pointer `DM(0x2ca3e0)`. Until that is resolved, all 4,389 stack
+   exclusions are conditional (`out/sharcwriters/252658-v3.json`,
+   `excluded_stack_depends_on_unproven_entry_assumption`). `0x2ca3e0` lies
+   in loader payload, so read its initial value, find its writers, and bound
+   the context structures and their stacks; if they are a fixed table far
+   from `0x252658`, widen S with that evidence and the exclusions become
+   unconditional. This is also the first sign of multiple execution
+   contexts on the SHARC, which matters for how machines are scheduled;
    (b) Type16b semantics in the language, so the new `0x254d9c` writer is
    checked live; (c) tracer support for Type11a and compute opcode `0xa5`,
    and confirmation of the 627 uncertain forms; (d) chase the 224
