@@ -39,7 +39,7 @@ class ElzTest(unittest.TestCase):
     def test_end_marker_past_the_declared_length_is_an_error(self):
         packed = bytearray(aplib.pack_section(b'hello world'))
         packed[3] -= 4  # declare four fewer stream bytes than the end marker needs
-        with self.assertRaises(ValueError):
+        with self.assertRaises(EOFError):  # depack runs out of declared stream first
             elz.depack_section(bytes(packed))
 
     @unittest.skipUnless(sections_from_syx(), 'needs the 1.15C .syx and sections/ extracted from it')
