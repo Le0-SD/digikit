@@ -134,7 +134,8 @@ def parse_args(argv):
                    help='pend CALLER (return address) that unblock must never force-satisfy')
     p.add_argument('--sem-post-fn', type=lambda t: int(t, 0), default=0x4000155c,
                    help='address of the firmware sem_post() that --post-sem calls '
-                        '(default: DT2 1.15C MAIN OS 0x4000155c; pass the build\'s own)')
+                        '(default 0x4000155c: DT2 1.15C MAIN OS, and the same address '
+                        'on DN2 1.11 by a static read; pass the build\'s own otherwise)')
     p.add_argument('--watch-max', type=int, default=16)
     p.add_argument('--ips', type=parse_when, default=None)
     p.add_argument('--ips-at', action='append', default=[], type=parse_ips_at)
